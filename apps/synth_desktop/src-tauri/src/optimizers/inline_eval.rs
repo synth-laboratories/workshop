@@ -17,72 +17,25 @@ use serde_json::{json, Value};
 use std::num::NonZeroU32;
 use std::process::Command;
 
-const INLINE_PROVIDER_OPERATION: &str = "chat.completions.create";
-const OPENROUTER_CODEX_SWE_NAMESPACE: &str = "openrouter";
-const OPENROUTER_CODEX_SWE_POLICY: &str = "codex-cli-openrouter-swe-proxy-v1";
-const OPENROUTER_CODEX_SWE_MODEL: &str = "openai/gpt-5.6-luna";
-const RUNEBENCH_NAMESPACE: &str = "runebench";
-const RESPONSES_CREATE: &str = "responses.create";
-// Capabilities name concrete proxy wire operations. `provider.request` was
-// never routed, so a capability scoped to it failed every first model call
-// with operation_denied; the generic scope is the routed chat operation.
-const GENERIC_PROVIDER_OPERATION: &str = "chat.completions.create";
+const INLINE_CHAT_PROVIDER_OPERATION: &str = "chat.completions.create";
+const INLINE_CODEX_PROVIDER_OPERATION: &str = "responses.create";
 
-/// Select the least-privileged provider operation for a validated inline
-/// policy. Only the exact OpenRouter Codex SWE policy/model pin may use the
-/// Responses route; every unrelated pin keeps the generic compatibility
-/// operation.
-pub(super) fn credential_capability_scope_for_policy(
-    namespace: &str,
-    name: &str,
-    provider: &str,
-    model: &str,
-    configuration: &Value,
-) -> admission::CredentialCapabilityScope {
-    let exact_codex_swe_pin = namespace.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
-        && name == OPENROUTER_CODEX_SWE_POLICY
-        && provider.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
-        && model == OPENROUTER_CODEX_SWE_MODEL;
-    let exact_runebench_pin = namespace.eq_ignore_ascii_case(RUNEBENCH_NAMESPACE)
-        && matches!(name, "luna_low" | "luna_high")
-        && provider.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
-        && model == OPENROUTER_CODEX_SWE_MODEL;
-    let empty_configuration = configuration
-        .as_object()
-        .is_some_and(serde_json::Map::is_empty);
-    let responses_declared = configuration
-        .get("api")
-        .and_then(Value::as_str)
-        .is_some_and(|value| value.eq_ignore_ascii_case("responses"))
-        || configuration
-            .get("workload")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value.eq_ignore_ascii_case("codex_responses"))
-        || configuration
-            .get("operation")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value.eq_ignore_ascii_case(RESPONSES_CREATE))
-        || configuration
-            .get("operations")
-            .and_then(Value::as_array)
-            .is_some_and(|values| {
-                values.iter().any(|value| {
-                    value
-                        .as_str()
-                        .is_some_and(|operation| operation.eq_ignore_ascii_case(RESPONSES_CREATE))
-                })
-            });
-    let operation = if (exact_codex_swe_pin && (empty_configuration || responses_declared))
-        || (exact_runebench_pin && responses_declared)
+fn inline_provider_operation(policy_namespace: &str) -> &'static str {
+    if policy_namespace
+        .trim()
+        .eq_ignore_ascii_case("codex_agentic")
     {
-        RESPONSES_CREATE
+        INLINE_CODEX_PROVIDER_OPERATION
     } else {
-        GENERIC_PROVIDER_OPERATION
-    };
-    admission::CredentialCapabilityScope::new(
-        [operation.to_string()],
-        crate::limits::DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS,
-    )
+        INLINE_CHAT_PROVIDER_OPERATION
+    }
+}
+
+/// Stable run identity for one caller-declared logical start. A retry reuses
+/// the same row; an intentional rerun must use a new key.
+pub fn idempotent_run_id(session_id: &str, idempotency_key: &str) -> String {
+    let digest = admission::digest_bytes(format!("{session_id}\0{idempotency_key}").as_bytes());
+    format!("opt_eval_idem_{}", &digest.as_str()[7..31])
 }
 
 /// Resolve current authority, construct the default inline recipe, validate it,
@@ -123,8 +76,9 @@ pub async fn execute(
     service: &OptimizerService,
     approved: admission::ApprovedExecutionSpec,
     session_ref: Option<String>,
+    run_id: Option<String>,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
-    container_eval::start_inline(service, approved, session_ref).await
+    container_eval::start_inline(service, approved, session_ref, run_id).await
 }
 
 /// Re-read the exact declaration and policy revision immediately before spend.
@@ -173,11 +127,7 @@ pub async fn reverify(
         .and_then(|policy| policy.revision.as_ref())
         .context("current policy revision is unresolved")?;
     approved
-        .reverify(
-            &container.source_revision,
-            declaration_digest,
-            policy_revision,
-        )
+        .reverify(declaration_digest, policy_revision)
         .map_err(anyhow::Error::new)
 }
 
@@ -272,23 +222,11 @@ async fn discovery_context(
         .first()
         .context("no matching registered container")?;
     request.container_id = Some(selected.container_id.clone());
-    let materialization_limits = json!({
-        "max_calls": request
-            .maximum_model_calls_per_rollout
-            .context("inline evaluation requires maximumModelCallsPerRollout before task materialization")?,
-        "max_steps": request
-            .maximum_steps_per_rollout
-            .context("inline evaluation requires maximumStepsPerRollout before task materialization")?,
-        "max_cost_usd": request
-            .hard_total_cost_usd
-            .context("inline evaluation requires hardTotalCostUsd before task materialization")?,
-    });
     materialize_seed_instances(
         selected_base_url
             .as_deref()
             .context("registered container has no base URL")?,
-        &request.seeds,
-        materialization_limits,
+        &request,
     )
     .await?;
     let revision = policy_revisions
@@ -313,16 +251,12 @@ async fn discovery_context(
         .provider
         .clone()
         .context("inline evaluation requires provider")?;
-    let scope = credential_capability_scope_for_policy(
-        &namespace,
-        &name,
-        provider.as_str(),
-        request
-            .model_id
-            .as_ref()
-            .map(|model| model.as_str())
-            .unwrap_or_default(),
-        declared_configuration.as_value(),
+    // Capabilities name concrete proxy wire operations. `provider.request`
+    // was never routed, so valid inline runs reached the container and then
+    // failed every first model call with operation_denied.
+    let scope = admission::CredentialCapabilityScope::new(
+        [inline_provider_operation(&namespace).to_string()],
+        3_600,
     );
     Ok((
         DiscoveryContext {
@@ -347,16 +281,13 @@ async fn discovery_context(
     ))
 }
 
-async fn materialize_seed_instances(
-    base_url: &str,
-    seeds: &[admission::Seed],
-    limits: Value,
-) -> Result<()> {
+async fn materialize_seed_instances(base_url: &str, request: &InlineRequest) -> Result<()> {
+    let seeds = &request.seeds;
     anyhow::ensure!(
         !seeds.is_empty(),
         "inline evaluation requires at least one seed"
     );
-    let expected_limits = limits.clone();
+    let limits = materialization_limits(request)?;
     let client = crate::http::http_client_builder().build()?;
     let task = client
         .get(format!("{}/task_info", base_url.trim_end_matches('/')))
@@ -409,13 +340,28 @@ async fn materialize_seed_instances(
                 && instance.get("seed").and_then(Value::as_i64) == Some(seed.0),
             "task_instance_identity_mismatch: expected {expected}"
         );
-        anyhow::ensure!(
-            instance.get("limits") == Some(&expected_limits),
-            "task_instance_limits_mismatch: expected {}",
-            expected_limits
-        );
     }
     Ok(())
+}
+
+fn materialization_limits(request: &InlineRequest) -> Result<Value> {
+    let calls = request
+        .maximum_model_calls_per_rollout
+        .context("inline evaluation requires a per-rollout model-call limit")?;
+    let steps = request
+        .maximum_steps_per_rollout
+        .context("inline evaluation requires a per-rollout step limit")?;
+    let ceiling = request
+        .hard_total_cost_usd
+        .context("inline evaluation requires a hard total cost ceiling")?;
+    let ceiling_micros = admission::CostMicros::from_usd(ceiling)
+        .context("inline evaluation hard total cost ceiling is invalid")?
+        .as_micros();
+    Ok(json!({
+        "maximumModelCallsPerRollout": calls,
+        "maximumStepsPerRollout": steps,
+        "hardTotalCostMicros": ceiling_micros,
+    }))
 }
 
 fn read_policy_source(
@@ -496,23 +442,6 @@ fn container_candidate(
         .or_else(|| metadata.pointer("/capabilities/revision"))
         .and_then(Value::as_str)
         .context("container declaration has no source revision")?;
-    // What the running container says it loaded, as distinct from what the
-    // declaration recorded. The declaration digest cannot answer this: the v9
-    // harness source moved while the declaration stayed byte-identical.
-    //
-    // Only `/info/...` counts: `metadata.gitRevision` and
-    // `metadata.capabilities.revision` are both copied from the launch
-    // declaration, so reading either back would compare the declaration to
-    // itself and report every container fresh.
-    let runtime_revision = metadata
-        .pointer("/info/source_revision")
-        .or_else(|| metadata.pointer("/info/runtime_revision"))
-        .or_else(|| metadata.pointer("/info/capabilities/runtime/source_revision"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(SourceRevision::new)
-        .transpose()?;
     let evaluator_id = metadata
         .pointer("/info/logical_service_ids/evaluator")
         .and_then(Value::as_str)
@@ -529,7 +458,6 @@ fn container_candidate(
     }))?;
     let operations = metadata
         .pointer("/capabilities/operations")
-        .or_else(|| metadata.pointer("/info/capabilities/operations"))
         .and_then(Value::as_object)
         .map(|values| {
             values
@@ -567,7 +495,6 @@ fn container_candidate(
         container_id: ContainerId::new(id)?,
         registration_id: ContainerRegistrationId::new(id)?,
         source_revision: SourceRevision::new(source_revision)?,
-        runtime_revision,
         health: status.to_owned(),
         family,
         declaration: EvalDeclaration {

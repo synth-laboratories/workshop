@@ -13,7 +13,6 @@ import {
 } from "../types/landing";
 import { targetOptionForId } from "../runtime/modelCatalog";
 import { publicError } from "../runtime/publicError";
-import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import type { ApprovalPolicy, SandboxMode } from "../runtime/nativeCodex";
 import {
 	modelCapabilitiesForTarget,
@@ -27,9 +26,14 @@ import { IconSparkle, SlashCommandMenu, type SlashCommandId, type SlashCommandMe
 import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
+import { MicIcon } from "./MicIcon";
 import type { LagunaPolicy } from "../bridge/types";
-import { LOCAL_BASE_DISPLAY_NAME, policyLabel } from "../runtime/lagunaPolicies";
+import { compactModelLabel } from "../runtime/modelPresentation";
+import { orderedLagunaPolicies, policyLabel } from "../runtime/lagunaPolicies";
 import { bridges } from "../runtime/desktopBridge";
+import { blobToBase64, recordingToWhisperWav } from "../runtime/whisperAudio";
+import type { PaidComputeAutoApprovalSettings } from "../generated/protocol";
+import { parseUsdAmount } from "../runtime/paidComputeUsd";
 import {
 	armedPromptId,
 	IDLE_STEER_STATE,
@@ -149,6 +153,106 @@ const SANDBOX_OPTIONS: Array<{ id: SandboxMode; label: string; description: stri
 const APPROVAL_CHIP_LABEL: Record<ApprovalPolicy, string> = { untrusted: "Ask", "on-request": "Risky", never: "Auto" };
 const SANDBOX_CHIP_LABEL: Record<SandboxMode, string> = { "read-only": "Read", "workspace-write": "Workspace", "danger-full-access": "Full" };
 
+const DEFAULT_PAID_COMPUTE: PaidComputeAutoApprovalSettings = {
+	enabled: false,
+	maxRequestUsd: "0.10",
+	maxConversationUsd: "10.00",
+	providers: []
+};
+const PAID_COMPUTE_PROVIDERS = [
+	{ id: "openrouter", label: "OpenRouter" },
+	{ id: "tinker", label: "Tinker" }
+];
+const PAID_COMPUTE_PROVIDER_IDS = new Set(PAID_COMPUTE_PROVIDERS.map(({ id }) => id));
+
+function PaidComputeMenuSection({ approvalPolicy, sandboxMode }: {
+	approvalPolicy: ApprovalPolicy;
+	sandboxMode: SandboxMode;
+}) {
+	const [settings, setSettings] = useState<PaidComputeAutoApprovalSettings>(DEFAULT_PAID_COMPUTE);
+	const [requestLimit, setRequestLimit] = useState(DEFAULT_PAID_COMPUTE.maxRequestUsd);
+	const [conversationLimit, setConversationLimit] = useState(DEFAULT_PAID_COMPUTE.maxConversationUsd);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	useEffect(() => {
+		void bridges.config?.getDesktopPermissions().then((current) => {
+			const paid = current.paidCompute ?? DEFAULT_PAID_COMPUTE;
+			setSettings(paid);
+			setRequestLimit(paid.maxRequestUsd);
+			setConversationLimit(paid.maxConversationUsd);
+		}).catch((reason) => setError(publicError(reason)));
+	}, []);
+
+	const persist = async (next: PaidComputeAutoApprovalSettings) => {
+		if (!bridges.config?.updateDesktopPermissions) return;
+		setBusy(true);
+		try {
+			const supported = {
+				...next,
+				providers: next.providers.filter((provider) => PAID_COMPUTE_PROVIDER_IDS.has(provider))
+			};
+			const stored = await bridges.config.updateDesktopPermissions({
+				approvalPolicy,
+				sandboxMode,
+				paidCompute: supported
+			});
+			const paid = stored.paidCompute ?? DEFAULT_PAID_COMPUTE;
+			setSettings(paid);
+			setRequestLimit(paid.maxRequestUsd);
+			setConversationLimit(paid.maxConversationUsd);
+			setError(null);
+		} catch (reason) {
+			setError(publicError(reason));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const persistLimit = (kind: "request" | "conversation") => {
+		const value = kind === "request" ? requestLimit : conversationLimit;
+		const validation = parseUsdAmount(value).error;
+		if (validation) {
+			setError(validation);
+			return;
+		}
+		void persist(kind === "request"
+			? { ...settings, maxRequestUsd: value }
+			: { ...settings, maxConversationUsd: value });
+	};
+
+	return <div className="permission-section permission-paid-compute" aria-label="Paid compute">
+		<p>Paid compute</p>
+		<label className="permission-paid-toggle">
+			<span><strong>Auto-approve within limits</strong><small>Applies to new conversations.</small></span>
+			<input type="checkbox" checked={settings.enabled} disabled={busy} data-testid="composer-paid-compute-auto-approve" onChange={(event) => void persist({
+				...settings,
+				enabled: event.target.checked,
+				providers: event.target.checked && settings.providers.length === 0 ? ["openrouter"] : settings.providers
+			})} />
+		</label>
+		<div className="permission-paid-limits">
+			<label><span>Per request</span><span className="permission-money-input"><b>$</b><input aria-label="Maximum paid compute per request" inputMode="decimal" value={requestLimit} disabled={busy} onChange={(event) => setRequestLimit(event.target.value)} onBlur={() => persistLimit("request")} /></span></label>
+			<label><span>Per conversation</span><span className="permission-money-input"><b>$</b><input aria-label="Maximum paid compute per conversation" inputMode="decimal" value={conversationLimit} disabled={busy} onChange={(event) => setConversationLimit(event.target.value)} onBlur={() => persistLimit("conversation")} /></span></label>
+		</div>
+		<details className="permission-paid-advanced">
+			<summary>Advanced <span>Providers</span></summary>
+			<div className="permission-paid-providers" aria-label="Allowed paid compute providers">
+				{PAID_COMPUTE_PROVIDERS.map((provider) => <label key={provider.id}>
+					<input type="checkbox" checked={settings.providers.includes(provider.id)} disabled={busy} onChange={(event) => void persist({
+						...settings,
+						providers: event.target.checked
+							? [...new Set([...settings.providers, provider.id])]
+							: settings.providers.filter((id) => id !== provider.id)
+					})} />
+					<span>{provider.label}</span>
+				</label>)}
+			</div>
+		</details>
+		{error ? <small className="permission-paid-error" role="alert">{error}</small> : null}
+	</div>;
+}
+
 function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open, onOpenChange }: {
 	approvalPolicy: ApprovalPolicy;
 	sandboxMode: SandboxMode;
@@ -180,6 +284,7 @@ function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open,
 			<div className="permission-section" role="listbox" aria-label="Runtime permissions"><p>Runtime permissions</p>
 				{SANDBOX_OPTIONS.map((option) => <button key={option.id} type="button" role="option" aria-selected={option.id === sandboxMode} className={`permission-option${option.id === sandboxMode ? " selected" : ""}`} onClick={() => onSelect(approvalPolicy, option.id)}><span><strong>{option.label}</strong><small>{option.description}</small></span>{option.id === sandboxMode ? <b aria-hidden>✓</b> : null}</button>)}
 			</div>
+			<PaidComputeMenuSection approvalPolicy={approvalPolicy} sandboxMode={sandboxMode} />
 		</div> : null}
 	</div>;
 }
@@ -261,84 +366,6 @@ function IconWorkspace() {
 	return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden><path d="M1.75 4.25h10.5v6.5a1 1 0 01-1 1h-8.5a1 1 0 01-1-1v-6.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/><path d="M1.75 4.25V3.5a1 1 0 011-1h2.1l1.1 1.25h5.3a1 1 0 011 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 }
 
-function IconMic() {
-	return (
-		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<rect x="6" y="2.25" width="4" height="7" rx="2" stroke="currentColor" strokeWidth="1.3" />
-			<path
-				d="M4.25 8a3.75 3.75 0 007.5 0M8 11.75v2"
-				stroke="currentColor"
-				strokeWidth="1.3"
-				strokeLinecap="round"
-			/>
-		</svg>
-	);
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const reader = new FileReader();
-		reader.onloadend = () => {
-			const result = reader.result;
-			if (typeof result !== "string") {
-				reject(new Error("Unexpected FileReader result"));
-				return;
-			}
-			const commaIndex = result.indexOf(",");
-			resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
-		};
-		reader.onerror = () => reject(reader.error ?? new Error("Failed to read recorded audio"));
-		reader.readAsDataURL(blob);
-	});
-}
-
-async function recordingToWhisperWav(blob: Blob): Promise<Blob> {
-	const context = new AudioContext();
-	try {
-		const decoded = await context.decodeAudioData(await blob.arrayBuffer());
-		const targetRate = 16_000;
-		const outputLength = Math.max(1, Math.round(decoded.duration * targetRate));
-		const pcm = new Float32Array(outputLength);
-		for (let outputIndex = 0; outputIndex < outputLength; outputIndex += 1) {
-			const sourceIndex = Math.min(
-				decoded.length - 1,
-				Math.floor((outputIndex * decoded.sampleRate) / targetRate)
-			);
-			let sample = 0;
-			for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
-				sample += decoded.getChannelData(channel)[sourceIndex] ?? 0;
-			}
-			pcm[outputIndex] = sample / decoded.numberOfChannels;
-		}
-
-		const wav = new ArrayBuffer(44 + pcm.length * 2);
-		const view = new DataView(wav);
-		const writeAscii = (offset: number, value: string) => {
-			for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
-		};
-		writeAscii(0, "RIFF");
-		view.setUint32(4, 36 + pcm.length * 2, true);
-		writeAscii(8, "WAVE");
-		writeAscii(12, "fmt ");
-		view.setUint32(16, 16, true);
-		view.setUint16(20, 1, true);
-		view.setUint16(22, 1, true);
-		view.setUint32(24, targetRate, true);
-		view.setUint32(28, targetRate * 2, true);
-		view.setUint16(32, 2, true);
-		view.setUint16(34, 16, true);
-		writeAscii(36, "data");
-		view.setUint32(40, pcm.length * 2, true);
-		for (let index = 0; index < pcm.length; index += 1) {
-			const sample = Math.max(-1, Math.min(1, pcm[index]));
-			view.setInt16(44 + index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-		}
-		return new Blob([wav], { type: "audio/wav" });
-	} finally {
-		await context.close();
-	}
-}
-
 function IconSend() {
 	return (
 		<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
@@ -359,10 +386,6 @@ function IconStop() {
 
 function IconImage() {
 	return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden><rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.3"/><circle cx="5.2" cy="5.7" r="1.15" fill="currentColor"/><path d="m3.5 11 3-3 2.2 2.1 1.7-1.7 2.1 2.6" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/></svg>;
-}
-
-function IconImageUnsupported() {
-	return <svg className="composer-image-unsupported" width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden data-testid="composer-image-unsupported"><circle cx="7" cy="7" r="6" fill="currentColor"/><path d="M7 3.5v4.1M7 10.3v.2" stroke="white" strokeWidth="1.45" strokeLinecap="round"/></svg>;
 }
 
 function formatContextWindow(tokens: number): string {
@@ -386,7 +409,7 @@ function modelChipLabel(state: LandingState, policy?: LagunaPolicy): string {
 		if (state.model.status === "starting" || state.model.status === "loading") {
 			return "Laguna starting…";
 		}
-		return policy ? policyLabel(policy) : LOCAL_BASE_DISPLAY_NAME;
+		return policy ? policyLabel(policy) : target?.label ?? `synth/${state.model.name}`;
 	}
 	return target?.label ?? "Select model";
 }
@@ -471,9 +494,10 @@ function ModelMenu({
 	const ref = useRef<HTMLDivElement>(null);
 	const [activeAccess, setActiveAccess] = useState<ModelAccessKind | null>(null);
 	const selectedLagunaPolicy = lagunaAdapter?.adapters.find((policy) =>
-		policy.modelId === lagunaAdapter.selectedId || (policy.isBase && lagunaAdapter.selectedId === null)
+		policy.isBase ? lagunaAdapter.selectedId === null : policy.modelId === lagunaAdapter.selectedId
 	);
 	const modelLabel = modelChipLabel(state, selectedLagunaPolicy);
+	const shortModelLabel = compactModelLabel(modelLabel);
 	const modelReady = !(
 		state.selectedTargetId === "local-laguna" && state.model.status === "not_installed"
 	);
@@ -518,11 +542,8 @@ function ModelMenu({
 				aria-haspopup="listbox"
 				data-testid="composer-model"
 			>
-				<ProviderMark
-					kind={providerMarkForTarget(state.selectedTargetId)}
-					className={`model-chip-logo model-chip-logo-${providerMarkForTarget(state.selectedTargetId)}`}
-				/>
 				<span className="model-chip-label">{modelLabel}</span>
+				<span className="model-chip-short-label" aria-hidden>{shortModelLabel}</span>
 				<IconChevron />
 			</button>
 			{open ? (
@@ -550,16 +571,16 @@ function ModelMenu({
 								<div className="composer-model-group-label">{activeAccess === "api" ? apiProviderForTarget(items[0]) : TARGET_GROUP_LABEL[group]}</div>
 								{items.map((target) => {
 									if (target.id === "local-laguna" && lagunaAdapter?.adapters.length) {
-										return lagunaAdapter.adapters.map((policy) => {
+									return orderedLagunaPolicies(lagunaAdapter.adapters).map((policy) => {
 											const policyId = policy.isBase ? null : policy.modelId;
-											const selectedHere = state.selectedTargetId === target.id
-												&& (lagunaAdapter.selectedId === policyId || lagunaAdapter.selectedId === policy.modelId);
+											const selectedHere = state.selectedTargetId === target.id && lagunaAdapter.selectedId === policyId;
 											return (
 												<button
 													key={policy.modelId}
 													type="button"
 													role="option"
 													data-testid={`composer-model-option-local-laguna-${policy.isBase ? "base" : policy.modelId}`}
+													disabled={["not_installed", "error", "starting", "loading"].includes(state.model.status)}
 													aria-selected={selectedHere}
 													className={`composer-model-option${selectedHere ? " selected" : ""}`}
 													onClick={() => {
@@ -570,7 +591,7 @@ function ModelMenu({
 												>
 													<span className="composer-model-option-main">
 														<span className="composer-model-option-label">{policyLabel(policy)}</span>
-														<span className="composer-model-option-desc">{policy.isBase ? "Base model · This Mac" : "Fine-tuned model · This Mac"}</span>
+														<span className="composer-model-option-desc">{state.model.status === "starting" ? "Connecting to local runtime…" : state.model.status === "loading" ? "Loading local weights…" : policy.isBase ? "Original model · This Mac" : "SFT variant · This Mac"}</span>
 													</span>
 													{selectedHere ? <span className="composer-model-check" aria-hidden>✓</span> : null}
 												</button>
@@ -809,6 +830,7 @@ export function Composer({
 	const [skillChip, setSkillChip] = useState<Skill | null>(null);
 	const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
+	const [addMenuOpen, setAddMenuOpen] = useState(false);
 	// Steering lives in the turn controller, not on the queued-prompt row, so a
 	// second Return works from wherever the keyboard is. The ref mirrors the
 	// state because a keydown handler must read it before React commits.
@@ -892,6 +914,17 @@ export function Composer({
 		return () => document.removeEventListener("mousedown", close);
 	}, [slashMenuVisible]);
 
+	useEffect(() => {
+		if (!addMenuOpen) return;
+		const close = (event: MouseEvent) => {
+			if (!dockRef.current?.querySelector(".composer-add-wrap")?.contains(event.target as Node)) {
+				setAddMenuOpen(false);
+			}
+		};
+		document.addEventListener("mousedown", close);
+		return () => document.removeEventListener("mousedown", close);
+	}, [addMenuOpen]);
+
 	useLayoutEffect(() => {
 		const dock = dockRef.current;
 		const mainPane = dock?.closest<HTMLElement>(".main-pane");
@@ -900,31 +933,15 @@ export function Composer({
 		let frame = 0;
 		const updateClearance = () => {
 			frame = 0;
-			const clearance = Math.ceil(window.innerHeight - dock.getBoundingClientRect().top + 16);
+			const transcript = mainPane.querySelector<HTMLElement>(".chat-transcript");
+			const transcriptBottom = transcript?.getBoundingClientRect().bottom
+				?? mainPane.getBoundingClientRect().bottom;
+			const clearance = Math.max(
+				0,
+				Math.ceil(transcriptBottom - dock.getBoundingClientRect().top + 16)
+			);
 			mainPane.style.setProperty("--composer-clearance", `${clearance}px`);
 
-			/*
-			 * Horizontal geometry has the same problem as vertical clearance: the
-			 * dock is an overlay, so it cannot inherit the transcript column from
-			 * the workbench grid. Measure the scroller's *content* box — clientLeft
-			 * and clientWidth exclude a classic scrollbar gutter, which the raw
-			 * rect would fold into the centerline — and inset by the same 24px the
-			 * scroller uses. This keeps the composer on the transcript's centerline
-			 * and clear of the visual, container, and inference panes in every
-			 * combination, including ones no static rule enumerated.
-			 */
-			const scroller = mainPane.querySelector<HTMLElement>(".chat-transcript-scroll");
-			if (!scroller) {
-				mainPane.style.removeProperty("--composer-dock-left");
-				mainPane.style.removeProperty("--composer-dock-right");
-				return;
-			}
-			const paneRect = mainPane.getBoundingClientRect();
-			const scrollerRect = scroller.getBoundingClientRect();
-			const contentLeft = scrollerRect.left + scroller.clientLeft;
-			const contentRight = contentLeft + scroller.clientWidth;
-			mainPane.style.setProperty("--composer-dock-left", `${Math.round(contentLeft - paneRect.left + 24)}px`);
-			mainPane.style.setProperty("--composer-dock-right", `${Math.round(paneRect.right - contentRight + 24)}px`);
 		};
 		const scheduleClearanceUpdate = () => {
 			if (frame) cancelAnimationFrame(frame);
@@ -932,7 +949,16 @@ export function Composer({
 		};
 		const resizeObserver = new ResizeObserver(scheduleClearanceUpdate);
 		resizeObserver.observe(dock);
-		const mutationObserver = new MutationObserver(scheduleClearanceUpdate);
+		resizeObserver.observe(mainPane);
+		const observeTranscript = () => {
+			const transcript = mainPane.querySelector<HTMLElement>(".chat-transcript");
+			if (transcript) resizeObserver.observe(transcript);
+		};
+		observeTranscript();
+		const mutationObserver = new MutationObserver(() => {
+			observeTranscript();
+			scheduleClearanceUpdate();
+		});
 		mutationObserver.observe(mainPane, { childList: true, subtree: true });
 		window.addEventListener("resize", scheduleClearanceUpdate);
 		updateClearance();
@@ -943,8 +969,6 @@ export function Composer({
 			mutationObserver.disconnect();
 			window.removeEventListener("resize", scheduleClearanceUpdate);
 			mainPane.style.removeProperty("--composer-clearance");
-			mainPane.style.removeProperty("--composer-dock-left");
-			mainPane.style.removeProperty("--composer-dock-right");
 		};
 	}, []);
 
@@ -1049,10 +1073,16 @@ export function Composer({
 
 	const openSlashMenuFromButton = () => {
 		if (!enabled) return;
+		setAddMenuOpen(false);
 		if (!/^\/(\S*)$/.test(value)) setValue("/");
 		setSlashDismissed(false);
 		textareaRef.current?.focus();
 	};
+
+	const chooseImageAttachments = () => void bridges.desktop.chooseImageFiles().then((images) => {
+		setImageAttachments((current) => [...current, ...images.filter((image) => !current.some((item) => item.path === image.path))].slice(0, 4));
+		setAttachmentError(images.length && !modelSupportsImageInput(state.selectedTargetId) ? "This model does not support image input. Choose a multimodal model or remove the screenshots before sending." : null);
+	});
 
 	const closeSlashMenu = () => setSlashDismissed(true);
 
@@ -1361,15 +1391,6 @@ export function Composer({
 					<button type="button" onClick={onConfigureModels} data-testid="configure-codex-oauth">{state.codexOauthStatus?.action === "reauthenticate" || state.codexOauthStatus?.action === "retry" ? "Re-sync ChatGPT" : "Open Models settings"}</button>
 				</div>
 			) : null}
-			{whisperRuntime?.phase !== "unloaded" ? (
-				<p className={`composer-whisper-status is-${whisperRuntime?.phase}`} role="status" data-testid="composer-whisper-status">
-					<span aria-hidden />
-					{whisperRuntime?.phase === "warming" ? "Warming Whisper…"
-						: whisperRuntime?.phase === "transcribing" ? "Transcribing…"
-							: whisperRuntime?.phase === "ready" ? "Whisper ready · releases after 15 min idle"
-								: "Whisper needs attention"}
-				</p>
-			) : null}
 			<div className={`composer${enabled ? "" : " is-disabled"}${imageDragActive ? " is-image-drag-active" : ""}`} data-testid="composer" data-enter-action={enterAction}>
 				{imageDragActive ? <div className="composer-image-drop-target" aria-hidden>Drop screenshots here</div> : null}
 				{imageAttachments.length ? <div className="composer-image-tray" data-testid="composer-image-tray">{imageAttachments.map((image) => <figure key={image.path} className="composer-image-chip"><img src={image.previewUrl} alt={image.name}/><button type="button" aria-label={`Remove ${image.name}`} onClick={() => { setImageAttachments((items) => items.filter((item) => item.path !== image.path)); setAttachmentError(null); }}>×</button></figure>)}</div> : null}
@@ -1438,25 +1459,31 @@ export function Composer({
 				) : null}
 				<div className="composer-toolbar">
 					<div className="composer-left">
-						<button type="button" className="composer-icon-btn composer-image-button" aria-label={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Add screenshots — selected model does not support image input"} title={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Selected model does not support image input"} data-testid="composer-add-images" disabled={!enabled || submitting} onClick={() => void bridges.desktop.chooseImageFiles().then((images) => {
-							setImageAttachments((current) => [...current, ...images.filter((image) => !current.some((item) => item.path === image.path))].slice(0, 4));
-							setAttachmentError(images.length && !modelSupportsImageInput(state.selectedTargetId) ? "This model does not support image input. Choose a multimodal model or remove the screenshots before sending." : null);
-						})}><IconImage />{!modelSupportsImageInput(state.selectedTargetId) ? <IconImageUnsupported /> : null}</button>
 						<WorkspaceScopeChip hideTrigger openSignal={workspaceMenuSignal} sessionId={workspaceSessionId ?? null} ensureSession={onEnsureWorkspaceSession} fallbackWorkspace={workspaceFallback ?? null} scope={workspaceScope ?? null} onScopeChange={(next) => onWorkspaceScopeChange?.(next)} onError={(message) => onWorkspaceError?.(message)} />
-						<div className="slash-command-wrap">
+						<div className="composer-add-wrap">
 							<button
 								type="button"
-								className="composer-icon-btn"
-								disabled={!enabled}
-								aria-label="Slash commands"
-								aria-haspopup="listbox"
-								aria-expanded={slashMenuVisible}
-								aria-controls="composer-slash-menu"
-								data-testid="composer-slash-btn"
-								onClick={openSlashMenuFromButton}
+								className="composer-add-trigger"
+								disabled={!enabled || submitting}
+								aria-label="Add to conversation"
+								aria-haspopup="menu"
+								aria-expanded={addMenuOpen}
+								aria-controls="composer-add-menu"
+								data-testid="composer-add-menu-trigger"
+								onClick={() => setAddMenuOpen((open) => !open)}
 							>
-								<IconEdit />
+								<span aria-hidden>+</span>
 							</button>
+							{addMenuOpen ? (
+								<div id="composer-add-menu" className="composer-add-menu" role="menu" data-testid="composer-add-menu">
+									<button type="button" role="menuitem" data-testid="composer-add-images" onClick={() => { setAddMenuOpen(false); chooseImageAttachments(); }}>
+										<IconImage /><span><strong>Add screenshots</strong><small>Attach up to four images</small></span>
+									</button>
+									<button type="button" role="menuitem" data-testid="composer-slash-btn" onClick={openSlashMenuFromButton}>
+										<IconEdit /><span><strong>Commands and skills</strong><small>Open the command palette</small></span>
+									</button>
+								</div>
+							) : null}
 							{slashMenuVisible ? (
 								<SlashCommandMenu
 									ref={slashMenuRef}
@@ -1510,7 +1537,7 @@ export function Composer({
 							onClick={() => void onMicClick()}
 							data-testid="composer-mic"
 						>
-							<IconMic />
+							<MicIcon />
 							{recording ? <span className="sr-only" data-testid="composer-mic-recording">Recording</span> : null}
 						</button>
 						<button

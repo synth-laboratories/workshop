@@ -234,7 +234,12 @@ export function applyRuntimeEvent(
 						: session.title;
 		const nextMetadata = event.eventKind === "session.presented"
 			? patchPresentationMetadata(session.metadata, event.payload)
-			: session.metadata;
+			: event.eventKind === "run.started" && !options.fenced
+				// A live replacement turn supersedes any abandoned-turn notice.
+				// Clear this from the event path as well as the start-response path
+				// because either side may win the race for a very fast turn.
+				? clearRecoveryMetadata(session.metadata, true)
+				: session.metadata;
 		const statusChanged = nextStatus !== session.status;
 		const titleChanged = nextTitle !== session.title;
 		const metadataChanged = nextMetadata !== session.metadata;
@@ -333,8 +338,12 @@ export function applyTurnAccepted(
 		: false;
 	const nextSessions = patchSession(state.sessions, sessionId, (session) => ({
 		...session,
-		// A new attempt supersedes whatever the crashed one left behind.
-		metadata: clearRecoveryMetadata(session.metadata, patch.turnId && !terminalAlreadyApplied),
+		// Acceptance proves that a replacement/rejoined turn took custody of the
+		// chat, even when that turn completed so quickly that its terminal event
+		// reached the renderer before the start response.  Keeping the old notice
+		// in that ordering leaves a successful chat stuck behind a bogus Resume
+		// banner.
+		metadata: clearRecoveryMetadata(session.metadata, patch.turnId),
 		target: patch.target,
 		status: patch.turnId && !terminalAlreadyApplied ? "running" : session.status,
 		updatedAt: terminalAlreadyApplied

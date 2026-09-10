@@ -7,9 +7,6 @@ description: Run and verify live Synth container evaluations with declared strea
 
 Use `synth_containers` for container discovery and rollout requests and
 `synth_visuals` for the live view. Do not scan ports or substitute fixtures.
-In Codex, container actions go through
-`mcp__synth_containers__container_manage({ operation, arguments })`; the
-operation names below are its `operation` values, not separate callable tools.
 
 ## An evaluation is a campaign, not a rollout
 
@@ -111,7 +108,10 @@ Do not claim a paid Luna 10× run from this skill.
    probe another port, register a new record, or switch to a raw engine.
 5. Create the task-family visual through `synth_visuals.visual_manage`:
    `live.craftax.v1` for native Craftax, `live.harbor_eval.v1` for a Harbor
-   attempt. Bind slot `stream` (never
+   attempt. Give it a short, specific `display_name` of 2–6 words (for example,
+   `GLM Craftax Results`), unique among this task's outputs; do not use a raw
+   run, rollout, session, or visual ID as the name. Keep `title` descriptive.
+   Bind slot `stream` (never
    `live` or `jobs`) as `live_sse` to the **declared** SSE URL, with the
    declared `poll_url` beside it. Do not construct `/events` or
    `/rollouts/{id}/stream`.
@@ -224,3 +224,26 @@ authorities, and a trace that exists in one is not automatically in the other.
 
 Use bounded polling as the recovery authority even when SSE or WebSocket is the
 live delivery path, and label a sustained polling-only mode visibly.
+
+
+## Live annotation protocols (lane C)
+
+A recipe may declare `[live_annotation]` (`protocol_id`, `protocol_source`, optional
+`[live_annotation.configuration]` and `[live_annotation.model]`). At run start Workshop pins
+the protocol on the container (`GET`/`PUT /annotation-protocol`, refuses without a
+`protocol_revision_id`), stamps `annotation_protocol_revision_id` on every prepare/start,
+and relays the declared `stream.annotation.events` channel into the run journal as
+`eval.trial.annotation`. Findings are provisional and observe-only; the sealed
+`[annotation]` stage stays the evidence authority.
+
+To watch it, create `live.annotated_rollouts.v1` and bind, per rollout, both the
+declared rollout stream and its annotation sibling (`stream.annotation.stream` /
+`stream.annotation.events` from the prepare descriptor) on the one `stream` input.
+Never guess `/annotations/events`. Bundled example: `eval.craftax.gold.live_annotated.v1`.
+
+The stream is bidirectional. While a rollout runs, `annotation_manage` offers
+`annotation_control_send` (op `message` with `{type: note|judge_now|set, ...}`, `protocol.update`
+with an installed `anprev_` revision, or `stop`), `annotation_protocol_update` (install a new
+revision; with `run_id` the run's next rollouts use it; with `rollout_ids` running rollouts hot-swap,
+carrying state), and after the seal `annotation_provisional_list` (findings with their
+reconciliation: resolved | corroborated | unresolved | unsealed). Controls never reach the policy.

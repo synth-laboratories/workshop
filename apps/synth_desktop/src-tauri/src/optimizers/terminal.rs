@@ -111,6 +111,38 @@ fn kernel_work_counts(summary: &crate::optimizers::kernel::WorkSummary) -> WorkC
     }
 }
 
+fn lane_calls(lanes: &Value, name: &str) -> u64 {
+    lanes
+        .get(name)
+        .and_then(|lane| lane.get("calls"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+/// Optimizer rollouts, policy calls, proposer calls, and provider requests are
+/// four different counts. A GEPA search that scored 80 rollouts while
+/// `usage.calls` stayed 0 was billed work reported as zero calls.
+fn annotate_call_accounting(usage: &mut Value) {
+    let Some(object) = usage.as_object_mut() else {
+        return;
+    };
+    let lanes = object.get("lanes").cloned().unwrap_or(Value::Null);
+    let policy_calls = lane_calls(&lanes, "policy");
+    let proposer_calls = lane_calls(&lanes, "proposer");
+    let receipt_calls = object
+        .get("providerReceipt")
+        .and_then(|receipt| receipt.get("calls"))
+        .and_then(Value::as_u64);
+    let recorded_calls = object.get("calls").and_then(Value::as_u64).unwrap_or(0);
+    let provider_requests = receipt_calls
+        .filter(|calls| *calls > 0)
+        .or_else(|| (recorded_calls > 0).then_some(recorded_calls))
+        .unwrap_or(policy_calls.saturating_add(proposer_calls));
+    object.insert("policyCalls".into(), json!(policy_calls));
+    object.insert("proposerCalls".into(), json!(proposer_calls));
+    object.insert("providerRequests".into(), json!(provider_requests));
+}
+
 /// Usage as the manifest records it: lanes preserved, unknowns preserved.
 fn usage_value(run: &OptimizerRunRecord) -> Value {
     // The durable run row is the canonical usage accumulator. Event deltas
@@ -120,7 +152,7 @@ fn usage_value(run: &OptimizerRunRecord) -> Value {
         .get("usageLanes")
         .cloned()
         .unwrap_or(Value::Null);
-    json!({
+    let mut usage = json!({
         "costUsd": run.usage.cost_usd,
         "calls": run.usage.calls,
         "promptTokens": run.usage.prompt_tokens,
@@ -142,7 +174,9 @@ fn usage_value(run: &OptimizerRunRecord) -> Value {
             .extra
             .get("costTelemetryComplete")
             .and_then(Value::as_bool),
-    })
+    });
+    annotate_call_accounting(&mut usage);
+    usage
 }
 
 fn selection_value(run: &OptimizerRunRecord, events: &[OptimizerEventEnvelope]) -> Value {
@@ -212,6 +246,7 @@ pub(super) fn derive(
             object.insert("lanes".into(), lanes);
         }
     }
+    annotate_call_accounting(&mut usage);
     let artifact_refs: Vec<Value> = run
         .output_refs
         .iter()
@@ -378,6 +413,14 @@ struct ManifestEnvelope<'a> {
     terminal_cursor: u64,
 }
 
+pub(super) fn snapshot_status(run: &OptimizerRunRecord, manifest: &Value) -> Result<String> {
+    let envelope = validate_manifest(&run.id, manifest)?;
+    if envelope.algorithm_id != run.algorithm_id || envelope.terminal_cursor > run.cursor_seq {
+        anyhow::bail!("optimizer snapshot terminal manifest does not match the run algorithm/cursor");
+    }
+    Ok(envelope.terminal_status.to_owned())
+}
+
 fn validate_manifest<'a>(run_id: &str, manifest: &'a Value) -> Result<ManifestEnvelope<'a>> {
     let object = manifest
         .as_object()
@@ -447,25 +490,32 @@ fn populate_canonical_usage(conn: &Connection, run_id: &str, manifest: &mut Valu
     let object = manifest
         .as_object_mut()
         .context("optimizer terminal manifest must be an object")?;
-    let terminal_usage = object
-        .get_mut("usage")
-        .and_then(Value::as_object_mut)
-        .context("optimizer terminal manifest is missing typed usage")?;
-    terminal_usage.insert("costUsd".into(), json!(usage.cost_usd));
-    terminal_usage.insert("calls".into(), json!(usage.calls));
-    terminal_usage.insert("promptTokens".into(), json!(usage.prompt_tokens));
-    terminal_usage.insert("completionTokens".into(), json!(usage.completion_tokens));
-    terminal_usage.insert("rollouts".into(), json!(usage.rollouts));
-    terminal_usage.insert("wallTimeMs".into(), json!(usage.wall_time_ms));
-    terminal_usage.insert(
-        "providerReceipt".into(),
-        usage
-            .extra
-            .get("providerUsageReceipt")
-            .cloned()
-            .unwrap_or(Value::Null),
+    {
+        let terminal_usage = object
+            .get_mut("usage")
+            .and_then(Value::as_object_mut)
+            .context("optimizer terminal manifest is missing typed usage")?;
+        terminal_usage.insert("costUsd".into(), json!(usage.cost_usd));
+        terminal_usage.insert("calls".into(), json!(usage.calls));
+        terminal_usage.insert("promptTokens".into(), json!(usage.prompt_tokens));
+        terminal_usage.insert("completionTokens".into(), json!(usage.completion_tokens));
+        terminal_usage.insert("rollouts".into(), json!(usage.rollouts));
+        terminal_usage.insert("wallTimeMs".into(), json!(usage.wall_time_ms));
+        terminal_usage.insert(
+            "providerReceipt".into(),
+            usage
+                .extra
+                .get("providerUsageReceipt")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        terminal_usage.insert("completeness".into(), json!(completeness));
+    }
+    annotate_call_accounting(
+        object
+            .get_mut("usage")
+            .context("optimizer terminal manifest is missing typed usage")?,
     );
-    terminal_usage.insert("completeness".into(), json!(completeness));
     let approval = usage.extra.get("paidComputeApproval").cloned();
     if let Some(approval) = approval.as_ref() {
         validate_paid_compute_approval(approval)?;
@@ -528,7 +578,23 @@ fn usage_evidence(conn: &Connection, run_id: &str) -> Result<(u64, u64, &'static
                 terminal_markers.push(marker.to_string());
             }
         }
-        provider_reconciled |= event.event_type == "optimizer.usage.reconciled";
+        // A provider receipt exists, but it only settles the ledger when it
+        // actually carries tokens and cost. A receipt that recorded billed
+        // calls with no readable usage object marks the run
+        // `reconciliation_pending`, and must not upgrade the run to
+        // `reconciled`.
+        provider_reconciled |= event.event_type == "optimizer.usage.reconciled"
+            && event
+                .usage_delta
+                .as_ref()
+                .and_then(|delta| {
+                    delta
+                        .get("usage_completeness")
+                        .or_else(|| delta.get("usageCompleteness"))
+                        .and_then(Value::as_str)
+                })
+                .map(|marker| marker == "reconciled")
+                .unwrap_or(true);
     }
     let completeness = if provider_reconciled {
         "reconciled"

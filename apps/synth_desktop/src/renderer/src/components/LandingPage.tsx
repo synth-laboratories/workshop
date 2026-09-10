@@ -1,23 +1,19 @@
+import { runtimeStorage } from "../preferences/runtimeStorage";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { apiProviderForTarget, EXECUTION_TARGETS, isOpenRouterTargetId, LAUNCH_PICKER_TARGETS, MODEL_ACCESS_LABEL, MODEL_ACCESS_ORDER, modelAccessForTarget, TARGET_GROUP_LABEL } from "../types/landing";
 import { targetOptionForId } from "../runtime/modelCatalog";
 import type { ExecutionTargetOption, LandingState, ModelAccessKind } from "../types/landing";
+import { ManderPresence } from "./mander";
 import { SynthLogo } from "./SynthLogo";
-import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import type { LagunaPolicy } from "../bridge/types";
 import { policyLabel } from "../runtime/lagunaPolicies";
+import { ComposerLayoutHost } from "./ComposerLayout";
 import { bridges } from "../runtime/desktopBridge";
 
 type Props = {
+	showMascot?: boolean;
 	state: LandingState;
-	selectedTargetId: string;
-	onSelectTarget: (id: string) => void;
-	lagunaAdapters?: LagunaPolicy[];
-	selectedLagunaAdapterId?: string | null;
-	onSelectLagunaAdapter?: (checkpointId: string | null) => void;
 	onConfigureAccount?: () => void;
-	onConfigureModels?: () => void;
-	onResolveBilling?: () => void;
 };
 
 export function ModelPicker({
@@ -53,7 +49,7 @@ export function ModelPicker({
 	const ref = useRef<HTMLDivElement>(null);
 	const selected = targetOptionForId(selectedTargetId) ?? EXECUTION_TARGETS[0];
 	const selectedLagunaPolicy = lagunaPolicies.find((policy) =>
-		policy.modelId === selectedLagunaPolicyId || (policy.isBase && selectedLagunaPolicyId === null)
+		policy.isBase ? selectedLagunaPolicyId === null : policy.modelId === selectedLagunaPolicyId
 	);
 	const selectedLabel = selectedTargetId === "local-laguna" && selectedLagunaPolicy
 		? policyLabel(selectedLagunaPolicy)
@@ -132,10 +128,6 @@ export function ModelPicker({
 				aria-controls="model-dropdown"
 				aria-haspopup="listbox"
 			>
-				<ProviderMark
-					kind={providerMarkForTarget(selectedTargetId)}
-					className={`model-pill-logo model-pill-logo-${providerMarkForTarget(selectedTargetId)}`}
-				/>
 				<span className="model-pill-label">{selectedLabel}</span>
 				<svg className="model-pill-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden>
 					<path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
@@ -314,23 +306,24 @@ export function ModelPicker({
 }
 
 export function LandingPage({
+	showMascot = false,
 	state,
-	selectedTargetId,
-	onSelectTarget,
-	lagunaAdapters = [],
-	selectedLagunaAdapterId = null,
-	onSelectLagunaAdapter,
 	onConfigureAccount,
-	onConfigureModels,
-	onResolveBilling
 }: Props) {
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
-		() => window.localStorage.getItem("synth.accountChoiceMade") === "1"
+		() => runtimeStorage.getItem("synth.accountChoiceMade") === "1"
 	);
+    useEffect(() => {
+        const refresh = () => setAccountChoiceMade(runtimeStorage.getItem("synth.accountChoiceMade") === "1");
+        window.addEventListener("workshop:state-changed", refresh);
+        return () => window.removeEventListener("workshop:state-changed", refresh);
+    }, []);
 	// The consent ask is host-owned state, not localStorage: it shows whenever
 	// the host says a choice (under the current collection policy) is missing,
 	// and a policy bump re-asks. Until answered, telemetry stays local-only.
 	const [consentAskDue, setConsentAskDue] = useState(false);
+	const [consentSaving, setConsentSaving] = useState(false);
+	const [consentError, setConsentError] = useState<string | null>(null);
 	useEffect(() => {
 		void bridges.telemetry
 			?.getPolicy()
@@ -338,8 +331,12 @@ export function LandingPage({
 			.catch(() => setConsentAskDue(false));
 	}, []);
 	const answerConsent = (granted: boolean) => {
-		setConsentAskDue(false);
-		void bridges.telemetry?.setConsent(granted).catch(() => undefined);
+		setConsentSaving(true);
+		setConsentError(null);
+		void bridges.telemetry?.setConsent(granted)
+			.then((policy) => setConsentAskDue(policy.needsAsk))
+			.catch(() => setConsentError("Could not save your choice. Please try again."))
+			.finally(() => setConsentSaving(false));
 	};
 	return (
 		<div className="landing" data-testid="landing-page">
@@ -347,27 +344,11 @@ export function LandingPage({
 				<div className="synth-logo-wrap">
 					<SynthLogo className="synth-logo" />
 				</div>
-				<div className="landing-title-row">
-					<p className="landing-title">Start a new conversation using</p>
-					<ModelPicker
-						selectedTargetId={selectedTargetId}
-						apiKeyConfigured={state.apiKeyConfigured}
-						openrouterApiKeyConfigured={state.openrouterApiKeyConfigured}
-						codexOauthConfigured={state.codexOauthConfigured}
-						cloudBlockedReason={state.cloudBlockedReason}
-						onSelectTarget={onSelectTarget}
-						onConfigureAccount={onConfigureAccount}
-						onConfigureModels={onConfigureModels}
-							onResolveBilling={onResolveBilling}
-							lagunaPolicies={lagunaAdapters}
-							selectedLagunaPolicyId={selectedLagunaAdapterId}
-							onSelectLagunaPolicy={onSelectLagunaAdapter}
-						/>
-				</div>
+				<h1 className="landing-title">Start a new conversation with Workshop</h1>
 				{!state.apiKeyConfigured && !accountChoiceMade ? (
 					<div className="quick-actions" data-testid="first-run-account-choice">
 						<button type="button" className="quick-card" onClick={() => {
-							window.localStorage.setItem("synth.accountChoiceMade", "1");
+							runtimeStorage.setItem("synth.accountChoiceMade", "1");
 							setAccountChoiceMade(true);
 						}}>
 							<span><strong>Continue locally</strong><small>No account required</small></span>
@@ -380,14 +361,16 @@ export function LandingPage({
 				{consentAskDue ? (
 					<div className="landing-consent" data-testid="telemetry-consent-ask">
 						<span>
-							Share anonymous usage stats? Counts and outcomes only — never prompts,
-							files, or keys. Change anytime in Settings → Privacy.
+							Share usage stats? Counts and outcomes only — never prompts,
+							files, or keys. These may be associated with your signed-in account.
+							Change anytime in Settings → Privacy.
 						</span>
 						<div className="landing-consent-actions">
 							<button
 								type="button"
 								className="settings-secondary-btn"
 								data-testid="telemetry-consent-allow"
+								disabled={consentSaving}
 								onClick={() => answerConsent(true)}
 							>
 								Allow
@@ -396,14 +379,18 @@ export function LandingPage({
 								type="button"
 								className="settings-secondary-btn"
 								data-testid="telemetry-consent-decline"
+								disabled={consentSaving}
 								onClick={() => answerConsent(false)}
 							>
 								No thanks
 							</button>
+							{consentError ? <span role="alert">{consentError}</span> : null}
 						</div>
 					</div>
 				) : null}
 			</div>
+			{showMascot ? <ManderPresence chat={{id: "landing", title: "New conversation", messages: []}} running={false} /> : null}
+			<ComposerLayoutHost />
 		</div>
 	);
 }

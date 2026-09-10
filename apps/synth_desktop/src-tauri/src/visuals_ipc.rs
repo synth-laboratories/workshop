@@ -16,28 +16,42 @@ use crate::reports::{
     ExperimentRecordUpsert, ReportAttachTrace, ReportCreateRequest, ReportQuery,
     ReportUpdateRequest, ReportVisibilityRequestCreate, ResearchLogAppend,
 };
-use crate::visuals::stream_receipt::{StreamReceipt, StreamTransportState};
 use crate::visuals::{
     assert_live_eval_slot, classify_live_eval_family, live_eval_bind_metadata,
     require_visualsbench_start_policy, VisualAnnotationCreate, VisualCreateRequest, VisualQuery,
     VisualStatus, VisualUpdateRequest, LIVE_EVAL_SLOT,
 };
-use crate::visuals::{TemplateMeta, TemplateObservationContract, TemplateReadinessContract};
+use crate::visuals::{TemplateMeta, TemplateObservationContract};
 use base64::Engine;
 
 const MAX_SCRIPTED_ROLLOUTS: u64 = 10;
-const BASE_AUTHORING_CHECKS: [&str; 6] = [
-    "rendered",
-    "noOverflow",
-    "primarySurfaceVisible",
-    "temporalControls",
-    "traceInspector",
-    "realEvidence",
-];
+const BASE_AUTHORING_CHECKS: [&str; 3] = ["rendered", "noOverflow", "primarySurfaceVisible"];
+const EVIDENCE_AUTHORING_CHECKS: [&str; 3] = ["temporalControls", "traceInspector", "realEvidence"];
 
 fn required_authoring_checks(template: &TemplateMeta) -> Vec<&'static str> {
     let mut checks = BASE_AUTHORING_CHECKS.to_vec();
     checks.push("screenshotInspected");
+    if let Some(contract) = template.observation_contract.as_ref() {
+        match contract.readiness.authoring_affordances.as_ref() {
+            // Declared affordances narrow the evidence checks to the ones the
+            // surface can actually satisfy. Template loading parses them into
+            // a closed enum, so an unknown name cannot silently weaken this gate.
+            Some(declared) if !declared.is_empty() => checks.extend(
+                EVIDENCE_AUTHORING_CHECKS
+                    .iter()
+                    .filter(|check| {
+                        declared
+                            .iter()
+                            .any(|affordance| affordance.check_name() == **check)
+                    })
+                    .copied(),
+            ),
+            // Empty declarations are rejected while loading a manifest. Keep
+            // programmatically constructed values strict as a second line of
+            // defence rather than allowing an empty list to disable evidence.
+            Some(_) | None => checks.extend(EVIDENCE_AUTHORING_CHECKS),
+        }
+    }
     if template.id.starts_with("diagram.") {
         checks.push("noTextCollisions");
         checks.push("focalDensity");
@@ -59,8 +73,18 @@ struct VisualCaptureObservationReceipt {
     visual_id: String,
     revision: i64,
     screenshot_path: String,
+    screenshot_sha256: String,
+    viewport: VisualCaptureViewport,
     capture_time: String,
+    certification_identity: Value,
     observation: Option<RenderedVisualObservation>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct VisualCaptureViewport {
+    width: u64,
+    height: u64,
 }
 
 fn capture_observation_receipt(screenshot: &str) -> Result<VisualCaptureObservationReceipt> {
@@ -73,12 +97,68 @@ fn capture_observation_receipt(screenshot: &str) -> Result<VisualCaptureObservat
             )
         })?)
         .context("visual capture observation receipt is invalid")?;
-    if receipt.schema_version != "synth.visual-capture-observation.v1"
+    if receipt.schema_version != "synth.visual-capture-observation.v2"
         || receipt.screenshot_path != screenshot
     {
         anyhow::bail!("visual capture observation receipt does not match screenshot");
     }
+    let bytes = fs::read(screenshot).context("read visual review screenshot")?;
+    let actual = format!("sha256:{:x}", sha2::Sha256::digest(bytes));
+    if receipt.screenshot_sha256 != actual {
+        anyhow::bail!("visual review screenshot bytes do not match their capture receipt");
+    }
     Ok(receipt)
+}
+
+fn validate_review_viewport(
+    receipt: &VisualCaptureObservationReceipt,
+    width: u64,
+    height: u64,
+) -> Result<()> {
+    if receipt.viewport.width != width || receipt.viewport.height != height {
+        anyhow::bail!(
+            "review viewport {width}x{height} does not match the authoritative capture viewport {}x{}",
+            receipt.viewport.width,
+            receipt.viewport.height
+        );
+    }
+    Ok(())
+}
+
+fn validate_certification_build_identity(identity: &Value) -> Result<()> {
+    let source = identity
+        .get("sourceRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "unknown")
+        .context("visual readiness requires a known source revision")?;
+    let build = identity
+        .get("buildRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "unknown")
+        .context("visual readiness requires a known build revision")?;
+    if source != build {
+        anyhow::bail!(
+            "visual readiness requires source and build revisions to match; source is {source}, build is {build}"
+        );
+    }
+    if source.contains("-dirty") || build.contains("-dirty") {
+        anyhow::bail!(
+            "visual readiness requires a clean committed renderer build; current revision is {build}"
+        );
+    }
+    let executable = identity
+        .get("executableDigest")
+        .and_then(Value::as_str)
+        .context("visual readiness requires the running executable digest")?;
+    if executable.len() != 71
+        || !executable.starts_with("sha256:")
+        || !executable[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        anyhow::bail!("visual readiness requires a valid running executable digest");
+    }
+    Ok(())
 }
 
 /// Rendered transport states that can carry evidence.
@@ -153,177 +233,6 @@ fn validate_readiness_observation(
     Ok(())
 }
 
-/// The host never folded this visual's streams at all.
-///
-/// Shares the code `capture_review` already returns for "the pane published no
-/// rendered observation", and for the same reason: both mean the visual was
-/// never actually shown in Desktop, and both are answered by showing it and
-/// retrying rather than by changing the visual.
-const STREAM_RECEIPT_NOT_OBSERVED: &str = "visual_observation_unavailable";
-/// The transport never settled: still `declared`, `replaying`, `idle`, or last
-/// seen failing.
-const STREAM_RECEIPT_UNSETTLED: &str = "visual_stream_unsettled";
-/// One envelope identity was delivered twice carrying two different bodies.
-const STREAM_RECEIPT_CONFLICT: &str = "visual_stream_conflict";
-/// The transport settled and carried nothing but control envelopes.
-const STREAM_RECEIPT_NO_EVIDENCE: &str = "visual_stream_no_evidence";
-
-/// The receipt's transport state, spelled the way the wire spells it.
-///
-/// `StreamTransportState::as_str` is private to the receipt module and this
-/// gate is not a reason to widen it; the enum's own `Serialize` is already the
-/// single authority on those six names.
-fn transport_state_name(state: StreamTransportState) -> String {
-    serde_json::to_value(state)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// Decide readiness from what the *host* saw the transport do, and return the
-/// certification record when it passes.
-///
-/// The rendered observation next door says what the pane drew; this says what
-/// arrived. They fail in different ways and a visual can look completely
-/// plausible while failing only this one: ten streams declared and none opened,
-/// or opened fine and carrying nothing but heartbeats, both render as a
-/// believable empty pane.
-///
-/// Every refusal is named. A gate that answers "not ready" tells an agent to
-/// try the same thing again; a gate that answers `visual_stream_unsettled`
-/// tells it the stream never started, which is a different repair from
-/// `stream_replay_gap`.
-fn stream_receipt_gate(
-    receipt: &StreamReceipt,
-    readiness: Option<&TemplateReadinessContract>,
-) -> Result<Value> {
-    let state = transport_state_name(receipt.state);
-    let minimum_envelopes = readiness
-        .map(|readiness| readiness.minimum_transport_envelope_count)
-        .unwrap_or(0);
-    let identity = json!({
-        "visualId": receipt.visual_id,
-        "revision": receipt.revision,
-        "state": state,
-    });
-    if !receipt.observed {
-        return Err(anyhow::Error::new(
-            crate::error::StructuredFailure::new(
-                STREAM_RECEIPT_NOT_OBSERVED,
-                format!(
-                    "the host recorded no stream poll for {} at revision {}",
-                    receipt.visual_id, receipt.revision
-                ),
-                "This visual declares live streams and Workshop never folded one for this revision: a browser preview polls with raw fetch and never reaches the host seam. Show the visual in Desktop, let the pane fold its streams, then mark it ready again.",
-            )
-            .retryable(true)
-            .with_details(identity),
-        ));
-    }
-    if !READY_TRANSPORT_STATES.contains(&state.as_str()) {
-        return Err(anyhow::Error::new(
-            crate::error::StructuredFailure::new(
-                STREAM_RECEIPT_UNSETTLED,
-                format!(
-                    "the host's stream receipt rests in {state} after {}ms; a ready visual is one of {}",
-                    receipt.time_in_state_ms,
-                    READY_TRANSPORT_STATES.join(", ")
-                ),
-                "The declared streams never settled. Confirm the producer is running and the declared poll URLs answer, then re-show the visual and let it reach live or terminal before marking it ready.",
-            )
-            .retryable(true)
-            .with_details(json!({
-                "visualId": receipt.visual_id,
-                "revision": receipt.revision,
-                "state": state,
-                "timeInStateMs": receipt.time_in_state_ms,
-                "everLeftDeclared": receipt.ever_left_declared,
-                "declaredStreamCount": receipt.declared_stream_count,
-                "respondingStreamCount": receipt.responding_stream_count,
-                "streamsMissingTransport": receipt.streams_missing_transport,
-            })),
-        ));
-    }
-    if !receipt.gaps.is_empty() {
-        return Err(anyhow::Error::new(
-            crate::error::StructuredFailure::new(
-                crate::diagnostics::codes::STREAM_REPLAY_GAP,
-                format!(
-                    "the host's stream receipt has {} sequence gap(s) in the replayed history",
-                    receipt.gaps.len()
-                ),
-                crate::diagnostics::codes::remediation(
-                    crate::diagnostics::codes::STREAM_REPLAY_GAP,
-                )
-                .unwrap_or(
-                    "Reload the stream from a durable snapshot; a partial history is not evidence.",
-                ),
-            )
-            .retryable(true)
-            .with_details(json!({
-                "visualId": receipt.visual_id,
-                "revision": receipt.revision,
-                "gaps": receipt.gaps,
-                "trackingTruncated": receipt.tracking_truncated,
-            })),
-        ));
-    }
-    if !receipt.conflicts.is_empty() {
-        return Err(anyhow::Error::new(
-            crate::error::StructuredFailure::new(
-                STREAM_RECEIPT_CONFLICT,
-                format!(
-                    "the host's stream receipt has {} envelope identit(ies) delivered twice with different bodies",
-                    receipt.conflicts.len()
-                ),
-                "The same envelope arrived twice carrying two different bodies, so the pane's fold depends on which copy it kept. Fix the producer's envelope identity or sequencing; a visual cannot be certified over a history that contradicts itself.",
-            )
-            .retryable(false)
-            .with_details(json!({
-                "visualId": receipt.visual_id,
-                "revision": receipt.revision,
-                "conflicts": receipt.conflicts,
-                "trackingTruncated": receipt.tracking_truncated,
-            })),
-        ));
-    }
-    if receipt.non_control_envelope_count < minimum_envelopes {
-        return Err(anyhow::Error::new(
-            crate::error::StructuredFailure::new(
-                STREAM_RECEIPT_NO_EVIDENCE,
-                format!(
-                    "the transport delivered {} non-control envelope(s) of the {minimum_envelopes} this template requires, out of {} total",
-                    receipt.non_control_envelope_count, receipt.envelope_count
-                ),
-                "The streams opened and carried only heartbeats, pings and subscription notices, which renders as a plausible empty pane. Run the producer until it emits real events, then re-show and mark ready.",
-            )
-            .retryable(true)
-            .with_details(json!({
-                "visualId": receipt.visual_id,
-                "revision": receipt.revision,
-                "nonControlEnvelopeCount": receipt.non_control_envelope_count,
-                "minimumTransportEnvelopeCount": minimum_envelopes,
-                "envelopesByKind": receipt.envelopes_by_kind,
-            })),
-        ));
-    }
-    Ok(json!({
-        "schemaVersion": receipt.schema_version,
-        "state": state,
-        "observed": true,
-        "everLeftDeclared": receipt.ever_left_declared,
-        "declaredStreamCount": receipt.declared_stream_count,
-        "respondingStreamCount": receipt.responding_stream_count,
-        "closedStreamCount": receipt.closed_stream_count,
-        "envelopeCount": receipt.envelope_count,
-        "nonControlEnvelopeCount": receipt.non_control_envelope_count,
-        "minimumTransportEnvelopeCount": minimum_envelopes,
-        "trackingTruncated": receipt.tracking_truncated,
-        "firstObservedAt": receipt.first_observed_at,
-        "lastObservedAt": receipt.last_observed_at,
-    }))
-}
-
 /// Decide readiness from the *latest* review at each viewport width, not from
 /// every review ever recorded against the revision.
 ///
@@ -344,6 +253,7 @@ fn certification_receipts(
     required_checks: &[&'static str],
     contract: Option<&TemplateObservationContract>,
     bindings_digest: Option<&str>,
+    certification_identity: &Value,
 ) -> Result<Vec<Value>> {
     let mut latest_by_width: BTreeMap<u64, &Value> = BTreeMap::new();
     for review in current_reviews {
@@ -357,6 +267,15 @@ fn certification_receipts(
     }
     let mut receipts = Vec::new();
     for (width, review) in &latest_by_width {
+        if review.get("certificationIdentity") != Some(certification_identity) {
+            anyhow::bail!(
+                "the latest review at width {width} certifies different visual bytes; recapture this width"
+            );
+        }
+        let screenshot_sha256 = review
+            .get("screenshotSha256")
+            .and_then(Value::as_str)
+            .context("visual review is missing its immutable screenshot digest")?;
         for check in required_checks {
             if review
                 .pointer(&format!("/checks/{check}"))
@@ -374,6 +293,8 @@ fn certification_receipts(
             "viewportWidth": width,
             "viewportHeight": review.pointer("/viewport/height").cloned().unwrap_or(Value::Null),
             "screenshotPath": review.get("screenshotPath").cloned().unwrap_or(Value::Null),
+            "screenshotSha256": screenshot_sha256,
+            "certificationIdentity": certification_identity,
             "captureTime": review.get("captureTime").cloned().unwrap_or(Value::Null),
             "reviewedAt": review.get("reviewedAt").cloned().unwrap_or(Value::Null),
         });
@@ -417,9 +338,9 @@ use std::{
     io::Read,
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
-use tauri::{AppHandle, LogicalSize, Manager, Size};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, Size};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -466,17 +387,11 @@ pub fn record_rendered_observation(observation: RenderedVisualObservation) -> Re
     {
         anyhow::bail!("rendered visual observation requires bindings and transport authority");
     }
-    // One store holds everything this host observed about a visual: what the
-    // pane reported, what the poll seam saw, and the envelope bodies the seal
-    // replays. Three responsibilities, one home — see
-    // `visuals::stream_receipt`. This is the one of the three the host cannot
-    // observe for itself, which is why it is still reported here and kept
-    // distinguishable there.
     crate::visuals::stream_receipt::record_rendered(observation);
     Ok(())
 }
 
-fn rendered_observation(visual_id: &str) -> Result<RenderedVisualObservation> {
+pub(crate) fn rendered_observation(visual_id: &str) -> Result<RenderedVisualObservation> {
     crate::visuals::stream_receipt::rendered(visual_id)
         .with_context(|| format!("no rendered observation is available for visual {visual_id}"))
 }
@@ -791,6 +706,9 @@ async fn dispatch_request(
         request.body
     };
     let method = request.method.as_str();
+    if method == "POST" && path.starts_with("/v1/workshop/") {
+        return crate::adapters::workshop::dispatch(core, app, path, json_body).await;
+    }
     if method == "GET" && path.starts_with("/v1/review-observations/") {
         let visual_id = path.trim_start_matches("/v1/review-observations/");
         if visual_id.is_empty() || visual_id.contains('/') {
@@ -818,8 +736,31 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/review-window/capture" {
         return capture_review_window(app, &json_body).await;
     }
+    if method=="POST" && path.starts_with("/v1/visuals/") && path.ends_with("/engine") && json_body["operation"]=="capture.pixels" {
+        let id=path.trim_start_matches("/v1/visuals/").trim_end_matches("/engine");
+        if id.is_empty()||id.contains('/'){anyhow::bail!("invalid capture visual id");}
+        return capture_visual_session(app,id,&json_body).await;
+    }
+    if method == "POST" && path == "/v1/capture" {
+        return capture_surface(app, &json_body).await;
+    }
+    if method == "POST" && path == "/v1/jesterky/settings" {
+        return Ok(serde_json::to_value(crate::plugins::jesterky::analysis_settings(None)?)?);
+    }
+    if method == "POST" && path == "/v1/jesterky/prepare" {
+        let object = json_body.as_object().context("Jesterky preparation must be an object")?;
+        for key in object.keys() { if !["snapshot_id","result_ids","annotation_scope","sessionRef","session_id"].contains(&key.as_str()) {anyhow::bail!("unknown Jesterky preparation argument {key}");} }
+        let id=json_body["snapshot_id"].as_str().context("snapshot_id required")?;
+        let ids:Vec<String>=serde_json::from_value(json_body["result_ids"].clone()).context("result_ids required")?;
+        let snapshot=core.data().query_snapshot(id.to_string()).await?;
+        let scope = json_body.get("annotation_scope").map(|value| serde_json::from_value(value.clone())).transpose()?;
+        return crate::plugins::jesterky::prepare(&snapshot,&ids,scope);
+    }
     if path.starts_with("/v1/plugins") {
         return dispatch_plugins(method, path, json_body, core, app).await;
+    }
+    if path.starts_with("/v1/display/plugins") {
+        return dispatch_display_plugins(method, path, json_body, app);
     }
     if path.starts_with("/v1/computer-use") {
         return dispatch_computer_use(method, path, json_body, core, app).await;
@@ -836,11 +777,24 @@ async fn dispatch_request(
     if path.starts_with("/v1/experiments") {
         return dispatch_experiments(method, path, json_body, core).await;
     }
+    if path.starts_with("/v1/research-log") {
+        return dispatch_research_log(method, path, json_body, core).await;
+    }
     if path.starts_with("/v1/traces") {
         return dispatch_traces(method, path, json_body, core).await;
     }
-    if path.starts_with("/v1/documents") {
+    if path == "/v1/documents" || path.starts_with("/v1/documents/") {
         return crate::documents::ipc::dispatch_documents(method, path, json_body, core).await;
+    }
+    if path.starts_with("/v1/analysis") {
+        return dispatch_analysis(method, path, json_body, core).await;
+    }
+    if path.starts_with("/v1/annotations") {
+        return crate::annotations_ipc::dispatch_annotations(method, path, json_body, core, app)
+            .await;
+    }
+    if path.starts_with("/v1/human-annotations") {
+        return dispatch_human_annotations(method, path, json_body, core, app).await;
     }
     if path.starts_with("/v1/diagnostics") {
         return dispatch_diagnostics(method, path, json_body, core).await;
@@ -852,9 +806,185 @@ async fn dispatch_request(
         return dispatch_container_restart(path, json_body, core, app).await;
     }
     if method == "POST" && path == "/v1/visuals/templates/import" {
-        return dispatch_template_import(json_body, core, app).await;
+        let source = json_body.get("sourcePath").or_else(|| json_body.get("source_path"))
+            .and_then(Value::as_str).context("source_path is required")?;
+        let session = json_body.get("sessionRef").and_then(Value::as_str);
+        return Ok(json!({"template": core.visuals().import_template_approved(app, session, source).await?}));
     }
     dispatch(method, path, json_body, core).await
+}
+
+async fn dispatch_human_annotations(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
+    use crate::human_annotations::models::{
+        HumanAnnotationCampaignActionRequest, HumanAnnotationCampaignAdjudicateRequest,
+        HumanAnnotationCampaignCreateRequest, HumanAnnotationCancelRequest,
+        HumanAnnotationCreateRequest, HumanAnnotationExportRequest, HumanAnnotationListQuery,
+        HumanAnnotationPreviewRequest, HumanAnnotationSupersedeRequest,
+    };
+    let service = crate::human_annotations::from_core(core);
+    match (method, path) {
+        ("POST", "/v1/human-annotations/create") => Ok(serde_json::to_value(
+            service
+                .create(serde_json::from_value::<HumanAnnotationCreateRequest>(
+                    body,
+                )?)
+                .await?,
+        )?),
+        ("POST", "/v1/human-annotations/preview") => Ok(serde_json::to_value(
+            service
+                .preview(serde_json::from_value::<HumanAnnotationPreviewRequest>(
+                    body,
+                )?)
+                .await?,
+        )?),
+        ("POST", "/v1/human-annotations/show") => {
+            let session_id = body
+                .get("sessionId")
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .context("sessionId required")?
+                .to_owned();
+            let view = service.open(session_id.clone()).await?;
+            app.emit(
+                "human-annotation:show",
+                serde_json::json!({"sessionId":session_id}),
+            )?;
+            Ok(serde_json::to_value(view)?)
+        }
+        ("POST", "/v1/human-annotations/get") => {
+            if let Some(result_id) = body
+                .get("resultId")
+                .or_else(|| body.get("result_id"))
+                .and_then(Value::as_str)
+            {
+                return service.sealed_result(result_id.to_owned()).await;
+            }
+            let id = body
+                .get("taskId")
+                .or_else(|| body.get("task_id"))
+                .or_else(|| body.get("sessionId"))
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .context("taskId, sessionId, or resultId required")?
+                .to_owned();
+            Ok(serde_json::to_value(service.status(id).await?)?)
+        }
+        ("POST", "/v1/human-annotations/list") => Ok(Value::Array(
+            service
+                .list(serde_json::from_value::<HumanAnnotationListQuery>(body)?)
+                .await?,
+        )),
+        ("POST", "/v1/human-annotations/cancel") => Ok(serde_json::to_value(
+            service
+                .cancel(serde_json::from_value::<HumanAnnotationCancelRequest>(
+                    body,
+                )?)
+                .await?,
+        )?),
+        ("POST", "/v1/human-annotations/export") => Ok(serde_json::to_value(
+            service
+                .export(serde_json::from_value::<HumanAnnotationExportRequest>(
+                    body,
+                )?)
+                .await?,
+        )?),
+        ("POST", "/v1/human-annotations/supersede") => {
+            let task = service
+                .supersede(serde_json::from_value::<HumanAnnotationSupersedeRequest>(
+                    body,
+                )?)
+                .await?;
+            app.emit(
+                "human-annotation:show",
+                serde_json::json!({"sessionId":task.session_id}),
+            )?;
+            Ok(serde_json::to_value(task)?)
+        }
+        ("POST", "/v1/human-annotations/campaign/create") => {
+            service
+                .campaign_create(serde_json::from_value::<
+                    HumanAnnotationCampaignCreateRequest,
+                >(body)?)
+                .await
+        }
+        ("POST", "/v1/human-annotations/campaign/status") => {
+            let id = body
+                .get("campaignId")
+                .and_then(Value::as_str)
+                .context("campaignId required")?;
+            service.campaign_status(id.to_owned()).await
+        }
+        ("POST", "/v1/human-annotations/campaign/close") => {
+            service
+                .campaign_close(serde_json::from_value::<
+                    HumanAnnotationCampaignActionRequest,
+                >(body)?)
+                .await
+        }
+        ("POST", "/v1/human-annotations/campaign/adjudicate") => {
+            service
+                .campaign_adjudicate(serde_json::from_value::<
+                    HumanAnnotationCampaignAdjudicateRequest,
+                >(body)?)
+                .await
+        }
+        _ => anyhow::bail!("unsupported human annotation IPC route {method} {path}"),
+    }
+}
+
+fn dispatch_display_plugins(
+    method: &str,
+    path: &str,
+    body: Value,
+    app: &AppHandle,
+) -> Result<Value> {
+    const ALLOWED: [&str; 9] = [
+        "jesterky",
+        "environment-qa",
+        "visuals",
+        "reports",
+        "experiments",
+        "optimizers",
+        "inventory",
+        "inference",
+        "computer-use",
+    ];
+    if method == "GET" && path == "/v1/display/plugins" {
+        return Ok(json!({"pluginIds": ALLOWED}));
+    }
+    if method != "POST" || path != "/v1/display/plugins/visibility" {
+        anyhow::bail!("unsupported display IPC route {method} {path}");
+    }
+    let ids = body
+        .get("visiblePluginIds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("visiblePluginIds array required"))?;
+    let mut visible = Vec::new();
+    for value in ids {
+        let id = value
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("plugin ids must be strings"))?;
+        if !ALLOWED.contains(&id) {
+            anyhow::bail!("unknown display plugin `{id}`");
+        }
+        if !visible.iter().any(|current| current == id) {
+            visible.push(id.to_string());
+        }
+    }
+    let core = app.state::<Arc<CoreRuntime>>();
+    let current = crate::domains::desktop_state::read(&core)?.entries.remove("synth.preferences.v1").context("desktop preferences missing")?;
+    let mut preferences: Value = serde_json::from_str(current.value.as_deref().context("desktop preferences missing")?)?;
+    preferences["navigation"]["visiblePluginIds"] = json!(visible);
+    let committed = crate::domains::desktop_state::write(&core, crate::domains::desktop_state::Write {
+        key: "synth.preferences.v1".into(), value: Some(preferences.to_string()), expected_revision: current.revision,
+    }, true)?;
+    Ok(json!({"visiblePluginIds": visible, "revision": committed.revision, "committed": true}))
 }
 
 fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
@@ -906,6 +1036,25 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
     }))
 }
 
+const DESKTOP_WINDOW_MIN_WIDTH: f64 = 960.0;
+const DESKTOP_WINDOW_MIN_HEIGHT: f64 = 640.0;
+const REVIEW_WINDOW_MIN_WIDTH: f64 = 320.0;
+const REVIEW_WINDOW_MIN_HEIGHT: f64 = 400.0;
+
+fn review_capture_requires_relaxed_minimum(width: f64, height: f64) -> bool {
+    width < DESKTOP_WINDOW_MIN_WIDTH || height < DESKTOP_WINDOW_MIN_HEIGHT
+}
+
+#[cfg(target_os = "macos")]
+fn set_review_window_minimum(app: &AppHandle, width: f64, height: f64) -> Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .context("review capture requires the main Desktop window")?;
+    window
+        .set_min_size(Some(Size::Logical(LogicalSize::new(width, height))))
+        .context("set review window minimum")
+}
+
 /// How long the renderer gets to relayout at the review viewport before the
 /// snapshot. Carried over from the previous capture pipeline, where the helper
 /// slept between resize and `screencapture` for the same reason.
@@ -913,7 +1062,30 @@ const REVIEW_CAPTURE_SETTLE: std::time::Duration = std::time::Duration::from_sec
 
 /// The whole snapshot round trip, resize excluded. Bounds the window a wedged
 /// WebKit could hold the resized viewport, and the IPC route with it.
+/// First snapshot attempt. `setAfterScreenUpdates(true)` waits for the renderer
+/// to commit a frame, so this budget is really "how long may a repaint take",
+/// not how long the encode takes.
 const REVIEW_CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Second attempt, after the first has already forced layout and paint.
+///
+/// A terminal SFT surface -- 2917 events, checkpoint curves, a rollout ledger --
+/// missed the 10s budget on its first frame, and the run's most important
+/// capture was lost with nothing to retry it. The cheapest fix is to ask twice:
+/// the first attempt pays for layout, the second usually returns immediately.
+/// A longer single timeout would make every genuinely dead webview wait twice
+/// as long before saying so.
+const REVIEW_CAPTURE_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+
+/// Resizing, routing, snapshotting, and restoring all mutate the one main
+/// WebView. Concurrent requests otherwise photograph whichever request wrote
+/// the viewport and route last, then race to restore two different geometries.
+/// Keep the lock in the long-lived Desktop process (not the short-lived MCP
+/// adapter) so every capture caller shares it.
+#[cfg(target_os = "macos")]
+fn capture_pipeline_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 /// Tell the React shell to make one selected visual the only visible surface
 /// while a review image is taken. This is deliberately an ephemeral renderer
@@ -939,8 +1111,23 @@ fn set_review_capture_mode(app: &AppHandle, visual_id: &str, active: bool) -> Re
 /// This acknowledgement closes the remaining cold-start race: React may still
 /// be mounting the requested visual when that delay expires.
 #[cfg(target_os = "macos")]
-async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Result<()> {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Result<bool> {
+    // Three seconds was enough for a warm app and not for a cold one. On a
+    // freshly launched instance the first heavy template -- a trace workstation
+    // or an optimizer workspace -- had not mounted before the deadline, so the
+    // wait gave up and the capture proceeded with the visual still closed.
+    //
+    // Waiting longer is safe now that a scope mismatch is an error: the loop
+    // still returns the instant the renderer acknowledges, so a surface that is
+    // already open pays nothing, and a surface that never opens fails loudly at
+    // the end rather than yielding a picture of whatever was on screen.
+    //
+    // Eight seconds, not twenty. The visuals IPC is single-threaded, so this
+    // wait holds it: at twenty seconds a run of failing captures made every
+    // other call on the socket return EAGAIN, turning one broken capture into
+    // an unusable control plane. Eight covers a cold mount with room to spare
+    // and bounds what one bad request can cost everything else.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
     loop {
         let window = app
             .get_webview_window("main")
@@ -966,15 +1153,16 @@ async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Re
             tokio::time::timeout(std::time::Duration::from_millis(250), receiver).await
         {
             if value.contains(visual_id) {
-                return Ok(());
+                return Ok(true);
             }
         }
         if tokio::time::Instant::now() >= deadline {
             // Some already-focused routes do not rerun their React effect when
             // the capture request repeats. The conservative settle window has
             // elapsed; capture instead of rejecting a valid visual solely for
-            // lack of a duplicate acknowledgement.
-            return Ok(());
+            // lack of a duplicate acknowledgement -- but report that nothing
+            // acknowledged, so the caller can check the surface another way.
+            return Ok(false);
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
@@ -992,114 +1180,707 @@ fn reset_review_capture_scroll(app: &AppHandle) -> Result<()> {
         .context("reset review capture scroll position")
 }
 
-/// Resize the main window, snapshot its own webview, restore — one call.
-///
-/// The snapshot is the app photographing its own WKWebView surface, so this
-/// needs no Screen Recording TCC grant, no window-identity resolution, and no
-/// visibility: it captures correctly while occluded or backgrounded. Holding
-/// resize and restore on this side also means a helper that dies mid-capture
-/// can no longer strand the user's window at the review size.
+/// The certified review capture: `capture_surface` with the visual scope and a
+/// required viewport. Keeping it a caller rather than a second implementation
+/// is what stops the review path and the agent-facing one from drifting.
 #[cfg(target_os = "macos")]
 async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
-    let output = body
-        .get("outputPath")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .context("review capture requires outputPath")?;
-    let output = PathBuf::from(output);
-    if !output.is_absolute() {
-        anyhow::bail!("review capture outputPath must be absolute");
-    }
-    let root = VISUALS_DATA_ROOT
-        .get()
-        .context("visuals IPC data root is not initialized")?;
-    // The caller names the file; this side refuses to write outside its own
-    // data root. Canonicalize both ends so `..` segments cannot slip past a
-    // prefix check.
-    let parent = output
-        .parent()
-        .context("review capture outputPath requires a parent directory")?;
-    fs::create_dir_all(parent)?;
-    let canonical_root = fs::canonicalize(root).context("resolve visuals data root")?;
-    let canonical_parent =
-        fs::canonicalize(parent).context("resolve review capture output directory")?;
-    if !canonical_parent.starts_with(&canonical_root) {
-        anyhow::bail!(
-            "review capture outputPath must stay under the visuals data root {}",
-            canonical_root.display()
-        );
-    }
     let visual_id = body
         .get("visualId")
         .or_else(|| body.get("visual_id"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .context("review capture requires visualId")?;
-    // Enter review mode before resizing so React has the entire settle window
-    // to select the requested visual and lay out its primary surface.
-    set_review_capture_mode(app, visual_id, true)?;
-    let resize = match resize_review_window(app, body) {
-        Ok(resize) => resize,
+        .context("review capture requires visualId")?
+        .to_string();
+    // A review is always taken at an explicit breakpoint, so unlike a general
+    // capture it refuses to fall back to the window's current size.
+    body.get("width")
+        .and_then(Value::as_f64)
+        .context("review window width is required")?;
+    body.get("height")
+        .and_then(Value::as_f64)
+        .context("review window height is required")?;
+    let mut request = body.clone();
+    request["scope"] = json!("visual");
+    request["target"] = json!(visual_id);
+    capture_surface(app, &request).await
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn capture_review_window(_app: &AppHandle, _body: &Value) -> Result<Value> {
+    anyhow::bail!("UnsupportedCapturePlatform: host webview snapshot requires macOS")
+}
+
+/* ── Surface capture ─────────────────────────────────────────────────────────
+ *
+ * One pipeline behind every screenshot the host takes of itself.
+ *
+ * `capture_review_window` grew for a single job: photograph one visual, in
+ * isolation, at a review viewport. Everything it learned on the way — resize
+ * and restore on this side of the IPC so a dying helper cannot strand the
+ * user's window, wait for a renderer acknowledgement rather than a fixed
+ * sleep, snapshot the app's own WKWebView so no Screen Recording grant and no
+ * window visibility are required — applies just as well to photographing a
+ * plugin page or the whole app. It was only the *subject* that was hard-wired.
+ *
+ * So the subject became a parameter. `CaptureScope` says what to photograph;
+ * the orchestration below is shared, and `capture_review_window` is now a thin
+ * caller of it so the certified review path and the new agent-facing one
+ * cannot drift.
+ */
+
+/// What a capture is a picture of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CaptureScope {
+    /// The app exactly as it stands: real chrome, current route, current
+    /// scroll. The default subject for "what does Workshop look like now".
+    App,
+    /// One plugin destination, with the app's chrome intact around it.
+    Plugin(String),
+    /// One visual, isolated from the surrounding chrome. The review subject.
+    Visual(String),
+    /// One element, addressed by `data-testid`, cropped out of an app capture.
+    Element(String),
+}
+
+/// Plugin destinations the renderer can be routed to. Mirrors the `ALLOWED`
+/// list in `dispatch_display_plugins`; a capture must not be able to name a
+/// destination the display contract does not admit.
+const CAPTURE_PLUGINS: [&str; 7] = [
+    "visuals",
+    "reports",
+    "experiments",
+    "optimizers",
+    "inventory",
+    "inference",
+    "computer-use",
+];
+
+impl CaptureScope {
+    fn parse(scope: &str, target: Option<&str>) -> Result<Self> {
+        let target = target.map(str::trim).filter(|value| !value.is_empty());
+        match scope {
+            "app" => Ok(Self::App),
+            "plugin" => {
+                let id = target.context("capture scope `plugin` requires a target plugin id")?;
+                if !CAPTURE_PLUGINS.contains(&id) {
+                    anyhow::bail!(
+                        "unknown capture plugin `{id}`; expected one of {}",
+                        CAPTURE_PLUGINS.join(", ")
+                    );
+                }
+                Ok(Self::Plugin(id.to_string()))
+            }
+            "visual" => Ok(Self::Visual(
+                target
+                    .context("capture scope `visual` requires a target visual id")?
+                    .to_string(),
+            )),
+            "element" => Ok(Self::Element(
+                target
+                    .context("capture scope `element` requires a target data-testid")?
+                    .to_string(),
+            )),
+            other => anyhow::bail!(
+                "unknown capture scope `{other}`; expected app, plugin, visual, or element"
+            ),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::App => "app",
+            Self::Plugin(_) => "plugin",
+            Self::Visual(_) => "visual",
+            Self::Element(_) => "element",
+        }
+    }
+
+    fn target(&self) -> Option<&str> {
+        match self {
+            Self::App => None,
+            Self::Plugin(id) | Self::Visual(id) | Self::Element(id) => Some(id),
+        }
+    }
+
+    /// Scroll is app state everywhere except a review, where the subject is the
+    /// visual's own top-of-surface and a carried-over scroll offset is noise.
+    fn resets_scroll(&self) -> bool {
+        matches!(self, Self::Visual(_))
+    }
+
+    /// The renderer only has to route somewhere for a scope that names a
+    /// destination. `element` crops whatever is already on screen.
+    fn routes(&self) -> bool {
+        matches!(self, Self::Plugin(_) | Self::Visual(_))
+    }
+}
+
+/// A CSS-pixel rectangle read from the renderer, before scaling.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CaptureRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Crop a captured PNG to one element's box.
+///
+/// The snapshot is in device pixels and the rectangle arrives in CSS pixels, so
+/// the scale factor has to be applied here — a 2x display otherwise crops the
+/// top-left quadrant of the intended region and calls it the element. Kept pure
+/// and separate from the window plumbing so the arithmetic is testable without
+/// a display.
+#[cfg(target_os = "macos")]
+pub(crate) fn crop_png(bytes: &[u8], rect: CaptureRect, scale: f64) -> Result<Vec<u8>> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().context("decode capture for crop")?;
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buffer)
+        .context("read capture pixels")?;
+    if info.bit_depth != png::BitDepth::Eight {
+        anyhow::bail!("capture crop supports 8-bit images only");
+    }
+    let channels = info.color_type.samples();
+    let (image_width, image_height) = (info.width as i64, info.height as i64);
+
+    // Round outward: a half-pixel box that rounds inward clips the element's
+    // own border, which is exactly the evidence a layout review is looking at.
+    let left = ((rect.x * scale).floor() as i64).clamp(0, image_width);
+    let top = ((rect.y * scale).floor() as i64).clamp(0, image_height);
+    let right = (((rect.x + rect.width) * scale).ceil() as i64).clamp(left, image_width);
+    let bottom = (((rect.y + rect.height) * scale).ceil() as i64).clamp(top, image_height);
+    let (width, height) = ((right - left) as usize, (bottom - top) as usize);
+    if width == 0 || height == 0 {
+        anyhow::bail!(
+            "element is not visible in the capture: its box resolved to {width}x{height} pixels"
+        );
+    }
+
+    let stride = info.width as usize * channels;
+    let mut cropped = Vec::with_capacity(width * height * channels);
+    for row in 0..height {
+        let start = (top as usize + row) * stride + left as usize * channels;
+        cropped.extend_from_slice(&buffer[start..start + width * channels]);
+    }
+
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, width as u32, height as u32);
+        encoder.set_color(info.color_type);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().context("write cropped PNG header")?;
+        writer
+            .write_image_data(&cropped)
+            .context("write cropped PNG pixels")?;
+    }
+    Ok(out)
+}
+
+/// Announce a non-review capture to the renderer.
+///
+/// Deliberately a second, parallel protocol rather than a rename of the review
+/// one: `visual` scope keeps emitting exactly what it emitted before, so the
+/// certified capture → review → mark_ready chain and the CSS that isolates a
+/// reviewed visual are untouched by this addition.
+#[cfg(target_os = "macos")]
+fn set_capture_mode(app: &AppHandle, scope: &CaptureScope, active: bool) -> Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .context("capture requires the main Desktop window")?;
+    let detail = serde_json::to_string(&json!({
+        "active": active,
+        "scope": scope.name(),
+        "target": scope.target(),
+        "route": scope.routes(),
+    }))?;
+    window
+        .eval(format!(
+            "window.__synthCapture={detail};document.documentElement.removeAttribute('data-synth-capture-ready');document.documentElement.toggleAttribute('data-synth-capture',{active});window.dispatchEvent(new CustomEvent('synth:capture',{{detail:window.__synthCapture}}));"
+        ))
+        .context("set renderer capture mode")
+}
+
+/// Read one JS expression out of the renderer as a string.
+#[cfg(target_os = "macos")]
+async fn eval_string(
+    app: &AppHandle,
+    script: &str,
+    timeout: std::time::Duration,
+) -> Result<String> {
+    let window = app
+        .get_webview_window("main")
+        .context("capture requires the main Desktop window")?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let sender = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+    let callback_sender = std::sync::Arc::clone(&sender);
+    window
+        .eval_with_callback(script, move |value| {
+            if let Some(sender) = callback_sender
+                .lock()
+                .ok()
+                .and_then(|mut sender| sender.take())
+            {
+                let _ = sender.send(value);
+            }
+        })
+        .context("evaluate renderer expression")?;
+    tokio::time::timeout(timeout, receiver)
+        .await
+        .context("renderer did not answer in time")?
+        .context("renderer answer channel closed")
+}
+
+/// Wait for the renderer to acknowledge that it is showing the requested
+/// surface. Same contract as the review path: a bounded wait, then capture
+/// anyway, because an already-focused route may not rerun its effect and a
+/// valid surface must not be refused for want of a duplicate acknowledgement.
+#[cfg(target_os = "macos")]
+async fn wait_for_capture_surface(app: &AppHandle, scope: &CaptureScope) -> Result<()> {
+    let Some(target) = scope.target() else {
+        return Ok(());
+    };
+    let expected = format!("{}:{target}", scope.name());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if let Ok(value) = eval_string(
+            app,
+            "document.documentElement.dataset.synthCaptureReady || ''",
+            std::time::Duration::from_millis(250),
+        )
+        .await
+        {
+            if value.contains(&expected) {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// The on-screen box of one `data-testid`, in CSS pixels.
+#[cfg(target_os = "macos")]
+async fn capture_element_rect(app: &AppHandle, testid: &str) -> Result<CaptureRect> {
+    // The id travels as a JSON string literal so a quote in it cannot end the
+    // selector and run as script.
+    let literal = serde_json::to_string(testid)?;
+    let script = format!(
+        "(()=>{{const el=document.querySelector(`[data-testid=${{CSS.escape?CSS.escape({literal}):{literal}}}]`)||document.querySelector('[data-testid='+JSON.stringify({literal})+']');if(!el)return '';const r=el.getBoundingClientRect();return JSON.stringify({{x:r.x,y:r.y,width:r.width,height:r.height}});}})()"
+    );
+    let raw = eval_string(app, &script, std::time::Duration::from_secs(2)).await?;
+    let trimmed = raw.trim().trim_matches('"').replace("\\\"", "\"");
+    if trimmed.is_empty() {
+        anyhow::bail!("no element with data-testid `{testid}` is on screen");
+    }
+    let parsed: Value = serde_json::from_str(&trimmed)
+        .with_context(|| format!("element rect for `{testid}` was not JSON: {raw}"))?;
+    let number = |key: &str| -> Result<f64> {
+        parsed
+            .get(key)
+            .and_then(Value::as_f64)
+            .with_context(|| format!("element rect for `{testid}` is missing {key}"))
+    };
+    let rect = CaptureRect {
+        x: number("x")?,
+        y: number("y")?,
+        width: number("width")?,
+        height: number("height")?,
+    };
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        anyhow::bail!("element `{testid}` has no on-screen box to capture");
+    }
+    Ok(rect)
+}
+
+/// What the app was showing, and what its own layout audit found, read at the
+/// moment of the capture.
+///
+/// A screenshot proves a state rendered; it does not say the state is
+/// defensible. Harvesting both here — inside the same held viewport, before the
+/// window is restored — is what makes a capture reviewable evidence rather than
+/// an image somebody has to squint at later.
+#[cfg(target_os = "macos")]
+async fn harvest_capture_evidence(app: &AppHandle) -> (Value, Value) {
+    let state = eval_string(
+        app,
+        r#"JSON.stringify({
+            ...JSON.parse(document.documentElement.dataset.synthAppState || '{}'),
+            mountedVisuals: Array.from(document.querySelectorAll('[data-visual-id][data-visual-revision]'))
+                .filter(node => node.getBoundingClientRect().width > 0 && node.getBoundingClientRect().height > 0)
+                .map(node => ({visualId: node.dataset.visualId, revision: Number(node.dataset.visualRevision)})),
+            visualRenderError: document.querySelector('[data-testid="visual-invalid"]')?.textContent?.trim() || undefined
+        })"#,
+        std::time::Duration::from_millis(500),
+    )
+    .await
+    .ok()
+    .and_then(|raw| parse_renderer_json(&raw))
+    .unwrap_or(Value::Null);
+    let audit = eval_string(
+        app,
+        "(window.__synthCaptureAudit && window.__synthCaptureAudit()) || ''",
+        std::time::Duration::from_secs(3),
+    )
+    .await
+    .ok()
+    .and_then(|raw| parse_renderer_json(&raw))
+    .unwrap_or(Value::Null);
+    (state, audit)
+}
+
+/// `eval_with_callback` hands back the JS value already serialized, so a string
+/// result arrives quoted and escaped. Unwrap one layer before parsing, and fall
+/// back to the raw text so a protocol change degrades to "unavailable" rather
+/// than to a wrong record.
+#[cfg(target_os = "macos")]
+fn parse_renderer_json(raw: &str) -> Option<Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "\"\"" {
+        return None;
+    }
+    if let Ok(Value::String(inner)) = serde_json::from_str::<Value>(trimmed) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&inner) {
+            return Some(parsed);
+        }
+    }
+    serde_json::from_str::<Value>(trimmed).ok()
+}
+
+#[cfg(target_os = "macos")]
+async fn begin_visual_pixel_barrier(app:&AppHandle,id:&str)->Result<Value>{
+    let literal=serde_json::to_string(id)?;
+    let mounted_deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(8);
+    let revision=loop {
+        let raw=eval_string(app,&format!("(()=>{{const n=Array.from(document.querySelectorAll('[data-visual-session-id]')).find(n=>n.dataset.visualSessionId==={literal}&&n.dataset.visualSessionReady==='true');return n?JSON.stringify({{revision:Number(n.dataset.visualSessionRevision)}}):'';}})()"),std::time::Duration::from_secs(2)).await?;
+        if let Some(revision)=parse_renderer_json(&raw).and_then(|v|v["revision"].as_i64()){break revision;}
+        if tokio::time::Instant::now()>=mounted_deadline{anyhow::bail!("coherent capture requires a mounted, compatible visual session");}
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    let core=app.state::<Arc<CoreRuntime>>();
+    let frozen=core.visuals().engine().request(id.to_string(),json!({"operation":"capture.freeze","revision":revision})).await?;
+    let version=frozen["checkpoint"]["state"]["stateVersion"].as_i64().context("capture checkpoint missing version")?;
+    let result=async {
+        eval_string(app,&format!("(()=>{{if(!window.__synthVisualCapture)throw new Error('visual capture adapter unavailable');window.__synthVisualCapture.begin({literal},{revision},{version});return 'started';}})()"),std::time::Duration::from_secs(2)).await?;
+        let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(8);
+        loop {
+            let stamp=read_visual_pixel_barrier(app).await?;
+            if let Some(error)=stamp["error"].as_str(){anyhow::bail!("{error}");}
+            if stamp["ready"]==true && stamp["mutations"]==0{return Ok(());}
+            if tokio::time::Instant::now()>=deadline{anyhow::bail!("visual pixel barrier did not settle (ready={}, mutations={})",stamp["ready"],stamp["mutations"]);}
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }.await;
+    if let Err(error)=result {
+        let _=core.visuals().engine().request(id.to_string(),json!({"operation":"capture.release","revision":revision,"token":frozen["token"]})).await;
+        let _=eval_string(app,"window.__synthVisualCapture?.release(); ''",std::time::Duration::from_secs(1)).await;
+        return Err(error);
+    }
+    Ok(json!({"visualId":id,"revision":revision,"token":frozen["token"],"checkpoint":frozen["checkpoint"]}))
+}
+
+#[cfg(target_os = "macos")]
+async fn read_visual_pixel_barrier(app:&AppHandle)->Result<Value>{
+    let raw=eval_string(app,"JSON.stringify(window.__synthVisualCapture?.read() ?? null)",std::time::Duration::from_secs(2)).await?;
+    parse_renderer_json(&raw).filter(|v|v.is_object()).context("visual pixel barrier unavailable")
+}
+
+#[cfg(target_os = "macos")]
+async fn end_visual_pixel_barrier(app:&AppHandle,barrier:&Value)->Result<Value>{
+    let stamp=async {
+        eval_string(app,"window.__synthVisualCapture?.verify(); ''",std::time::Duration::from_secs(2)).await?;
+        let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(4);
+        loop {
+            let stamp=read_visual_pixel_barrier(app).await?;
+            if stamp.get("error").is_some() || stamp["verified"]==true { return Ok::<Value,anyhow::Error>(stamp); }
+            if tokio::time::Instant::now()>=deadline { anyhow::bail!("capture renderer verification timed out"); }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }.await;
+    let core=app.state::<Arc<CoreRuntime>>();
+    let released=core.visuals().engine().request(barrier["visualId"].as_str().context("capture visual identity")?.to_string(),
+        json!({"operation":"capture.release","revision":barrier["revision"],"token":barrier["token"]})).await;
+    let resumed=eval_string(app,"window.__synthVisualCapture?.release(); ''",std::time::Duration::from_secs(2)).await;
+    released?;resumed?;
+    let stamp=stamp?;
+    if stamp["ready"]!=true || stamp["verified"]!=true || stamp["mutations"]!=0 || stamp.get("error").is_some(){
+        anyhow::bail!("visual evidence or rendered presentation changed during pixel capture: {stamp}");
+    }
+    Ok(json!({"schemaVersion":"synth.visual-pixel-cut.v1","checkpoint":barrier["checkpoint"],"paint":stamp}))
+}
+
+/// Human toolbar and MCP use this same bounded pixel-capture workflow.
+pub(crate) async fn capture_visual_session(app:&AppHandle,id:&str,request:&Value)->Result<Value>{
+    let directory=crate::instance::data_root().join("visual-pixel-captures");
+    fs::create_dir_all(&directory)?;
+    let path=directory.join(format!("{}.png",uuid::Uuid::new_v4()));
+    let mut receipt=capture_surface(app,&json!({"scope":"visual","target":id,
+        "width":request["width"].as_u64().unwrap_or(1280),"height":request["height"].as_u64().unwrap_or(900),
+        "revision":request["revision"],"outputPath":path.to_string_lossy()})).await?;
+    let core=app.state::<Arc<CoreRuntime>>();
+    let checkpoint=&receipt["pixelCut"]["checkpoint"];
+    let saved=core.visuals().engine().request(id.to_string(),json!({"operation":"checkpoint.import",
+        "revision":checkpoint["state"]["revision"],"checkpoint":checkpoint})).await?;
+    receipt["pixelCut"]["checkpoint"]=saved["checkpoint"].clone();
+    fs::write(path.with_extension("json"),serde_json::to_vec_pretty(&receipt)?)?;
+    Ok(receipt)
+}
+
+/// The caller names the file; this side refuses to write outside its own data
+/// root. Both ends are canonicalized so `..` segments cannot slip past the
+/// prefix check.
+fn resolve_capture_output(body: &Value) -> Result<PathBuf> {
+    let output = body
+        .get("outputPath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("capture requires outputPath")?;
+    let output = PathBuf::from(output);
+    if !output.is_absolute() {
+        anyhow::bail!("capture outputPath must be absolute");
+    }
+    let root = VISUALS_DATA_ROOT
+        .get()
+        .context("visuals IPC data root is not initialized")?;
+    let parent = output
+        .parent()
+        .context("capture outputPath requires a parent directory")?;
+    fs::create_dir_all(parent)?;
+    let canonical_root = fs::canonicalize(root).context("resolve visuals data root")?;
+    let canonical_parent = fs::canonicalize(parent).context("resolve capture output directory")?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "capture outputPath must stay under the visuals data root {}",
+            canonical_root.display()
+        );
+    }
+    Ok(output)
+}
+
+/// Resize if asked, snapshot the app's own webview, restore — one call.
+///
+/// The snapshot needs no Screen Recording TCC grant, no window-identity
+/// resolution, and no visibility: it captures correctly while the app is
+/// occluded or backgrounded. Holding resize and restore on this side means a
+/// helper that dies mid-capture cannot strand the user's window at the capture
+/// size. A capture with no requested viewport never resizes at all, because
+/// "what does the app look like right now" must not begin by changing it.
+#[cfg(target_os = "macos")]
+pub(crate) async fn capture_surface(app: &AppHandle, body: &Value) -> Result<Value> {
+    // This guard must span the full enter-mode -> resize -> snapshot -> restore
+    // transaction. Parsing first would be safe, but acquiring here also makes
+    // the serialization boundary obvious and difficult to regress.
+    let _capture_guard = capture_pipeline_lock().lock().await;
+    let scope = CaptureScope::parse(
+        body.get("scope").and_then(Value::as_str).unwrap_or("app"),
+        body.get("target")
+            .or_else(|| body.get("visualId"))
+            .or_else(|| body.get("visual_id"))
+            .and_then(Value::as_str),
+    )?;
+    let output = resolve_capture_output(body)?;
+    let viewport = match (
+        body.get("width").and_then(Value::as_f64),
+        body.get("height").and_then(Value::as_f64),
+    ) {
+        (Some(width), Some(height)) => Some((width, height)),
+        (None, None) => None,
+        _ => anyhow::bail!("a capture viewport needs both width and height"),
+    };
+
+    // Enter capture mode before resizing so React has the entire settle window
+    // to route to the requested surface and lay it out.
+    match &scope {
+        CaptureScope::Visual(id) => set_review_capture_mode(app, id, true)?,
+        other => set_capture_mode(app, other, true)?,
+    }
+    let leave_capture_mode = |app: &AppHandle| match &scope {
+        CaptureScope::Visual(id) => set_review_capture_mode(app, id, false),
+        other => set_capture_mode(app, other, false),
+    };
+
+    let geometry = match capture_window_geometry(app, viewport) {
+        Ok(geometry) => geometry,
         Err(error) => {
-            let _ = set_review_capture_mode(app, visual_id, false);
+            let _ = leave_capture_mode(app);
             return Err(error);
         }
     };
-    // Do not `?` between here and the restore: the window is resized, and any
-    // early return from this span leaves it that way.
+    // Do not `?` between here and the restore: the window may be resized, and
+    // any early return from this span leaves it that way.
     tokio::time::sleep(REVIEW_CAPTURE_SETTLE).await;
-    let snapshot = match wait_for_review_capture_surface(app, visual_id).await {
-        Ok(()) => match reset_review_capture_scroll(app) {
-            Ok(()) => match app.get_webview_window("main") {
-                Some(window) => {
-                    crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT)
-                        .await
-                }
-                None => Err(anyhow::anyhow!(
-                    "review capture requires the main Desktop window"
-                )),
+
+    // Whether the renderer positively acknowledged the requested visual. The
+    // scope check below needs this because the two ways a visual can be "open"
+    // are different states: `openArtifactId` is the artifact pane, set by
+    // toggleArtifact, while a review capture drives the visuals page and
+    // publishes `synthReviewCaptureReady`. Comparing only against the pane
+    // rejected correct captures of a visual reviewed through the page.
+    let mut review_acknowledged = false;
+    let snapshot = match &scope {
+        CaptureScope::Visual(id) => {
+            wait_for_review_capture_surface(app, id)
+                .await
+                .map(|acknowledged| {
+                    review_acknowledged = acknowledged;
+                })
+        }
+        other => wait_for_capture_surface(app, other).await,
+    }
+    .and_then(|()| {
+        if scope.resets_scroll() {
+            reset_review_capture_scroll(app)
+        } else {
+            Ok(())
+        }
+    });
+    let mut cropped_to = None;
+    let mut visual_barrier=None;
+    let snapshot=match (&scope,snapshot){
+        (CaptureScope::Visual(id),Ok(()))=>match begin_visual_pixel_barrier(app,id).await{
+            Ok(barrier)=>{
+                let revision_matches=body["revision"].is_null() || body["revision"]==barrier["revision"];
+                visual_barrier=Some(barrier);
+                if revision_matches{Ok(())}else{Err(anyhow::anyhow!("requested visual revision differs from mounted capture revision"))}
             },
-            Err(error) => Err(error),
+            Err(error)=>Err(error),
+        },
+        (_,result)=>result,
+    };
+    let snapshot = match snapshot {
+        Ok(()) => match app.get_webview_window("main") {
+            Some(window) => {
+                let first =
+                    crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT)
+                        .await;
+                let attempt = match first {
+                    Err(_) => {
+                        crate::visuals::snapshot::capture_webview_png(
+                            &window,
+                            REVIEW_CAPTURE_RETRY_TIMEOUT,
+                        )
+                        .await
+                    }
+                    ok => ok,
+                };
+                match attempt {
+                    Ok(bytes) => match &scope {
+                        CaptureScope::Element(testid) => {
+                            match capture_element_rect(app, testid).await {
+                                Ok(rect) => {
+                                    cropped_to = Some(rect);
+                                    crop_png(&bytes, rect, geometry.scale)
+                                }
+                                Err(error) => Err(error),
+                            }
+                        }
+                        _ => Ok(bytes),
+                    },
+                    Err(error) => Err(error),
+                }
+            }
+            None => Err(anyhow::anyhow!("capture requires the main Desktop window")),
         },
         Err(error) => Err(error),
     };
-    let restore = resize
-        .get("previous")
-        .cloned()
-        .context("review window resize omitted its previous size")
-        .and_then(|previous| resize_review_window(app, &previous));
-    let review_mode_restore = set_review_capture_mode(app, visual_id, false);
+
+    // Before the restore: the audit must measure the viewport that was
+    // photographed, not the one the window goes back to.
+    let (app_state, audit) = match &snapshot {
+        Ok(_) => harvest_capture_evidence(app).await,
+        Err(_) => (Value::Null, Value::Null),
+    };
+
+    let mut pixel_cut=Value::Null;
+    let snapshot=if let Some(barrier)=visual_barrier{
+        match end_visual_pixel_barrier(app,&barrier).await{
+            Ok(cut)=>{pixel_cut=cut;snapshot},
+            Err(error)=>Err(error),
+        }
+    }else{snapshot};
+
+    let restore = restore_capture_geometry(app, &geometry, viewport.is_some());
+    let capture_mode_restore = leave_capture_mode(app);
     let written = match &snapshot {
-        Ok(bytes) => fs::write(&output, bytes).context("write review capture PNG"),
+        Ok(bytes) => fs::write(&output, bytes).context("write capture PNG"),
         Err(_) => Ok(()),
     };
-    // A failed restore leaves the user's window at the review viewport; it has
+
+    // A failed restore leaves the user's window at the capture viewport; it has
     // to reach the caller even when the capture itself failed.
-    match (snapshot, restore, review_mode_restore, written) {
+    match (snapshot, restore, capture_mode_restore, written) {
         (Err(capture), Err(restore), _, _) => Err(anyhow::anyhow!(
             "{capture:#}; additionally the Desktop window was not restored: {restore:#}"
         )),
         (Err(capture), Ok(_), _, _) => Err(capture),
         (Ok(_), Err(restore), _, _) => Err(anyhow::anyhow!(
-            "captured review but failed to restore Desktop window: {restore:#}"
+            "captured but failed to restore Desktop window: {restore:#}"
         )),
-        (Ok(_), Ok(_), Err(review_mode_restore), _) => Err(anyhow::anyhow!(
-            "captured review but failed to restore the renderer layout: {review_mode_restore:#}"
+        (Ok(_), Ok(_), Err(restore), _) => Err(anyhow::anyhow!(
+            "captured but failed to restore the renderer layout: {restore:#}"
         )),
         (Ok(_), Ok(_), Ok(()), Err(write)) => Err(write),
         (Ok(bytes), Ok(_), Ok(()), Ok(())) => {
+            // A scoped capture must photograph the surface it was asked for.
+            //
+            // `scope: visual` asks the renderer to open a visual and then
+            // photographs the window. When that open silently does not happen
+            // -- a full page reload had just reset the route to chat -- the
+            // capture returned a PNG of the chat view, `ok`, with the requested
+            // id in `target` and `openVisualId: null` two lines below it. Every
+            // claim built on these captures assumes the picture is of what its
+            // name says, so a mismatch has to be an error rather than something
+            // a reader might notice in the metadata.
+            if let CaptureScope::Visual(target) = &scope {
+                let opened = app_state
+                    .get("openVisualId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("none");
+                if !review_acknowledged && opened != target.as_str() {
+                    return Err(anyhow::anyhow!(
+                        "capture_scope_mismatch: asked for visual `{target}` but the renderer \
+                         had `{opened}` open; the image would not be of the requested surface"
+                    ));
+                }
+            }
             let (width, height) = png_dimensions(&bytes).unwrap_or((0, 0));
+            let diagnostics = crate::instance::diagnostics();
             Ok(json!({
+                "schemaVersion": "synth.surface-capture.v1",
                 "path": output.to_string_lossy(),
+                "digest": format!("sha256:{:x}", sha2::Sha256::digest(&bytes)),
+                "scope": scope.name(),
+                "target": scope.target(),
+                "capturedAt": chrono::Utc::now().to_rfc3339(),
+                "instance": {
+                    "name": diagnostics.name,
+                    "mode": diagnostics.mode,
+                    "appVersion": diagnostics.app_version,
+                    "sourceRevision": diagnostics.source_revision,
+                    "buildRevision": diagnostics.build_revision,
+                },
+                "appState": app_state,
+                "audit": audit,
+                "pixelCut": pixel_cut,
                 "width": width,
                 "height": height,
-                "previous": resize.get("previous"),
-                "current": resize.get("current"),
-                "scaleFactor": resize.get("scaleFactor"),
-                "windowLabel": resize.get("windowLabel"),
-                "processId": resize.get("processId"),
+                "previous": {"width": geometry.previous.0, "height": geometry.previous.1},
+                "current": {"width": geometry.current.0, "height": geometry.current.1},
+                "resized": viewport.is_some(),
+                "croppedTo": cropped_to.map(|rect| json!({
+                    "x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height
+                })),
+                "scaleFactor": geometry.scale,
+                "windowLabel": geometry.label,
+                "windowFullscreen": app.get_webview_window("main")
+                    .map(|window| window.is_fullscreen()).transpose()?,
+                "processId": std::process::id(),
                 "captureMode": "host-webview-snapshot",
                 "restored": true,
             }))
@@ -1107,8 +1888,105 @@ async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
     }
 }
 
+#[cfg(target_os = "macos")]
+struct CaptureGeometry {
+    previous: (u64, u64),
+    current: (u64, u64),
+    scale: f64,
+    label: String,
+    minimum_relaxed: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn restore_capture_geometry(
+    app: &AppHandle,
+    geometry: &CaptureGeometry,
+    resized: bool,
+) -> Result<()> {
+    let size_restore = if resized {
+        resize_review_window(
+            app,
+            &json!({"width": geometry.previous.0, "height": geometry.previous.1}),
+        )
+        .map(|_| ())
+    } else {
+        Ok(())
+    };
+    let minimum_restore = if geometry.minimum_relaxed {
+        set_review_window_minimum(app, DESKTOP_WINDOW_MIN_WIDTH, DESKTOP_WINDOW_MIN_HEIGHT)
+    } else {
+        Ok(())
+    };
+    match (size_restore, minimum_restore) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(size), Ok(())) => Err(size),
+        (Ok(()), Err(minimum)) => Err(minimum),
+        (Err(size), Err(minimum)) => Err(anyhow::anyhow!(
+            "{size:#}; additionally failed to restore the Desktop window minimum: {minimum:#}"
+        )),
+    }
+}
+
+/// Resize to the requested viewport, or just report the window as it stands.
+#[cfg(target_os = "macos")]
+fn capture_window_geometry(
+    app: &AppHandle,
+    viewport: Option<(f64, f64)>,
+) -> Result<CaptureGeometry> {
+    let window = app
+        .get_webview_window("main")
+        .context("capture requires the main Desktop window")?;
+    let scale = window.scale_factor().context("read display scale factor")?;
+    let label = window.label().to_string();
+    let Some((width, height)) = viewport else {
+        let size = window
+            .inner_size()
+            .context("read capture window size")?
+            .to_logical::<f64>(scale);
+        let logical = (size.width.round() as u64, size.height.round() as u64);
+        return Ok(CaptureGeometry {
+            previous: logical,
+            current: logical,
+            scale,
+            label,
+            minimum_relaxed: false,
+        });
+    };
+    let minimum_relaxed = review_capture_requires_relaxed_minimum(width, height);
+    if minimum_relaxed {
+        set_review_window_minimum(app, REVIEW_WINDOW_MIN_WIDTH, REVIEW_WINDOW_MIN_HEIGHT)?;
+    }
+    let resize = match resize_review_window(app, &json!({"width": width, "height": height})) {
+        Ok(resize) => resize,
+        Err(error) => {
+            if minimum_relaxed {
+                let _ = set_review_window_minimum(
+                    app,
+                    DESKTOP_WINDOW_MIN_WIDTH,
+                    DESKTOP_WINDOW_MIN_HEIGHT,
+                );
+            }
+            return Err(error);
+        }
+    };
+    let read = |key: &str, field: &str| -> u64 {
+        resize
+            .get(key)
+            .and_then(|value| value.get(field))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    Ok(CaptureGeometry {
+        previous: (read("previous", "width"), read("previous", "height")),
+        current: (read("current", "width"), read("current", "height")),
+        scale,
+        label,
+        minimum_relaxed,
+    })
+}
+
 #[cfg(not(target_os = "macos"))]
-async fn capture_review_window(_app: &AppHandle, _body: &Value) -> Result<Value> {
+pub(crate) async fn capture_surface(_app: &AppHandle, _body: &Value) -> Result<Value> {
     anyhow::bail!("UnsupportedCapturePlatform: host webview snapshot requires macOS")
 }
 
@@ -1399,7 +2277,8 @@ async fn run_one_scripted_rollout(
         requested_rollout_id.unwrap_or_else(|| format!("roll_{}", Uuid::new_v4().simple()));
     let prepare = client
         .post(format!("{base}/rollouts/prepare"))
-        .json(&json!({ "rollout_id": requested_rollout_id, "telemetry": telemetry }))
+        .json(&json!({ "rollout_id": requested_rollout_id, "telemetry": telemetry,
+            "task_instance_id": format!("seed:{seed}") }))
         .send()
         .await
         .context("POST /rollouts/prepare")?;
@@ -1435,6 +2314,7 @@ async fn run_one_scripted_rollout(
         .json(&json!({
             "rollout_id": rollout_id,
             "seed": seed,
+            "task_instance_id": format!("seed:{seed}"),
             "telemetry": telemetry,
             "slot": LIVE_EVAL_SLOT,
         }))
@@ -1639,22 +2519,32 @@ fn observed_task_family(
     classified: Option<crate::visuals::LiveEvalFamily>,
     requested: Option<&str>,
 ) -> Option<String> {
-    classified
-        .map(|family| family.as_str().to_string())
-        .or_else(|| {
-            info.and_then(|value| {
-                value
-                    .get("env_family")
-                    .or_else(|| value.get("task_family"))
-                    .or_else(|| value.get("runtime_family"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
+    info.and_then(|value| {
+        value
+            .pointer("/liveEval/benchmarkFamily")
+            .or_else(|| value.pointer("/metadata/liveEval/benchmarkFamily"))
+            .or_else(|| value.get("env_family"))
+            .or_else(|| value.get("task_family"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+    .or_else(|| requested.map(str::to_string))
+    .or_else(|| {
+        info.and_then(|value| {
+            value
+                .get("runtime_family")
+                .and_then(Value::as_str)
+                .map(str::to_string)
         })
-        .or_else(|| requested.map(str::to_string))
+    })
+    .or_else(|| classified.map(|family| family.as_str().to_string()))
 }
 
 pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
+    // Native commands and loopback consumers share the same trace routes.
+    if path == "/v1/traces" || path.starts_with("/v1/traces/") {
+        return dispatch_traces(method, path, body, core).await;
+    }
     let registry = core.visuals();
     let reports = core.reports();
     match (method, path) {
@@ -1794,97 +2684,47 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
         ("GET", "/v1/containers") => {
             Ok(json!({"containers": core.data().list_containers().await?}))
         }
-        ("POST", "/v1/container-sources/discover") => {
-            let sources =
-                crate::optimizers::container_catalog::discover(core.storage().database()).await?;
-            let rows: Vec<Value> = sources
-                .iter()
-                .map(|source| {
-                    json!({
-                        "sourceId": source.id,
-                        "manifestHash": source.manifest_hash,
-                        "gitRevision": source.git_revision,
-                        "specs": source.specs.iter().map(|spec| json!({
-                            "id": spec.id,
-                            "contract": spec.contract,
-                            "family": spec.family,
-                            "locality": spec.locality.as_str(),
-                        })).collect::<Vec<_>>(),
-                    })
-                })
-                .collect();
-            Ok(json!({
-                "readiness": crate::project_sources::readiness(
-                    core.storage().database(),
-                    crate::project_sources::Capability::Containers,
-                    rows.len(),
-                ),
-                "sources": rows,
-            }))
-        }
-        ("POST", "/v1/project-sources/request") => {
-            let path = body
-                .get("path")
-                .and_then(Value::as_str)
-                .context("project source request requires path")?;
-            let reason = body
-                .get("reason")
-                .and_then(Value::as_str)
-                .context("project source request requires reason")?;
-            let capabilities = body
-                .get("capabilities")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_else(|| vec![json!("containers")]);
-            let containers = capabilities.iter().any(|value| value == "containers");
-            let recipes = capabilities.iter().any(|value| value == "recipes");
-            let session_id = body.get("sessionId").and_then(Value::as_str);
-            let attach = body
-                .get("attachToConversation")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let request = crate::project_sources::request(
-                core.storage().database(),
-                session_id,
-                path,
-                reason,
-                containers,
-                recipes,
-                attach,
-            )
-            .await?;
-            Ok(json!({"request": request}))
-        }
         ("POST", "/v1/containers/ensure") => {
+            let manifest_path = body
+                .get("manifestPath")
+                .or_else(|| body.get("manifest_path"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!(
+                    "manifestPath required; container resolution is not coupled to the active workspace"
+                ))?;
+            let manifest_path = std::path::PathBuf::from(manifest_path);
+            if !manifest_path.is_absolute() {
+                anyhow::bail!("manifestPath must be absolute");
+            }
+            if manifest_path.file_name().and_then(|value| value.to_str())
+                != Some("workshop.containers.toml")
+            {
+                anyhow::bail!("manifestPath must name workshop.containers.toml");
+            }
+            let manifest_path = manifest_path.canonicalize().with_context(|| {
+                format!(
+                    "canonicalize container manifest {}",
+                    manifest_path.display()
+                )
+            })?;
             let spec_id = body
                 .get("specId")
                 .or_else(|| body.get("spec_id"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("specId required"))?;
-            let spec = if let Some(source_id) = body
-                .get("sourceId")
-                .or_else(|| body.get("source_id"))
-                .and_then(Value::as_str)
-            {
-                crate::optimizers::container_catalog::resolve(
-                    core.storage().database(),
-                    source_id,
-                    spec_id,
+            let spec = crate::optimizers::workspace_recipe::load_container_specs_from_manifest(
+                &manifest_path,
+            )?
+            .into_iter()
+            .find(|candidate| candidate.id == spec_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "container spec `{spec_id}` is not declared in {}",
+                    manifest_path.display()
                 )
-                .await?
-                .1
-            } else {
-                let session = body
-                    .get("sessionRef")
-                    .or_else(|| body.get("session_ref"))
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("sourceId or sessionRef required"))?;
-                crate::optimizers::container_lifecycle::resolve_spec_for_session(
-                    core.storage().database(),
-                    session,
-                    spec_id,
-                )?
-            };
+            })?;
             let origin = spec.origin.to_json();
             let ensured = crate::optimizers::container_lifecycle::ensure_spec(
                 core.storage().database(),
@@ -2136,7 +2976,9 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
                 .build()?;
-            let prepare_body = json!({"rollout_id": rollout_id, "telemetry": telemetry});
+            let prepare_body = crate::container_stream::prepared_rollout_request(
+                &body, &rollout_id, telemetry,
+            )?;
             let mut response = client
                 .post(format!("{base}/rollouts/prepare"))
                 .json(&prepare_body)
@@ -2187,10 +3029,25 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let poll_url = resolve_declared_url(&base, &declared_poll_url(&stream)?)?;
             let sse_url = resolve_declared_url(&base, &declared_sse_url(&stream)?)?;
             crate::visuals::assert_declared_stream_source(&sse_url)?;
+            // A pinned live annotation protocol declares a sibling channel;
+            // bind it beside the rollout stream on live.annotated_rollouts.v1.
+            let annotation_visual_binding = match (
+                crate::container_stream::declared_annotation_sse_url(&stream),
+                crate::container_stream::declared_annotation_poll_url(&stream),
+            ) {
+                (Some(annotation_sse), Some(annotation_poll)) => {
+                    let annotation_sse = resolve_declared_url(&base, &annotation_sse)?;
+                    let annotation_poll = resolve_declared_url(&base, &annotation_poll)?;
+                    crate::visuals::assert_declared_stream_source(&annotation_sse)?;
+                    json!({"input":"stream","kind":"live_sse","source":annotation_sse,"poll_url":annotation_poll,"schema":"synth.trace-stream-event.v1"})
+                }
+                _ => Value::Null,
+            };
             Ok(json!({
                 "container_id": id, "rollout_id": rollout_id, "prepared": prepared, "stream": stream,
                 "resolved": {"poll_url": poll_url, "sse_url": sse_url},
                 "visual_binding": {"input":"stream","kind":"live_sse","source":sse_url,"poll_url":poll_url,"schema":"synth.trace-stream-event.v1"},
+                "annotation_visual_binding": annotation_visual_binding,
                 "start_blocked_until": "stream.subscribed"
             }))
         }
@@ -2379,8 +3236,26 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "rollout_id": rollout_id, "seed": body.get("seed"), "task_instance_id": task_instance_id,
                 "policy_ref": policy_ref, "telemetry": telemetry, "slot": LIVE_EVAL_SLOT
             });
+            // Prepared NanoHorizon rollouts are pinned to an immutable policy
+            // revision. Preserve that pin across the host bridge instead of
+            // silently degrading the request to a mutable policy reference.
+            if let Some(policy_revision_id) = body
+                .get("policy_revision_id")
+                .or_else(|| body.get("policyRevisionId"))
+                .cloned()
+            {
+                start_body["policy_revision_id"] = policy_revision_id;
+            }
             if let Some(max_steps) = stream.get("max_steps").and_then(Value::as_u64) {
                 start_body["max_steps"] = json!(max_steps);
+            }
+            if let Some(revision) = body
+                .get("annotation_protocol_revision_id")
+                .and_then(Value::as_str)
+            {
+                // Same pin as prepare, or the container answers 409
+                // rollout_identity_conflict: the observer is part of identity.
+                start_body["annotation_protocol_revision_id"] = json!(revision);
             }
             if let Some(environment_ref) = body
                 .get("environment_ref")
@@ -2538,16 +3413,23 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }))
         }
         ("GET", "/v1/visuals/templates") => {
-            let genre = body.get("genre").and_then(Value::as_str);
-            Ok(json!({"templates": registry.list_templates(genre)?}))
+            // The existing GET endpoint permits an absent HTTP body. Normalize
+            // that transport representation only; malformed queries still fail.
+            let body = if body.is_null() { json!({}) } else { body };
+            let request = serde_json::from_value::<
+                crate::domains::visuals::operations::ListVisualTemplatesRequest,
+            >(body)?;
+            Ok(serde_json::to_value(
+                crate::domains::visuals::operations::ListVisualTemplates::execute(registry, request)?,
+            )?)
         }
-        // Importing a template writes renderer code the app compiles at every
-        // launch, so it settles a `visual_template_persist` approval first —
-        // which needs an `AppHandle` this signature does not have.
-        // `dispatch_request` routes it to `dispatch_template_import` before it
-        // can reach here; anything that still lands here has no person to ask.
         ("POST", "/v1/visuals/templates/import") => {
-            anyhow::bail!("template import requires the app-bound approval route")
+            let source_path = body
+                .get("sourcePath")
+                .or_else(|| body.get("source_path"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("source_path is required"))?;
+            Ok(json!({"template": registry.import_template(source_path)?}))
         }
         ("GET", path) if path.starts_with("/v1/visuals/templates/") => {
             let id = path.trim_start_matches("/v1/visuals/templates/");
@@ -2589,6 +3471,37 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }
             Ok(json!({"bundle": registry.get_seal(digest.to_string()).await?}))
         }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/engine") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/engine").trim_end_matches('/');
+            if matches!(body["operation"].as_str(),Some("attach"|"publish"|"corpus.put"|"evidence.put"|"playback.tick"|"playback.commit"|"record.tick"|"record.commit"|"capture.freeze"|"capture.release")) {
+                anyhow::bail!("control registration and scene publication belong to the mounted renderer");
+            }
+            registry.engine().request(id.to_string(), body.clone()).await
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/presentation") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/presentation").trim_end_matches('/');
+            Ok(json!({"presentation": registry.state_store().presentation(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/presentation") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/presentation").trim_end_matches('/');
+            Ok(json!({"presentation": registry.state_store().put_presentation(id.to_string(), body).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/snapshots") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/snapshots").trim_end_matches('/');
+            Ok(json!({"snapshots": registry.state_store().snapshots(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/snapshots") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/snapshots").trim_end_matches('/');
+            Ok(json!({"snapshot": registry.state_store().put_snapshot(id.to_string(), body).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/recordings") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/recordings").trim_end_matches('/');
+            Ok(json!({"recordings": registry.state_store().recordings(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/recordings") => {
+            let id = path.trim_start_matches("/v1/visuals/").trim_end_matches("/recordings").trim_end_matches('/');
+            Ok(json!({"recording": registry.state_store().put_recording(id.to_string(), body).await?}))
+        }
         ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/annotations") => {
             let id = path
                 .trim_start_matches("/v1/visuals/")
@@ -2616,7 +3529,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .cloned()
                 .unwrap_or_default();
             let automated_findings =
-                if let Some(kind) = crate::visuals::systems::template_kind(&visual.template_id) {
+                if let Some(kind) = match visual.renderer_kind {
+                    crate::visuals::RendererKind::Systems => Some(crate::visuals::systems::SystemsKind::Static),
+                    crate::visuals::RendererKind::SystemsDynamic => Some(crate::visuals::systems::SystemsKind::Dynamic),
+                    _ => None,
+                } {
                     let asset = registry.visual_source(id.to_string()).await?;
                     let bytes = base64::engine::general_purpose::STANDARD
                         .decode(asset.base64)
@@ -2624,7 +3541,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     let source = String::from_utf8(bytes)
                         .context("systems authoring source must be UTF-8")?;
                     crate::visuals::systems::authoring_findings(&source, kind)?
-                } else if crate::visuals::charts::is_chart_template(&visual.template_id) {
+                } else if visual.renderer_kind == crate::visuals::RendererKind::Chart {
                     // Recorded by the render that produced the image. A chart's
                     // real width is only known after its bindings resolve, so
                     // re-deriving from the spec alone would under-report.
@@ -2646,26 +3563,15 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let overlay_digest = registry
                 .overlay_digest(id.to_string(), visual.current_revision)
                 .await?;
-            // What the host itself saw of this visual's declared live streams,
-            // merged into the context the agent already reads every iteration
-            // rather than parked behind a tool it would have to think to call.
-            // Recorded at the poll seam, so it is neither renderer-reported nor
-            // author-forgeable: a visual that was never rendered in Desktop
-            // reports `observed: false`, which is the honest answer rather than
-            // an absent field the caller can read as consent.
-            let declared_streams =
-                crate::visuals::stream_receipt::declared_streams(&visual.bindings);
-            let stream_receipt = crate::visuals::stream_receipt::receipt(
-                id,
-                visual.current_revision,
-                &declared_streams,
-            );
+            let certification_identity = registry.certification_identity(id.to_string()).await?;
             Ok(json!({
                 "visual": visual,
+                "streamReceipt": crate::visuals::stream_receipt::receipt(id, visual.current_revision,
+                    &crate::visuals::stream_receipt::declared_streams(&visual.bindings)),
                 "template": template,
+                "certificationIdentity": certification_identity,
                 "annotations": annotations,
                 "overlayDigest": overlay_digest,
-                "streamReceipt": stream_receipt,
                 "authoring": {
                     "rendererContract": "trusted_template_configuration",
                     "arbitraryTsxExecuted": false,
@@ -2673,7 +3579,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     "reviewCount": reviews.len(),
                     "requiredChecks": required_checks,
                     "automatedFindings": automated_findings,
-                    "instruction": "Render and show in Desktop, capture and inspect screenshots at wide and compact viewports, revise until automated findings and visible collisions are resolved, then record two screenshot-backed passing reviews before mark_ready. For a visual with declared live streams, read streamReceipt: it is the host's own record of the transport, and a receipt resting in declared, or reporting nonControlEnvelopeCount 0, gaps or conflicts, describes a pane that looks plausible and carries no evidence."
+                    "instruction": "Render and show in Desktop, capture and inspect screenshots at wide and compact viewports, revise until automated findings and visible collisions are resolved, then record two screenshot-backed passing reviews before mark_ready."
                 }
             }))
         }
@@ -2767,8 +3673,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .get("height")
                 .and_then(Value::as_u64)
                 .context("review viewport requires height")?;
-            if width < 320 || height < 400 {
-                anyhow::bail!("review viewport is below the supported 320x400 floor");
+            if !(320..=2400).contains(&width) || !(400..=1800).contains(&height) {
+                anyhow::bail!("review viewport must be within 320x400 and 2400x1800");
             }
             let checks = body
                 .get("checks")
@@ -2808,8 +3714,15 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                         "visual capture observations do not match the reviewed visual revision"
                     );
                 }
+                validate_review_viewport(&receipt, width, height)?;
                 receipt
             };
+            let certification_identity = registry.certification_identity(id.to_string()).await?;
+            if capture_receipt.certification_identity != certification_identity {
+                anyhow::bail!(
+                    "visual capture was produced by different content, bindings, template, renderer, or build; capture again"
+                );
+            }
             let template = registry.get_template(&current.template_id)?;
             if template.observation_contract.is_some() && capture_receipt.observation.is_none() {
                 anyhow::bail!(
@@ -2828,6 +3741,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "checks": checks,
                 "findings": findings,
                 "screenshotPath": body.get("screenshot_path").cloned().unwrap_or(Value::Null),
+                "screenshotSha256": capture_receipt.screenshot_sha256,
+                "certificationIdentity": capture_receipt.certification_identity,
                 "captureTime": capture_receipt.capture_time,
                 "observations": capture_receipt.observation,
                 "reviewedAt": chrono::Utc::now().to_rfc3339(),
@@ -2885,6 +3800,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 );
             }
             let template = registry.get_template(&current.template_id)?;
+            let certification_identity = registry.certification_identity(id.to_string()).await?;
+            validate_certification_build_identity(&certification_identity)?;
             let required = required_authoring_checks(&template);
             let bindings_digest = if template.observation_contract.is_some() {
                 let durable = registry
@@ -2908,28 +3825,21 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 &required,
                 template.observation_contract.as_ref(),
                 bindings_digest.as_deref(),
+                &certification_identity,
             )?;
-            // Transport evidence, conditioned exactly the way the observation
-            // contract above is conditioned: a visual that declares no live
-            // stream has no transport to prove. Mermaid, charts and trace-bound
-            // projections pass vacuously because they declare no poll URL, not
-            // because anyone listed them.
-            let stream_certification = if crate::visuals::declared_poll_urls(&current.bindings)
-                .is_empty()
-            {
+            let declared_streams = crate::visuals::stream_receipt::declared_streams(&current.bindings);
+            let stream_certification = if declared_streams.streams.is_empty() && declared_streams.missing_transport.is_empty() {
                 Value::Null
             } else {
-                let declared = crate::visuals::stream_receipt::declared_streams(&current.bindings);
-                let receipt = crate::visuals::stream_receipt::receipt(id, revision, &declared);
-                stream_receipt_gate(
-                    &receipt,
-                    template
-                        .observation_contract
-                        .as_ref()
-                        .map(|contract| &contract.readiness),
-                )?
+                let receipt = crate::visuals::stream_receipt::receipt(id, revision, &declared_streams);
+                crate::visuals::stream_receipt::certification(&receipt, template.observation_contract.as_ref()
+                    .map(|contract| contract.readiness.minimum_transport_envelope_count).unwrap_or(0))?
             };
-            if let Some(kind) = crate::visuals::systems::template_kind(&current.template_id) {
+            if let Some(kind) = match current.renderer_kind {
+                crate::visuals::RendererKind::Systems => Some(crate::visuals::systems::SystemsKind::Static),
+                crate::visuals::RendererKind::SystemsDynamic => Some(crate::visuals::systems::SystemsKind::Dynamic),
+                _ => None,
+            } {
                 let asset = registry.visual_source(id.to_string()).await?;
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(asset.base64)
@@ -2944,7 +3854,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     );
                 }
             }
-            if crate::visuals::charts::is_chart_template(&current.template_id) {
+            if current.renderer_kind == crate::visuals::RendererKind::Chart {
                 let findings: Vec<String> = current
                     .metadata
                     .get("authoringFindings")
@@ -2967,11 +3877,13 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "qualityGate".into(),
                 json!({
                     "ready": true,
+                    "state": "ready",
                     "revision": revision,
+                    "certificationIdentity": certification_identity,
                     "reviewCount": current_reviews.len(),
                     "certifiedBy": receipts,
+                    "streamReceipt": stream_certification,
                     "supersededReviewCount": current_reviews.len() - receipts.len(),
-                    "streamCertification": stream_certification,
                     "readyAt": chrono::Utc::now().to_rfc3339(),
                 }),
             );
@@ -2995,8 +3907,9 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             Ok(json!({"visual": visual, "event": event, "ready": true, "revision": revision}))
         }
         ("POST", "/v1/visuals") => {
+            let shared = body.get("workspaceOwned").and_then(Value::as_bool) == Some(true);
             let request: VisualCreateRequest = serde_json::from_value(body)?;
-            let (visual, event) = registry.create(request).await?;
+            let (visual, event) = if shared { registry.create_shared(request).await? } else { registry.create(request).await? };
             Ok(json!({"visual": visual, "event": event}))
         }
         ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/save") => {
@@ -3042,7 +3955,19 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
-            let (visual, event) = registry.show(id.to_string(), session_id).await?;
+            let foreground_owner = body
+                .get("foregroundOwner")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let (visual, mut event) = registry.show(id.to_string(), session_id).await?;
+            if foreground_owner {
+                if let Some(payload) = event.get_mut("payload").and_then(Value::as_object_mut) {
+                    // Presentation intent is broadcast-only. The durable
+                    // visual.show record remains an ownership fact; reopening
+                    // Workshop must not replay an old QA navigation request.
+                    payload.insert("foregroundOwner".into(), Value::Bool(true));
+                }
+            }
             core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
             Ok(json!({"opened": true, "visual": visual, "event": event}))
         }
@@ -3077,6 +4002,18 @@ pub(crate) async fn dispatch_optimizer(
 ) -> Result<Value> {
     let optimizers = core.optimizers();
     match (method, path) {
+        ("POST", "/v1/optimizers/snapshots/import") => {
+            let receipt = optimizers.import_snapshot(serde_json::from_value(body)?).await?;
+            Ok(json!({"receipt": receipt}))
+        }
+        ("GET", path) if path.starts_with("/v1/optimizers/snapshots/") => {
+            optimizers.get_snapshot(path.trim_start_matches("/v1/optimizers/snapshots/").to_owned()).await
+        }
+        ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/snapshot") => {
+            let id = path.trim_start_matches("/v1/optimizers/runs/").trim_end_matches("/snapshot");
+            let receipt = optimizers.export_snapshot(id.to_owned()).await?;
+            Ok(json!({"receipt": receipt}))
+        }
         ("GET", "/v1/optimizers/algorithms") => {
             Ok(json!({ "algorithms": optimizers.list_algorithms() }))
         }
@@ -3110,6 +4047,18 @@ pub(crate) async fn dispatch_optimizer(
             }))
         }
         ("POST", "/v1/optimizers/evaluations/start") => {
+            let idempotency_key = body
+                .get("idempotencyKey")
+                .or_else(|| body.get("idempotency_key"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("idempotencyKey is required for evaluation_start"))?
+                .to_owned();
+            anyhow::ensure!(
+                idempotency_key.len() <= 128,
+                "idempotencyKey must be at most 128 characters"
+            );
             let request: crate::optimizers::admission::InlineRequest =
                 crate::optimizers::admission::InlineRequest::from_tool_arguments(
                     body.get("request").cloned().unwrap_or_else(|| body.clone()),
@@ -3133,22 +4082,10 @@ pub(crate) async fn dispatch_optimizer(
                 request,
                 session_ref,
                 open_visual,
+                idempotency_key,
             )
             .await
-            .map_err(|error| {
-                if error.code == crate::error::CODE_APPROVAL_EXPIRED {
-                    anyhow::Error::new(
-                        crate::error::StructuredFailure::new(
-                            crate::error::CODE_APPROVAL_EXPIRED,
-                            error.message,
-                            "Re-open the current digest-bound approval sheet and approve it before its displayed deadline.",
-                        )
-                        .retryable(true),
-                    )
-                } else {
-                    anyhow::anyhow!(error.to_string())
-                }
-            })?;
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             Ok(json!({
                 "run": run,
                 "sourceKind": "inline",
@@ -3389,6 +4326,13 @@ pub(crate) async fn dispatch_optimizer(
                         .ok_or_else(|| {
                         anyhow::anyhow!("prepared optimizer run omitted proposerModel")
                     })?;
+                    let provider = run
+                        .summary
+                        .pointer("/credentialChain/provider")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("prepared optimizer run omitted credential provider")
+                        })?;
                     let auth = core
                         .plugins()
                         .authorize_compute(
@@ -3399,6 +4343,7 @@ pub(crate) async fn dispatch_optimizer(
                             digest.as_deref().unwrap_or(""),
                             max_cost_usd,
                             max_rollouts,
+                            provider,
                             proposer_model,
                             300,
                         )
@@ -3422,16 +4367,6 @@ pub(crate) async fn dispatch_optimizer(
                 serde_json::from_value(body).unwrap_or_default();
             let runs = optimizers.list(query).await?;
             Ok(json!({ "runs": runs }))
-        }
-        ("POST", "/v1/optimizers/snapshots/import") => {
-            let request: crate::optimizers::OptimizerSnapshotImportRequest =
-                serde_json::from_value(body)?;
-            let receipt = optimizers.import_snapshot(request).await?;
-            Ok(json!({ "receipt": receipt }))
-        }
-        ("GET", path) if path.starts_with("/v1/optimizers/snapshots/") => {
-            let id = path.trim_start_matches("/v1/optimizers/snapshots/");
-            optimizers.get_snapshot(id.to_string()).await
         }
         ("POST", "/v1/optimizers/runs") => {
             let request: crate::optimizers::OptimizerCreateRequest = serde_json::from_value(body)?;
@@ -3583,15 +4518,6 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_end_matches("/result");
             let result = optimizers.get_result(id.to_string()).await?;
             Ok(json!({ "result": result }))
-        }
-        ("POST", path)
-            if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/snapshot") =>
-        {
-            let id = path
-                .trim_start_matches("/v1/optimizers/runs/")
-                .trim_end_matches("/snapshot");
-            let receipt = optimizers.export_snapshot(id.to_string()).await?;
-            Ok(json!({ "receipt": receipt }))
         }
         ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/ready") => {
             let id = path
@@ -4522,6 +5448,7 @@ pub(crate) async fn import_container_trace_into(
             source_kind: Some(source_kind.to_owned()),
             title: Some(format!("{rollout_id} · {container_id}")),
             source_uri: Some(format!("{base}/rollouts/{rollout_id}")),
+            container_id: Some(container.id.clone()),
         })
         .await;
     let (result, event) = match result {
@@ -4571,17 +5498,24 @@ pub(crate) async fn import_container_trace_into(
             // that can never render.
             "inspectable": source_kind == "container_bundle" && !indexed.is_empty(),
             "traces": indexed,
-            "note": if indexed.is_empty() {
-                "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
-            } else {
-                "Sealed Trace V5 is now indexed in Workshop."
-            },
+            "validation": result.validation,
+            "note": trace_import_note(source_kind, result.trusted, !indexed.is_empty()),
             "embeddedFrameCount": frames.len(),
             "maxStep": max_step,
         }),
         event,
         frames,
     ))
+}
+
+fn trace_import_note(source_kind: &str, trusted: bool, indexed: bool) -> &'static str {
+    if source_kind == "container_seal" {
+        "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
+    } else if !trusted || !indexed {
+        "The container returned a trace bundle, but inspection did not produce a trusted indexed trace. See validation for the failure; resolve it before retrying the import."
+    } else {
+        "Sealed Trace V5 is now indexed in Workshop."
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -4655,14 +5589,15 @@ fn extract_imported_trace_frames(
             .into_iter()
             .flatten()
         {
-            for pointer in [
-                "/payload/env_steps",
-                "/payload/step",
-                "/payload/step_index",
-                "/detail/env_steps",
-                "/detail/step",
-                "/detail/step_index",
-            ] {
+            // A frame's `step` is a producer claim about the frame, and some
+            // producers file the frame ordinal there: RuneBench numbers 236
+            // frames 0-235 for a 22-step episode. Letting frames widen this
+            // would report 235 environment steps for that rollout, so the
+            // ceiling comes only from events whose step is an environment step.
+            if event.get("event_type").and_then(Value::as_str) == Some("frame") {
+                continue;
+            }
+            for pointer in ["/payload/env_steps", "/payload/step", "/payload/step_index"] {
                 if let Some(step) = event.pointer(pointer).and_then(Value::as_i64) {
                     max_step = Some(max_step.map_or(step, |current| current.max(step)));
                 }
@@ -4682,13 +5617,7 @@ fn extract_imported_trace_frames(
                 .and_then(|ids| ids.first())
                 .and_then(Value::as_str)
                 .context("sealed frame event omitted its PNG artifact")?;
-            // Trace V5 canonical events store producer data in `payload`.
-            // Accept `detail` as a compatibility alias for older importers.
-            let step = match event
-                .pointer("/payload/step")
-                .or_else(|| event.pointer("/detail/step"))
-                .and_then(Value::as_i64)
-            {
+            let step = match event.pointer("/payload/step").and_then(Value::as_i64) {
                 Some(step) => step,
                 None if imported_artifacts.contains(artifact_id) => continue,
                 None => anyhow::bail!(
@@ -4739,7 +5668,6 @@ fn extract_imported_trace_frames(
                 step,
                 producer_digest: event
                     .pointer("/payload/source_event_digest")
-                    .or_else(|| event.pointer("/detail/source_event_digest"))
                     .and_then(Value::as_str)
                     .map(str::to_string),
             });
@@ -4894,16 +5822,34 @@ async fn dispatch_experiments(
             let session_id = json_field(&body, "sessionId", "session_id")
                 .and_then(Value::as_str)
                 .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .context("experiments list requires sessionId")?;
-            let group = core
-                .data()
-                .experiment_for_session(session_id.to_owned())
-                .await?;
-            Ok(json!({
-                "sessionId": session_id,
-                "experiment": group,
-            }))
+                .filter(|value| !value.is_empty());
+            if let Some(session_id) = session_id {
+                let group = core
+                    .data()
+                    .experiment_for_session(session_id.to_owned())
+                    .await?;
+                Ok(json!({"sessionId": session_id, "experiment": group}))
+            } else {
+                let query = body.get("query").and_then(Value::as_str).map(str::to_owned);
+                Ok(json!({"experiments": core.data().experiments_list(query).await?}))
+            }
+        }
+        ("PATCH", path) if path.starts_with("/v1/experiments/") => {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment path"
+            );
+            let mut payload = body;
+            payload["experimentId"] = json!(experiment_id);
+            if payload.get("updatedAt").is_none() && payload.get("updated_at").is_none() {
+                payload["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentUpdateRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({"experiment": core.data().experiment_update(request).await?}))
         }
         ("GET", path) if path.starts_with("/v1/experiments/") => {
             let experiment_id = path
@@ -4953,6 +5899,199 @@ async fn dispatch_experiments(
     }
 }
 
+async fn dispatch_research_log(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    match (method, path) {
+        ("GET", "/v1/research-log") | ("GET", "/v1/research-log/") => {
+            let query = body.get("query").and_then(Value::as_str).map(str::to_owned);
+            let experiment_id = body
+                .get("experimentId")
+                .or_else(|| body.get("experiment_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            Ok(json!({"entries": core.data().research_log_list(query, experiment_id).await?}))
+        }
+        ("POST", "/v1/research-log") | ("POST", "/v1/research-log/") => {
+            let request: crate::experiments::ResearchJournalAppendRequest =
+                serde_json::from_value(body)?;
+            Ok(json!({"entry": core.data().research_log_append(request).await?}))
+        }
+        _ => anyhow::bail!("unknown research log route {method} {path}"),
+    }
+}
+
+async fn dispatch_analysis(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    match (method, path) {
+        ("POST", "/v1/analysis/projection") => {
+            let kind = body
+                .get("kind")
+                .and_then(Value::as_str)
+                .context("kind required")?;
+            let digest = body
+                .get("digest")
+                .or_else(|| body.get("source"))
+                .and_then(Value::as_str)
+                .context("digest required")?;
+            let kind = kind.to_string();
+            let digest = digest.to_string();
+            core.storage()
+                .database()
+                .run_read(move |conn| {
+                    crate::session::annotation_projection::projection_payload(conn, &kind, &digest)
+                })
+                .await
+        }
+        ("POST", "/v1/analysis/open") => {
+            let trace_id = body
+                .get("trace_id")
+                .or_else(|| body.get("traceId"))
+                .and_then(Value::as_str)
+                .context("trace_id required")?;
+            let evidence_digest = body
+                .get("evidence_digest")
+                .or_else(|| body.get("evidenceDigest"))
+                .and_then(Value::as_str)
+                .context("evidence_digest required")?;
+            let rubric_digest = body
+                .get("rubric_digest")
+                .or_else(|| body.get("rubricDigest"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let campaign_id = body
+                .get("campaign_id")
+                .or_else(|| body.get("campaignId"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let title = body.get("title").and_then(Value::as_str).map(str::to_owned);
+            let session_id = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+            let trace = core.data().get_trace(trace_id.to_string()).await?;
+            let visual = crate::presentation::ensure_annotation_workbench(
+                core,
+                crate::presentation::AnnotationWorkbenchRequest {
+                    trace,
+                    evidence_digest: evidence_digest.to_string(),
+                    rubric_digest,
+                    campaign_id,
+                    title,
+                    session_id: session_id.clone(),
+                },
+            )
+            .await?;
+            let (shown, event) = core.visuals().show(visual.id.clone(), session_id).await?;
+            core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
+            Ok(json!({
+                "opened": true,
+                "visualId": shown.id,
+                "templateId": shown.template_id,
+                "revision": shown.current_revision,
+                "visual": shown,
+            }))
+        }
+        ("POST", "/v1/analysis/campaigns") => {
+            let eval_run_id = body
+                .get("eval_run_id")
+                .or_else(|| body.get("evalRunId"))
+                .or_else(|| body.get("runId"))
+                .and_then(Value::as_str)
+                .context("evalRunId required")?;
+            let eval_run_id = eval_run_id.to_string();
+            core.storage()
+                .database()
+                .run_read(move |conn| {
+                    let campaigns = crate::session::annotation_projection::list_campaigns_for_eval(
+                        conn,
+                        &eval_run_id,
+                    )?;
+                    Ok(json!({ "campaigns": campaigns }))
+                })
+                .await
+        }
+        ("POST", "/v1/analysis/findings") => {
+            let digest = body
+                .get("trace_digest")
+                .or_else(|| body.get("traceDigest"))
+                .and_then(Value::as_str)
+                .context("traceDigest required")?;
+            let digest = digest.to_string();
+            core.storage()
+                .database()
+                .run_read(move |conn| {
+                    let findings = crate::session::annotation_projection::list_findings_for_trace(
+                        conn, &digest,
+                    )?;
+                    Ok(json!({ "findings": findings }))
+                })
+                .await
+        }
+        ("POST", "/v1/analysis/review") => {
+            let finding_id = body
+                .get("finding_id")
+                .or_else(|| body.get("findingId"))
+                .and_then(Value::as_str)
+                .context("findingId required")?
+                .to_string();
+            let decision = body
+                .get("decision")
+                .and_then(Value::as_str)
+                .unwrap_or("flag")
+                .to_string();
+            let reviewer = body
+                .get("reviewer")
+                .and_then(Value::as_str)
+                .unwrap_or("workshop")
+                .to_string();
+            let rationale = body
+                .get("rationale")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let evidence_head = body
+                .get("evidence_head_digest")
+                .or_else(|| body.get("evidenceHeadDigest"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let review_id = core
+                .storage()
+                .database()
+                .run_transaction({
+                    let finding_id = finding_id.clone();
+                    let evidence_head = evidence_head.clone();
+                    let decision = decision.clone();
+                    let reviewer = reviewer.clone();
+                    let rationale = rationale.clone();
+                    move |conn| {
+                        crate::session::annotation_projection::record_local_review(
+                            conn,
+                            &finding_id,
+                            &evidence_head,
+                            &decision,
+                            &reviewer,
+                            &rationale,
+                        )
+                    }
+                })
+                .await?;
+            Ok(json!({ "reviewId": review_id, "findingId": finding_id, "decision": decision }))
+        }
+        _ => anyhow::bail!("unsupported analysis IPC route {method} {path}"),
+    }
+}
+
 async fn dispatch_traces(
     method: &str,
     path: &str,
@@ -4998,13 +6137,45 @@ async fn dispatch_traces(
                 "inspectability": inspectability.label(),
             }))
         }
+        ("POST", "/v1/traces/window") => {
+            core.data().trace_view_window(
+                body["trace_digest"].as_str().context("trace_digest required")?.to_owned(),
+                body.get("snapshot_digest").and_then(Value::as_str).map(str::to_owned),
+                body["offset"].as_u64().unwrap_or(0) as usize,
+                body["limit"].as_u64().unwrap_or(200) as usize,
+            ).await
+        }
         ("POST", "/v1/traces/query") => {
+            if body.pointer("/query/schemaVersion").and_then(Value::as_str) == Some(crate::trace_research::SCHEMA) {
+                let query = body.get("query").cloned().context("query required")?;
+                let limit = query.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
+                let snapshot = core.data().research_query(query).await?;
+                return crate::trace_research::page(&snapshot, 0, limit);
+            }
             let query = crate::trace_query::parse_query(body.get("query").unwrap_or(&Value::Null))?;
             let snapshot = core
                 .data()
                 .query_traces(query, chrono::Utc::now().to_rfc3339())
                 .await?;
             Ok(serde_json::to_value(snapshot)?)
+        }
+        ("POST", "/v1/traces/prepare_annotations") => {
+            let id=body["snapshot_id"].as_str().context("snapshot_id required")?;
+            let ids:Vec<String>=serde_json::from_value(body["result_ids"].clone()).context("result_ids required")?;
+            let snapshot=core.data().query_snapshot(id.to_string()).await?;
+            crate::trace_research::annotation_selection(&snapshot,&ids)
+        }
+        ("POST", "/v1/traces/source") => {
+            let snapshot=body["snapshot_id"].as_str().context("snapshot_id required")?.to_string();
+            let result=body["result_id"].as_str().context("result_id required")?.to_string();
+            core.data().research_source(snapshot,result,body.get("selector").cloned(),body["offset"].as_u64().unwrap_or(0) as usize,body["source_limit"].as_u64().unwrap_or(16000) as usize).await
+        }
+        ("POST", "/v1/traces/page") => {
+            let id = body.get("snapshot_id").and_then(Value::as_str).context("snapshot_id required")?;
+            let snapshot = core.data().query_snapshot(id.to_string()).await?;
+            let offset = body.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let limit = body.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
+            crate::trace_research::page(&snapshot, offset, limit)
         }
         ("POST", "/v1/traces/snapshot") => {
             let snapshot_id = body
@@ -5145,42 +6316,6 @@ async fn dispatch_computer_use(
     }
 }
 
-/// Import one managed template package, once a person has allowed it.
-///
-/// The app-bound half of `POST /v1/visuals/templates/import`. This route has
-/// been reachable from the agent seam since the managed registry shipped and
-/// wrote a `renderer.html` into the instance state root with no confirmation of
-/// any kind; the write now goes through
-/// [`crate::visuals::registry::VisualRegistry::import_template_approved`], which
-/// describes the package to a person before any byte lands. `sessionRef` is
-/// required for the same reason the container restart route requires it: the
-/// card is raised on a conversation, and there is nowhere to draw one without.
-pub(crate) async fn dispatch_template_import(
-    body: Value,
-    core: &CoreRuntime,
-    app: &AppHandle,
-) -> Result<Value> {
-    let source_path = body
-        .get("sourcePath")
-        .or_else(|| body.get("source_path"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("source_path is required"))?;
-    let session = body
-        .get("sessionRef")
-        .or_else(|| body.get("session_ref"))
-        .or_else(|| body.get("sessionId"))
-        .or_else(|| body.get("session_id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
-    let template = core
-        .visuals()
-        .import_template_approved(app, Some(session), source_path)
-        .await?;
-    Ok(json!({ "template": template }))
-}
-
 pub(crate) async fn dispatch_container_restart(
     path: &str,
     body: Value,
@@ -5196,6 +6331,37 @@ pub(crate) async fn dispatch_container_restart(
         .or_else(|| body.get("session_ref"))
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+    // A restart is a maintenance operation, not an implicit cancellation.
+    // Refuse before approval when any non-terminal optimizer run is bound to
+    // this evaluator so the operator can stop or cancel that work explicitly.
+    let active = core
+        .optimizers()
+        .list(crate::optimizers::models::OptimizerQuery {
+            limit: Some(1_000),
+            ..Default::default()
+        })
+        .await?
+        .into_iter()
+        .filter(|run| {
+            !crate::optimizers::models::OptimizerRunStatus::str_is_terminal(&run.status)
+                && (run
+                    .execution_bindings
+                    .iter()
+                    .any(|binding| binding.kind == "container_http" && binding.id == id)
+                    || run
+                        .summary
+                        .get("containerId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|container_id| container_id == id))
+        })
+        .map(|run| run.id)
+        .collect::<Vec<_>>();
+    if !active.is_empty() {
+        anyhow::bail!(
+            "container_restart_blocked_active_optimizer_runs: `{id}` is used by {}; cancel or finish those runs before restarting",
+            active.join(", ")
+        );
+    }
     // Validate and reconcile before the destructive approval. An invalid
     // declaration must not consume a click.
     let spec = crate::optimizers::container_lifecycle::reconcile_declaration(

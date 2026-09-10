@@ -1,134 +1,97 @@
-import { useCallback, useEffect, useState } from "react";
-import type { ProjectSourceCatalog, ProjectSourceRow } from "../bridge";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { ProjectSourceCatalog, ProjectSourceRequest, ProjectSourceRow } from "../generated/protocol";
 import { bridges } from "../runtime/desktopBridge";
 import { publicError } from "../runtime/publicError";
+import "./ProjectSourcesSettings.css";
 
-const ORIGIN_LABEL: Record<ProjectSourceRow["origin"], string> = {
-	configured: "Approved",
-	environment: "Launcher override",
-	remembered: "Previously discovered",
-	development_fallback: "Development fallback"
-};
-
-function statusLabel(row: ProjectSourceRow): string {
-	if (row.inspection.status === "valid") {
-		const parts: string[] = [];
-		if (row.containers) parts.push(`${row.inspection.containers.length} container${row.inspection.containers.length === 1 ? "" : "s"}`);
-		if (row.recipes) parts.push(`${row.inspection.recipes.length} recipe${row.inspection.recipes.length === 1 ? "" : "s"}`);
-		return parts.join(" · ") || "No declarations";
-	}
-	return row.inspection.message ?? row.inspection.status;
+function SourceRow({ row, busy, remove }: { row: ProjectSourceRow; busy: boolean; remove?: (path: string) => void }) {
+	const counts = [row.containers ? `${row.inspection.containers.length} container(s)` : null, row.recipes ? `${row.inspection.recipes.length} recipe(s)` : null].filter(Boolean).join(" · ");
+	return <div className="project-source-row" data-testid="project-source-row">
+		<div><code>{row.path}</code><p>
+			{row.containers ? "Containers " : ""}{row.recipes ? "Recipes " : ""}
+			· {row.origin === "configured" ? "Approved" : "Launcher environment"}
+		</p><p>{row.inspection.status === "valid"
+			? `Last successful scan: ${counts}`
+			: row.inspection.message ?? row.inspection.status}</p></div>
+		{remove ? <button type="button" className="settings-secondary-btn" disabled={busy} aria-label={`Remove project source ${row.path}`} onClick={() => remove(row.path)}>Remove</button> : null}
+	</div>;
 }
 
-function SourceRow({ row, busy, onRemove }: { row: ProjectSourceRow; busy: boolean; onRemove?: (path: string) => void }) {
-	const invalid = row.inspection.status !== "valid";
-	return (
-		<div className={`project-source-row${invalid ? " project-source-row-invalid" : ""}`} data-testid="project-source-row">
-			<div className="project-source-identity">
-				<code title={row.path}>{row.path}</code>
-				<span className="project-source-capabilities">
-					{row.containers ? <b>Containers</b> : null}
-					{row.recipes ? <b>Recipes</b> : null}
-					<em>{ORIGIN_LABEL[row.origin]}</em>
-				</span>
-			</div>
-			<div className="project-source-state">
-				<span className={invalid ? "project-source-invalid" : undefined} role={invalid ? "status" : undefined}>{statusLabel(row)}</span>
-				{row.lastScannedAt ? <small>Last scan {row.lastScannedAt}</small> : <small>Not scanned yet</small>}
-			</div>
-			{onRemove ? (
-				<button type="button" disabled={busy} aria-label={`Remove project source ${row.path}`} onClick={() => onRemove(row.path)}>Remove</button>
-			) : null}
-		</div>
-	);
-}
-
-/**
- * Settings → Workspace → Project sources.
- *
- * The copy here has one job: keep project sources from reading as a second
- * name for workspace access. Attaching a folder to a conversation grants file
- * access. A project source is where Workshop is allowed to find container and
- * recipe declarations it may then be asked to run, which is why removal is
- * offered on every approved row and why invalid rows say what is wrong instead
- * of quietly disappearing from discovery.
- */
 export function ProjectSourcesSettings() {
 	const [catalog, setCatalog] = useState<ProjectSourceCatalog | null>(null);
-	const [busy, setBusy] = useState(true);
+	const [requests, setRequests] = useState<ProjectSourceRequest[] | null>(null);
+	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-
-	const load = useCallback(async (refresh: boolean) => {
-		setBusy(true);
-		setError(null);
-		try {
-			const next = refresh ? await bridges.projectSources?.refresh() : await bridges.projectSources?.get();
-			if (next) setCatalog(next);
-		} catch (reason) {
-			setError(publicError(reason));
-		} finally {
-			setBusy(false);
-		}
+	const [notice, setNotice] = useState<string | null>(null);
+	const [containers, setContainers] = useState(true);
+	const [recipes, setRecipes] = useState(true);
+	const active = useRef(false);
+	const mounted = useRef(true);
+	const bridge = () => {
+		if (!bridges.projectSources) throw new Error("Project source controls are unavailable");
+		return bridges.projectSources;
+	};
+	const reload = useCallback(async () => {
+		const [next, pending] = await Promise.all([bridge().refresh(), bridge().requests()]);
+		if (mounted.current) { setCatalog(next); setRequests(pending.filter((request) => request.status === "pending")); }
 	}, []);
-
-	useEffect(() => { void load(false); }, [load]);
-
-	const add = useCallback(async () => {
-		setBusy(true);
-		setError(null);
-		try {
-			const next = await bridges.projectSources?.add(true, true);
-			if (next) setCatalog(next);
-		} catch (reason) {
-			setError(publicError(reason));
-		} finally {
-			setBusy(false);
-		}
+	const run = useCallback(async (action: () => Promise<void>, quiet = false) => {
+		if (active.current) return;
+		active.current = true;
+		if (mounted.current) { setBusy(true); if (!quiet) { setError(null); setNotice(null); } }
+		try { await action(); }
+		catch (reason) { if (mounted.current) setError(publicError(reason)); }
+		finally { active.current = false; if (mounted.current) setBusy(false); }
 	}, []);
-
-	const remove = useCallback(async (path: string) => {
-		setBusy(true);
-		setError(null);
+	useEffect(() => {
+		mounted.current = true;
+		void run(reload);
+		const timer = window.setInterval(() => void run(reload, true), 5000);
+		return () => { mounted.current = false; window.clearInterval(timer); };
+	}, [reload, run]);
+	const add = () => run(async () => {
+		const next = await bridge().add(containers, recipes);
+		if (next && mounted.current) { setCatalog(next); setNotice("Project source approved."); }
+	});
+	const remove = (path: string) => void run(async () => {
+		try { const next = await bridge().remove(path); if (mounted.current) setCatalog(next); }
+		catch (reason) { await reload().catch(() => undefined); throw reason; } // Revocation may have succeeded before an audit failure.
+	});
+	const approve = (id: string) => void run(async () => {
 		try {
-			const next = await bridges.projectSources?.remove(path);
-			if (next) setCatalog(next);
-		} catch (reason) {
-			setError(publicError(reason));
-		} finally {
-			setBusy(false);
-		}
-	}, []);
-
-	return (
-		<section className="project-sources" data-testid="project-sources-settings">
-			<header className="project-sources-head">
-				<div>
-					<h3>Project sources</h3>
-					<p>
-						Folders Workshop may read <code>workshop.containers.toml</code> and <code>workshop.recipe(s)</code> from.
-						Container commands declared in these folders can be started, after the usual execution approvals.
-						This is separate from agent workspace access, which only grants file access to a conversation.
-					</p>
-				</div>
-				<div className="project-sources-actions">
-					<button type="button" className="settings-secondary-btn" disabled={busy} onClick={() => void load(true)} data-testid="rescan-project-sources">Rescan</button>
-					<button type="button" className="settings-secondary-btn" disabled={busy} onClick={() => void add()} data-testid="add-project-source">Add project source…</button>
-				</div>
-			</header>
-			{error ? <p className="model-locations-error" role="alert">{error}</p> : null}
-			{catalog?.sources.length ? (
-				<div className="project-source-list">
-					{catalog.sources.map((row) => <SourceRow key={row.path} row={row} busy={busy} onRemove={(path) => void remove(path)} />)}
-				</div>
-			) : <p className="project-sources-empty">No approved project source. An agent can ask for one, or add a repository folder here.</p>}
-			{catalog?.implicitRoots.length ? (
-				<div className="project-source-implicit">
-					<small>Also in scope, not approved here</small>
-					<p>These come from the launcher environment, earlier discoveries, or the development fallback. Approve one above to keep it across environments.</p>
-					{catalog.implicitRoots.map((row) => <SourceRow key={row.path} row={row} busy={busy} />)}
-				</div>
-			) : null}
-			{catalog?.configPath ? <footer className="project-sources-config"><code>{catalog.configPath}</code></footer> : null}
-		</section>
-	);
+			const result = await bridge().approve(id);
+			if (!result) return; // Native picker cancellation grants nothing.
+			if (mounted.current) {
+				setCatalog(result.catalog);
+				setNotice(result.attachmentError ?? "Project source approved.");
+			}
+			await reload();
+		} catch (reason) { await reload().catch(() => undefined); throw reason; }
+	});
+	const deny = (id: string) => void run(async () => { await bridge().deny(id); await reload(); });
+	return <section className="project-sources" data-testid="project-sources-settings" aria-busy={busy}>
+		<h3>Project sources</h3>
+		<p>Approve folders containing container and optimizer recipe declarations. These grants are separate from conversation file access; execution approvals still apply.</p>
+		<div className="project-source-actions">
+			<label><input type="checkbox" checked={containers} disabled={busy} onChange={(event) => setContainers(event.target.checked)} /> Containers</label>
+			<label><input type="checkbox" checked={recipes} disabled={busy} onChange={(event) => setRecipes(event.target.checked)} /> Recipes</label>
+			<button type="button" className="settings-secondary-btn" disabled={busy || (!containers && !recipes)} onClick={() => void add()} data-testid="add-project-source">Add project source…</button>
+			<button type="button" className="settings-secondary-btn" disabled={busy} onClick={() => void run(reload)} data-testid="rescan-project-sources">Rescan</button>
+		</div>
+		{error ? <p role="alert">{error}</p> : null}
+		{notice ? <p role="status">{notice}</p> : null}
+		{catalog?.sources.map((row) => <SourceRow key={row.path} row={row} busy={busy} remove={remove} />)}
+		{catalog && !catalog.sources.length ? <p>No approved project source. Add a repository folder or review an agent request below.</p> : null}
+		{catalog?.implicitRoots.length ? <div><h4>Launcher-managed sources</h4><p>These permissions come from the launcher environment. Removing an approved row above does not remove an environment grant.</p>
+			{catalog.implicitRoots.map((row) => <SourceRow key={row.path} row={row} busy={busy} />)}</div> : null}
+		<h4>Pending source requests</h4>
+		{requests === null ? <p>{busy ? "Loading source requests…" : "Source requests are unavailable."}</p> : !requests.length ? <p>No pending source requests.</p> : requests.map((request) => <div className="project-source-request" key={request.id} data-testid="project-source-request">
+			<code>{request.canonicalPath}</code><p>{request.reason}</p>
+			<p>Requested: {request.containers ? "containers " : ""}{request.recipes ? "recipes" : ""}.
+				{request.attachToConversation ? ` Also attach with read/write access to conversation ${request.sessionId}.` : " No conversation file access requested."}</p>
+			<p>Approval requires selecting this exact folder, not its parent.</p>
+			<div className="project-source-actions"><button type="button" className="settings-secondary-btn" disabled={busy} onClick={() => approve(request.id)}>Choose exact folder and approve…</button><button type="button" className="settings-secondary-btn" disabled={busy} onClick={() => deny(request.id)}>Deny</button></div>
+		</div>)}
+		{catalog?.configPath ? <small><code>{catalog.configPath}</code></small> : null}
+	</section>;
 }

@@ -1,21 +1,30 @@
 //! Local Visual Registry: durable visual instances, revisions, and template catalog.
 
 mod artifacts;
+mod seal_evidence;
+mod seal_template;
 mod backfill;
+pub mod cache_gc;
+
+/// The renderer version stamped on stored renditions.
+pub use mermaid::RENDERER_VERSION as RENDITION_RENDERER_VERSION;
 pub mod chart_data;
 pub mod charts;
-pub mod live_eval;
+pub(crate) mod live_eval;
+pub mod stream_receipt;
 pub mod mermaid;
 mod models;
 mod registry;
 mod renditions;
+mod state;
+pub mod engine;
+mod query_engine;
 #[cfg(target_os = "macos")]
 pub mod snapshot;
 pub mod sourced;
-pub mod stream_receipt;
 pub mod systems;
 mod templates;
-mod user_templates;
+pub mod user_templates;
 
 
 /// Templates whose canonical source is the visual itself: create and update
@@ -23,7 +32,11 @@ mod user_templates;
 /// renderer; sourced TSX compiles in the Desktop pane. Callers that just need
 /// "some template" — tests, pickers — must skip these rather than sniff the id.
 pub fn requires_canonical_source(template_id: &str) -> bool {
-    mermaid::is_mermaid_template(template_id)
+    resolve_template(template_id)
+        .ok()
+        .and_then(|template| template.renderer_kind)
+        .is_some_and(|kind| matches!(kind.as_str(), "mermaid" | "systems" | "systems-dynamic" | "chart" | "tsx"))
+        || mermaid::is_mermaid_template(template_id)
         || systems::template_kind(template_id).is_some()
         || charts::is_chart_template(template_id)
         || sourced::is_sourced_template(template_id)
@@ -48,15 +61,9 @@ pub use models::{
 };
 pub use registry::VisualRegistry;
 pub use renditions::{VisualAsset, VisualRendition};
-/// `import_managed_template` is deliberately absent. It writes renderer code
-/// into the instance state root, which is now an approved act, and
-/// `VisualRegistry::import_template_approved` is the only door. Re-exporting it
-/// here would leave a second one open beside the lock.
+pub use state::VisualStateStore;
 pub use templates::{
-    list_skipped_templates, list_templates, resolve_template, SkippedUserTemplate, TemplateMeta,
-    TemplateObservationContract, TemplateReadinessContract,
+    certification_renderer_digest, import_managed_template, list_templates, resolve_template,
+    AuthoringAffordance, TemplateMeta, TemplateObservationContract, TemplateReadinessContract,
 };
-/// The user tier's writer, its verdict type, and its watcher. `templates.rs`
-/// still owns what a user template *is*; these are the three things that
-/// create one, judge one, and notice one changing on disk.
-pub use user_templates::{spawn_watcher, UserTemplateFinding, UserTemplateValidation};
+mod collection_corpus;

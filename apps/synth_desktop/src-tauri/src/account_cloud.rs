@@ -89,23 +89,42 @@ pub struct CloudPlan {
     #[specta(type = specta_typescript::Number)]
     pub price_cents: i64,
     #[serde(default)]
+    #[specta(type = Option<specta_typescript::Number>)]
+    pub effective_price_cents: Option<i64>,
+    #[serde(default)]
+    pub billing_interval: Option<String>,
+    #[serde(default)]
+    pub grant_kind: Option<String>,
+    #[serde(default)]
+    pub entitlement_state: Option<String>,
+    #[serde(default)]
+    pub entitlement_starts_at: Option<String>,
+    #[serde(default)]
+    pub entitlement_expires_at: Option<String>,
+    #[serde(default)]
+    pub campaign_id: Option<String>,
+    #[serde(default)]
+    pub claim_state: Option<String>,
+    #[serde(default)]
     pub renews_at: Option<String>,
+    #[serde(default)]
+    pub cancel_at_period_end: bool,
     #[serde(default)]
     pub is_paid: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudAllowance {
-    /// `None` means the backend does not meter this account in dollars. The UI
-    /// must then show no dollar figure at all.
+    /// `None` means the backend has no known dollar allowance. It does not
+    /// authorize unmetered spending; the UI must show no dollar figure.
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub limit_cents: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub used_cents: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub remaining_cents: Option<i64>,
     #[serde(default)]
     pub resets_at: Option<String>,
@@ -226,11 +245,10 @@ pub fn validate_turn_admission(read: &SnapshotRead) -> Result<(), String> {
             snapshot.status
         ));
     }
-    if snapshot
-        .allowance
-        .remaining_cents
-        .is_some_and(|cents| cents <= 0)
-    {
+    let remaining = snapshot.allowance.remaining_cents.ok_or_else(|| {
+        "Synth Cloud balance is unknown. No metered turn was started.".to_string()
+    })?;
+    if remaining <= 0 {
         return Err("Synth Cloud balance is exhausted. No metered turn was started.".into());
     }
     Ok(())

@@ -22,16 +22,6 @@ use uuid::Uuid;
 
 const HEALTH_POLL: Duration = Duration::from_millis(200);
 
-fn declaration_manifest_hash(spec: &ContainerSpec) -> Result<String> {
-    let bytes = std::fs::read(&spec.origin.manifest_path).with_context(|| {
-        format!(
-            "read container declaration {}",
-            spec.origin.manifest_path.display()
-        )
-    })?;
-    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
-}
-
 fn children() -> &'static Mutex<HashMap<u32, Child>> {
     static CHILDREN: OnceLock<Mutex<HashMap<u32, Child>>> = OnceLock::new();
     CHILDREN.get_or_init(|| Mutex::new(HashMap::new()))
@@ -227,13 +217,25 @@ pub fn declared_record(
 
 pub fn resolve_declared_spec(
     db: &Arc<Database>,
-    session_id: &str,
+    _session_id: &str,
     container_id: &str,
 ) -> Result<workspace_recipe::ContainerSpec> {
     let (spec_id, metadata) = declared_record(db, container_id)?;
-    let search_roots = workspace_recipe::session_search_roots(db, session_id)?;
-    let stored = workspace_recipe::origin_from_metadata(&metadata, &spec_id);
-    workspace_recipe::resolve_container_spec(&search_roots, &spec_id, stored.as_ref())
+    let stored = workspace_recipe::origin_from_metadata(&metadata, &spec_id).ok_or_else(|| {
+        anyhow!(
+            "launch_declaration_missing: container `{container_id}` has no persisted declaration origin"
+        )
+    })?;
+    crate::project_sources::require_manifest(&stored.manifest_path, crate::project_sources::Capability::Containers)?;
+    workspace_recipe::load_container_specs_from_manifest(&stored.manifest_path)?
+        .into_iter()
+        .find(|candidate| candidate.id == spec_id)
+        .ok_or_else(|| {
+            anyhow!(
+                "container spec `{spec_id}` is not declared in persisted manifest {}",
+                stored.manifest_path.display()
+            )
+        })
 }
 
 pub fn resolve_spec_for_session(
@@ -283,6 +285,8 @@ pub async fn ensure_from_session(
 }
 
 pub async fn ensure_spec(db: &Arc<Database>, spec: &ContainerSpec) -> Result<EnsuredContainer> {
+    require_source_grant(spec)?;
+    let broker_secret = new_broker_secret();
     let (base_url, launch) = if let Some(url) = spec.url.as_deref() {
         let base = url.trim_end_matches('/').to_string();
         let launch = if spec.command.is_empty() {
@@ -290,7 +294,7 @@ pub async fn ensure_spec(db: &Arc<Database>, spec: &ContainerSpec) -> Result<Ens
         } else if healthy_now(&base, &spec.health, spec).await? {
             None
         } else {
-            Some(start_command(spec)?)
+            Some(start_with_source_grant(spec, Some(&broker_secret)).await?)
         };
         (base, launch)
     } else {
@@ -300,8 +304,16 @@ pub async fn ensure_spec(db: &Arc<Database>, spec: &ContainerSpec) -> Result<Ens
         );
     };
     wait_healthy(&base_url, &spec.health, spec).await?;
+    // Serialize the final check/registry commit with native grant revocation.
+    // Do not hold this lock during readiness: revocation must remain available.
+    let _resolution = crate::project_sources::requests::RESOLUTION.lock().await;
+    require_source_grant(spec)?;
+    let launched = launch.is_some();
     let process = launch.as_ref().map(LaunchedCommand::receipt);
     let container_id = upsert_ready(db, spec, &base_url, process).await?;
+    if launched {
+        store_broker_secret(db, &container_id, &broker_secret).await?;
+    }
     if let Some(launch) = launch {
         launch.commit();
     }
@@ -323,6 +335,7 @@ pub async fn replace_declared(
     db: &Arc<Database>,
     spec: &ContainerSpec,
 ) -> Result<EnsuredContainer> {
+    require_source_grant(spec)?;
     let base_url = spec
         .url
         .as_deref()
@@ -330,10 +343,14 @@ pub async fn replace_declared(
         .filter(|value| !value.is_empty())
         .map(|value| value.trim_end_matches('/').to_string())
         .ok_or_else(|| anyhow!("container `{}` must declare url", spec.id))?;
-    let launch = start_command(spec)?;
+    let broker_secret = new_broker_secret();
+    let launch = start_with_source_grant(spec, Some(&broker_secret)).await?;
     wait_healthy(&base_url, &spec.health, spec).await?;
+    let _resolution = crate::project_sources::requests::RESOLUTION.lock().await;
+    require_source_grant(spec)?;
     let process = launch.receipt();
     let container_id = upsert_ready(db, spec, &base_url, Some(process)).await?;
+    store_broker_secret(db, &container_id, &broker_secret).await?;
     launch.commit();
     Ok(EnsuredContainer {
         container_id,
@@ -343,7 +360,35 @@ pub async fn replace_declared(
     })
 }
 
-fn start_command(spec: &ContainerSpec) -> Result<LaunchedCommand> {
+fn new_broker_secret() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+async fn store_broker_secret(db: &Arc<Database>, container_id: &str, secret: &str) -> Result<()> {
+    let container_id = container_id.to_string();
+    let secret = secret.to_string();
+    db.run_transaction(move |conn| {
+        crate::session::annotation_reservation::store_broker_secret(conn, &container_id, &secret)
+    })
+    .await
+}
+
+fn require_source_grant(spec: &ContainerSpec) -> Result<()> {
+    crate::project_sources::require_manifest(&spec.origin.manifest_path, crate::project_sources::Capability::Containers)?;
+    Ok(())
+}
+
+async fn start_with_source_grant(spec: &ContainerSpec, broker_secret: Option<&str>) -> Result<LaunchedCommand> {
+    let _resolution = crate::project_sources::requests::RESOLUTION.lock().await;
+    start_command(spec, broker_secret)
+}
+
+fn start_command(spec: &ContainerSpec, broker_secret: Option<&str>) -> Result<LaunchedCommand> {
+    require_source_grant(spec)?;
     let source_root = spec
         .origin
         .source_root
@@ -370,20 +415,11 @@ fn start_command(spec: &ContainerSpec) -> Result<LaunchedCommand> {
         .ok_or_else(|| anyhow!("container `{}` command is empty", spec.id))?;
     let mut command = Command::new(program);
     command.envs(&spec.environment);
-    // Stamp the launch with the revision this declaration named, so the
-    // running process can answer what it loaded. Freshness cannot be read off
-    // the declaration alone: the v9 harness source moved while the launch
-    // declaration stayed byte-identical, so its digest went on matching and
-    // nothing could say the managed container had not been replaced. A
-    // container left over from an earlier launch echoes that earlier
-    // revision, and admission refuses it.
-    if let Some(revision) = spec
-        .source_revision
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        command.env(crate::limits::CONTAINER_SOURCE_REVISION_ENV, revision);
+    // Workshop-owned, per-launch material (never manifest-configured): the secret a
+    // container verifies host-signed annotation reservations with. It is stored
+    // beside the container record so the host can mint tokens for it later.
+    if let Some(secret) = broker_secret {
+        command.env(crate::session::annotation_reservation::ENV_SECRET, secret);
     }
     // Provider credentials never enter the launched process. The declaration
     // names which Workshop proxy routes may be minted later for an approved
@@ -555,7 +591,7 @@ async fn wait_healthy(base_url: &str, health_path: &str, spec: &ContainerSpec) -
                     .await
                     .context("health_contract_invalid: response is not JSON")?;
                 validate_health_identity(spec, &payload)?;
-                match validate_declared_runtime_identity(&client, base_url, spec).await {
+                match validate_declared_runtime_identity(&client, base_url, spec, &payload).await {
                     Ok(()) => return Ok(()),
                     Err(error) => last = error.to_string(),
                 }
@@ -593,9 +629,11 @@ async fn healthy_now(base_url: &str, health_path: &str, spec: &ContainerSpec) ->
         .await
         .context("health_contract_invalid: response is not JSON")?;
     validate_health_identity(spec, &payload)?;
-    Ok(validate_declared_runtime_identity(&client, base_url, spec)
-        .await
-        .is_ok())
+    Ok(
+        validate_declared_runtime_identity(&client, base_url, spec, &payload)
+            .await
+            .is_ok(),
+    )
 }
 
 /// Bind readiness to the immutable runtime pins carried by the launch
@@ -606,6 +644,7 @@ async fn validate_declared_runtime_identity(
     client: &reqwest::Client,
     base_url: &str,
     spec: &ContainerSpec,
+    health: &Value,
 ) -> Result<()> {
     let expected_image = spec.environment.get("SYNTH_CONTAINER_IMAGE_DIGEST");
     let expected_producer = spec
@@ -614,30 +653,43 @@ async fn validate_declared_runtime_identity(
     if expected_image.is_none() && expected_producer.is_none() {
         return Ok(());
     }
-    let info_url = format!("{}/info", base_url.trim_end_matches('/'));
-    let response = client
-        .get(&info_url)
-        .send()
-        .await
-        .with_context(|| format!("container_identity_pending: query {info_url}"))?;
+    let mut evidence = vec![health.clone()];
+    for path in ["/info"] {
+        let url = format!("{}{path}", base_url.trim_end_matches('/'));
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("container_identity_pending: query {url}"))?;
+        if response.status().is_success() {
+            evidence.push(response.json::<Value>().await.with_context(|| {
+                format!("container_identity_pending: {path} response is not JSON")
+            })?);
+        }
+    }
     anyhow::ensure!(
-        response.status().is_success(),
-        "container_identity_pending: {info_url} returned HTTP {}",
-        response.status()
+        !evidence.is_empty(),
+        "container_identity_pending: neither /info nor /health returned identity evidence"
     );
-    let info = response
-        .json::<Value>()
-        .await
-        .context("container_identity_pending: /info response is not JSON")?;
+    let identity_field = |camel: &str, snake: &str| {
+        evidence.iter().find_map(|payload| {
+            payload.get(camel).and_then(Value::as_str).or_else(|| {
+                payload
+                    .get("runtime_identity")
+                    .and_then(|identity| identity.get(snake))
+                    .and_then(Value::as_str)
+            })
+        })
+    };
     if let Some(expected) = expected_image {
-        let actual = info.get("imageDigest").and_then(Value::as_str);
+        let actual = identity_field("imageDigest", "image_digest");
         anyhow::ensure!(
             actual == Some(expected.as_str()),
             "container_identity_pending: expected imageDigest {expected}, got {actual:?}"
         );
     }
     if let Some(expected) = expected_producer {
-        let actual = info.get("producerSourceRevision").and_then(Value::as_str);
+        let actual = identity_field("producerSourceRevision", "producer_source_revision");
         anyhow::ensure!(
             actual == Some(expected.as_str()),
             "container_identity_pending: expected producerSourceRevision {expected}, got {actual:?}"
@@ -668,18 +720,6 @@ async fn upsert_ready(
     base_url: &str,
     process: Option<(u32, String)>,
 ) -> Result<String> {
-    let info = crate::http::http_client_builder()
-        .timeout(Duration::from_secs(2))
-        .build()?
-        .get(format!("{}/info", base_url.trim_end_matches('/')))
-        .send()
-        .await
-        .context("container_identity_pending: query /info before registration")?
-        .error_for_status()
-        .context("container_identity_pending: /info was not successful")?
-        .json::<Value>()
-        .await
-        .context("container_identity_pending: /info response is not JSON")?;
     let spec_id = spec.id.clone();
     let family = spec.family.clone();
     let contract = spec.contract.clone();
@@ -697,7 +737,7 @@ async fn upsert_ready(
     });
     let policy_source_path = spec.policy_source.clone();
     let source_revision = spec.source_revision.clone();
-    let manifest_digest = Some(declaration_manifest_hash(spec)?);
+    let manifest_digest = spec.manifest_digest.clone();
     let base_url = base_url.to_string();
     let (supervised_pid, process_start_identity) = process
         .map(|(pid, start)| (Some(pid), Some(start)))
@@ -747,7 +787,6 @@ async fn upsert_ready(
                     "protocol": contract,
                     "revision": source_revision,
                 },
-                "info": info,
                 "supervisedPid": retained_pid,
                 "processStartIdentity": retained_start,
             }))?;
@@ -795,7 +834,7 @@ fn merge_declaration_metadata(
     });
     let spec_id = spec.id.clone();
     let source_revision = spec.source_revision.clone();
-    let manifest_digest = Some(declaration_manifest_hash(spec)?);
+    let manifest_digest = spec.manifest_digest.clone();
     let policy_source_path = spec.policy_source.clone();
     db.with_conn(move |conn| {
         let raw: String = conn.query_row(

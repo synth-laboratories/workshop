@@ -1,25 +1,46 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
 
 const MANAGED_TEMPLATE_MAX_BYTES: u64 = 1_500_000;
 
-/// What a template requires before its current revision can be called ready.
-///
-/// Two different observers answer these. `minimum_rollout_count`,
-/// `minimum_rendered_frame_count`, `minimum_semantic_event_count` and
-/// `require_terminal` are read from the *rendered* observation the pane
-/// publishes: claims about what the projector folded and the DOM then drew.
-/// `minimum_transport_envelope_count` is read from the host's own stream
-/// receipt at the poll seam: a claim about what arrived, before any fold has an
-/// opinion about it. Keeping them separate is the whole point — see that
-/// field's note.
-#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    specta::Type,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum AuthoringAffordance {
+    TemporalControls,
+    TraceInspector,
+    RealEvidence,
+}
+
+impl AuthoringAffordance {
+    pub const fn check_name(self) -> &'static str {
+        match self {
+            Self::TemporalControls => "temporalControls",
+            Self::TraceInspector => "traceInspector",
+            Self::RealEvidence => "realEvidence",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateReadinessContract {
     #[serde(default)]
@@ -33,40 +54,41 @@ pub struct TemplateReadinessContract {
     #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub minimum_semantic_event_count: u64,
-    /// Non-control envelopes the transport must have delivered, counted by the
-    /// host's stream receipt rather than by the pane.
-    ///
-    /// Deliberately *not* `minimum_semantic_event_count`. That number is a
-    /// claim about what the projector produced, and only the fold can answer
-    /// it; the receipt counts at the transport level, where a heartbeat and a
-    /// verifier result are told apart by envelope kind and nothing more. A
-    /// template that renders one summary line out of a hundred envelopes, and a
-    /// template that fans one envelope into a hundred rows, both exist — so
-    /// satisfying a projector claim with a transport count would certify a fold
-    /// nobody ran, and satisfying a transport claim with a projector count
-    /// would veto a stream that did arrive. Two observers, two knobs.
-    ///
-    /// Defaults to 0, so a template that says nothing here keeps exactly the
-    /// behaviour it had before the receipt gate existed.
+    /// Distinct non-control transport envelopes required from the host receipt.
     #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub minimum_transport_envelope_count: u64,
     #[serde(default)]
     pub require_terminal: bool,
+    /// Which evidence affordances this surface actually offers, out of
+    /// `temporalControls`, `traceInspector`, `realEvidence`.
+    ///
+    /// Absent means all three, so no existing template is relaxed by this
+    /// field. A template opts out only by declaring the shorter list in its
+    /// manifest, which is reviewable — unlike a reviewer ticking a box that is
+    /// false. A static analysis projection of immutable sealed evidence has no
+    /// temporal control to offer, and demanding one made it uncertifiable.
+    #[serde(default)]
+    pub authoring_affordances: Option<Vec<AuthoringAffordance>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateObservationContract {
     pub schema_version: String,
     pub readiness: TemplateReadinessContract,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateMeta {
     pub schema_version: String,
     pub id: String,
+    /// Digest of every file in this template package. Certification binds to
+    /// this value so template changes stale earlier reviews without requiring
+    /// a cosmetic visual revision bump.
+    #[serde(default)]
+    pub template_digest: String,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
@@ -78,15 +100,16 @@ pub struct TemplateMeta {
     pub family: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
+    /// Registered renderer capability. Dispatch is based on this descriptor,
+    /// never on a hard-coded template id.
+    #[serde(default)]
+    pub renderer_kind: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
     pub path: Option<String>,
-    /// TSX entry point. Bundled families resolve it through Vite's static
-    /// graph; a `source_kind: "user"` template is compiled in the pane from
-    /// this file through `compileSourcedModule`.
     #[serde(default)]
     pub shell_path: Option<String>,
     /// `renderer.html` packages are imported into the instance-local managed
@@ -115,12 +138,69 @@ pub struct TemplateMeta {
     pub observation_contract: Option<TemplateObservationContract>,
 }
 
+pub fn certification_renderer_digest(template: &TemplateMeta, source_revision: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"synth.visual-renderer-contract.v1\0");
+    hasher.update(source_revision.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(template.id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(template.template_digest.as_bytes());
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn template_package_digest(path: &Path) -> anyhow::Result<String> {
+    let canonical_root = fs::canonicalize(path)?;
+    let mut pending = vec![path.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                anyhow::bail!(
+                    "visual template package refuses symlink: {}",
+                    entry.path().display()
+                );
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file() {
+                let canonical = fs::canonicalize(entry.path())?;
+                if !canonical.starts_with(&canonical_root) {
+                    anyhow::bail!(
+                        "visual template package escapes its root: {}",
+                        entry.path().display()
+                    );
+                }
+                files.push(entry.path());
+            }
+        }
+    }
+    files.sort();
+    let mut hasher = Sha256::new();
+    hasher.update(b"synth.visual-template-package.v1\0");
+    for file in files {
+        let relative = file.strip_prefix(path)?;
+        let name = relative.to_string_lossy();
+        let bytes = fs::read(&file)?;
+        hasher.update((name.len() as u64).to_be_bytes());
+        hasher.update(name.as_bytes());
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
 pub fn visuals_root() -> PathBuf {
     if let Ok(value) = std::env::var("SYNTH_VISUALS_ROOT") {
         return PathBuf::from(value);
     }
     if let Ok(workshop) = std::env::var("SYNTH_WORKSHOP_ROOT") {
-        return PathBuf::from(workshop).join("visuals");
+        let root = PathBuf::from(workshop);
+        let package = root.join("packages/workshop-visuals");
+        return if package.join("families").is_dir() { package } else { root.join("visuals") };
     }
     if let Ok(executable) = std::env::current_exe() {
         if let Some(macos_dir) = executable.parent() {
@@ -132,48 +212,29 @@ pub fn visuals_root() -> PathBuf {
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
-        .join("visuals")
+        .join("packages/workshop-visuals")
 }
 
 pub fn list_templates(genre: Option<&str>) -> anyhow::Result<Vec<TemplateMeta>> {
-    let mut out = Vec::new();
-    for (_, meta) in build_template_index(&visuals_root())?.templates {
-        if let Some(filter) = genre {
-            let matches = meta
-                .genre
-                .as_deref()
-                .map(|value| value.eq_ignore_ascii_case(filter))
-                .unwrap_or(false)
-                || meta.id.to_lowercase().contains(&filter.to_lowercase());
-            if !matches {
-                continue;
+    let filter = genre.map(str::to_owned);
+    with_template_index(&visuals_root(), move |templates| {
+        let mut out = Vec::new();
+        for (_, meta) in templates {
+            if let Some(filter) = filter.as_deref() {
+                let matches = meta
+                    .genre
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(filter))
+                    .unwrap_or(false)
+                    || meta.id.to_lowercase().contains(&filter.to_lowercase());
+                if !matches {
+                    continue;
+                }
             }
+            out.push(meta);
         }
-        out.push(meta);
-    }
-    Ok(out)
-}
-
-/// The user-tier directories this instance had to leave out of the catalog.
-///
-/// `list_templates` answers "what can I render", and a skipped template is by
-/// definition not in that answer. `resolve_template` explains one skip, but
-/// only to a caller who already holds the id — and the author whose template
-/// just vanished from the catalog is precisely the caller who does not. Without
-/// a listing the skip is recorded and unreadable: three audiences were promised
-/// the reason and one of them had no way to ask.
-///
-/// This is that surface, and nothing more: one entry per directory that claimed
-/// to be a template and was not a usable one, carrying the refusal that
-/// produced it. Bundled and staged tiers never appear here — they still fail
-/// the whole index loudly, so there is no such thing as a silently skipped
-/// shipped template to list.
-///
-/// Not yet reachable outside this module: `mod templates` is private, so a
-/// caller needs `list_skipped_templates` added to the `pub use templates::{…}`
-/// list in `visuals/mod.rs`. Drop the `allow(dead_code)` below with it.
-pub fn list_skipped_templates() -> anyhow::Result<Vec<SkippedUserTemplate>> {
-    Ok(build_template_index(&visuals_root())?.skipped)
+        Ok(out)
+    })
 }
 
 pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
@@ -181,109 +242,118 @@ pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
     if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
         anyhow::bail!("invalid template id");
     }
-    let mut index = build_template_index(&visuals_root())?;
-    if let Some(meta) = index.templates.remove(id) {
-        return Ok(meta);
-    }
-    // Not in the registry. If the user tier had to skip a directory of that
-    // name, *why it skipped* is the answer to the question actually asked, and
-    // this is where the existing callers already look: `validate_user_template`
-    // quotes this error verbatim as its `refused` finding, and `write_verified`
-    // rolls a bad save back on it. Saying "unknown" here is precisely what
-    // would make a skip invisible.
-    if let Some(skipped) = index
-        .skipped
-        .iter()
-        .find(|entry| entry.id.as_deref() == Some(id))
-    {
-        anyhow::bail!("visual template {id} was skipped: {}", skipped.reason);
-    }
-    anyhow::bail!("unknown visual template: {id}")
+    resolve_template_inner(&visuals_root(), id)
 }
 
-/// The registry, plus the user-tier directories it had to leave out of it.
-///
-/// The skip list is not a diagnostic nobody reads. `resolve_template` turns an
-/// entry back into the error for that exact id, so the author who just broke a
-/// template is told what is wrong with it instead of being told it does not
-/// exist.
-#[derive(Debug)]
-struct TemplateIndex {
-    templates: BTreeMap<String, TemplateMeta>,
-    skipped: Vec<SkippedUserTemplate>,
-}
-
-/// One user-tier directory that claimed to be a template and was not a usable
-/// one, kept beside the index instead of thrown away.
-///
-/// A silently skipped template is its own failure mode — nothing renders and
-/// there is nothing to read — so every skip lands in four places with four
-/// different audiences: the operational log at the moment of the skip (the
-/// operator, who never asked for this template by name), this list (the index
-/// itself), the `resolve_template` error for the id (the author, through the
-/// authoring tools they are already holding), and `list_skipped_templates`
-/// (anyone who has to find the id before they can ask about it).
-///
-/// Serializable because that last audience reaches it over IPC, where the
-/// catalog listing it is missing from already travels as `TemplateMeta`.
-#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct SkippedUserTemplate {
-    /// The id the directory claims by its name. A user template's manifest id
-    /// must equal its directory name, so the name is the id to look up even
-    /// when the manifest is the broken thing — which is the case that most
-    /// needs an answer. `None` only for a non-UTF-8 directory name.
-    pub id: Option<String>,
-    /// Why it was skipped, verbatim from the refusal that produced it. The
-    /// directory is `<user template root>/<id>`, so this does not repeat it.
-    pub reason: String,
-}
-
-/// Every template tier this instance can render, lowest precedence first:
-/// the bundled `families/` recursion, then the `templates`/`templates-internal`
-/// overlays beside it, then the instance-local user root.
-///
-/// Each tier is skipped when its directory is absent, and a missing bundled
-/// `families/` is just another absent tier. It used to return an empty map
-/// instead, which put every later tier behind a directory none of them live
-/// in: a build whose bundled families root had not been staged silently had no
-/// user templates at all — the same dead-registry shape as the doubled
-/// `visuals/visuals/templates` path that once killed the managed tier.
-///
-/// **The tiers do not share a failure policy, deliberately.** A duplicate or
-/// malformed template under `families/` — or under the `templates` /
-/// `templates-internal` overlays staged beside it — is a defect in what we
-/// shipped: nobody on this machine can fix it, and building past it would hide
-/// it, so it still fails the whole index loudly. A malformed directory under
-/// the *instance-local user root* is a document somebody is in the middle of
-/// writing. Failing the index there took every other template down with it,
-/// bundled families included; and because `visual_template_save` and
-/// `visual_template_validate` rebuild this index on every call, one bad
-/// directory locked the author out of the only tools that could have fixed it.
-/// So the user tier skips the directory and records why. One bad template
-/// breaks only itself, visibly.
-fn build_template_index(visuals_root: &Path) -> anyhow::Result<TemplateIndex> {
-    let mut templates: BTreeMap<String, TemplateMeta> = BTreeMap::new();
+fn resolve_template_inner(visuals_root: &Path, id: &str) -> anyhow::Result<TemplateMeta> {
+    // Launch-time template resolution is intentionally a bounded direct lookup.
+    // Building and then dropping the complete TemplateMeta index from the
+    // optimizer admission future has repeatedly exhausted native worker stacks,
+    // even when delegated to a generously sized scoped thread. Directory names
+    // are already required to equal template IDs by load_template_meta, so scan
+    // paths iteratively and decode only the requested manifest.
     let families_root = visuals_root.join("families");
+    let mut resolved = None;
     if families_root.exists() {
         let canonical_root = fs::canonicalize(&families_root)?;
         let mut directories = Vec::new();
         discover_template_directories(&families_root, &canonical_root, &mut directories)?;
         directories.sort();
-
-        for directory in directories {
-            let mut meta = load_template_meta(&directory)?;
-            if let Some(existing) = templates.get(&meta.id) {
-                anyhow::bail!(
-                    "duplicate visual template id {:?} in {} and {}",
-                    meta.id,
-                    existing.path.as_deref().unwrap_or("<unknown>"),
-                    directory.display()
-                );
-            }
-            meta.path = Some(directory.display().to_string());
-            templates.insert(meta.id.clone(), meta);
+        if let Some(path) = directories
+            .into_iter()
+            .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(id))
+        {
+            resolved = Some(load_template_meta(&path).map(|mut meta| {
+                meta.path = Some(path.display().to_string());
+                meta
+            })?);
         }
+    }
+
+    for extra_root_name in ["templates", "templates-internal"] {
+        if resolved.is_some() {
+            break;
+        }
+        let path = visuals_root.join(extra_root_name).join(id);
+        if path.join("template.json").is_file() {
+            resolved = Some(load_template_meta(&path).map(|mut meta| {
+                meta.path = Some(path.display().to_string());
+                meta
+            })?);
+        }
+    }
+
+    let managed_path = managed_templates_root().join(id);
+    if let Some(meta) = instance_template(&managed_path)? {
+        if resolved.is_some() {
+            anyhow::bail!("managed visual template id collides with bundled template: {id}");
+        }
+        resolved = Some(meta);
+    }
+
+    resolved.ok_or_else(|| anyhow::anyhow!("unknown visual template: {id}"))
+}
+
+fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, TemplateMeta>> {
+    with_template_index(visuals_root, Ok)
+}
+
+fn with_template_index<T, F>(visuals_root: &Path, consume: F) -> anyhow::Result<T>
+where
+    T: Send,
+    F: FnOnce(BTreeMap<String, TemplateMeta>) -> anyhow::Result<T> + Send,
+{
+    // Visual creation commonly runs inside a Tokio worker that is already
+    // carrying the optimizer admission future. Keep registry discovery and
+    // manifest decoding off that comparatively small stack. The complete map
+    // must also be consumed and dropped here: returning it to the Tokio worker
+    // merely moves the stack-heavy BTreeMap/serde teardown back onto the stack
+    // this boundary is intended to protect.
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("visual-template-index".into())
+            // Debug desktop builds retain substantially larger serde/path
+            // frames than release builds.  Recipe admission resolves several
+            // templates while its async state is live, and 8 MiB has proven
+            // insufficient on macOS (the process aborts instead of returning
+            // an ordinary template error).  Keep that work isolated and give
+            // the bounded registry scan enough headroom.
+            .stack_size(32 * 1024 * 1024)
+            .spawn_scoped(scope, move || {
+                let templates = build_template_index_inner(visuals_root)?;
+                consume(templates)
+            })
+            .map_err(|error| anyhow::anyhow!("failed to start visual template indexer: {error}"))?
+            .join()
+            .map_err(|_| anyhow::anyhow!("visual template indexer panicked"))?
+    })
+}
+
+fn build_template_index_inner(
+    visuals_root: &Path,
+) -> anyhow::Result<BTreeMap<String, TemplateMeta>> {
+    let families_root = visuals_root.join("families");
+    if !families_root.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let canonical_root = fs::canonicalize(&families_root)?;
+    let mut directories = Vec::new();
+    discover_template_directories(&families_root, &canonical_root, &mut directories)?;
+    directories.sort();
+
+    let mut templates: BTreeMap<String, TemplateMeta> = BTreeMap::new();
+    for directory in directories {
+        let mut meta = load_template_meta(&directory)?;
+        if let Some(existing) = templates.get(&meta.id) {
+            anyhow::bail!(
+                "duplicate visual template id {:?} in {} and {}",
+                meta.id,
+                existing.path.as_deref().unwrap_or("<unknown>"),
+                directory.display()
+            );
+        }
+        meta.path = Some(directory.display().to_string());
+        templates.insert(meta.id.clone(), meta);
     }
     for extra_root_name in ["templates", "templates-internal"] {
         let extra_root = visuals_root.join(extra_root_name);
@@ -307,256 +377,161 @@ fn build_template_index(visuals_root: &Path) -> anyhow::Result<TemplateIndex> {
             templates.insert(meta.id.clone(), meta);
         }
     }
-    let skipped = scan_user_template_root(&user_templates_root(), &mut templates);
-    Ok(TemplateIndex { templates, skipped })
-}
-
-/// One directory under the user template root is exactly one of two shapes.
-///
-/// The two are not interchangeable: they are rendered by different machinery
-/// and therefore carry different capability models. Which files are present
-/// decides which one a directory is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum UserTemplateShape {
-    /// `template.json` + `renderer.html`. A reviewed, networkless HTML package
-    /// rendered in a sandboxed iframe under a CSP, immutable after import.
-    Managed,
-    /// `template.json` + `shell.tsx`. Agent- or human-authored TSX compiled in
-    /// the pane through `compileSourcedModule`, so it inherits the whole
-    /// sourced capability model: allowlisted imports, no `fetch` /
-    /// `EventSource` / `WebSocket` / `eval` / `window` / `import.meta`.
-    User,
-}
-
-impl UserTemplateShape {
-    fn source_kind(self) -> &'static str {
-        match self {
-            Self::Managed => "managed",
-            Self::User => "user",
-        }
-    }
-}
-
-/// Instance-local templates a user or agent wrote, in either shape.
-///
-/// **Rust does structural validation only** — manifest schema version, id
-/// equals directory, regular files, no symlinks, size cap. It deliberately does
-/// not parse or lint `shell.tsx`. The import allowlist and forbidden-token scan
-/// live in `visuals/runtime/sourcedValidate.ts` and run in the pane, which
-/// fails closed and renders `sourcedInvalidShell` with an exact message. A
-/// second copy of that rule here would be a second implementation to drift, and
-/// removing exactly that class of duplicate is the point of this work.
-///
-/// Returns the directories it could not index, and why — never an error. This
-/// tier cannot fail the index; see `build_template_index` for why the two tiers
-/// are trusted differently.
-fn scan_user_template_root(
-    root: &Path,
-    templates: &mut BTreeMap<String, TemplateMeta>,
-) -> Vec<SkippedUserTemplate> {
-    let mut skipped = Vec::new();
-    if !root.exists() {
-        return skipped;
-    }
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        // The root itself is unreadable. That is one directory failing, not a
-        // reason for the bundled families to stop resolving, so it is recorded
-        // like any other user-tier skip — but with no id, because the root is
-        // not a template and must never answer a `resolve_template` lookup for
-        // one named after it.
-        Err(error) => {
-            record_skip(
-                &mut skipped,
-                root,
-                None,
-                anyhow::Error::new(error).context(format!("reading {}", root.display())),
-            );
-            return skipped;
-        }
-    };
-    let mut entries: Vec<_> = entries.filter_map(|entry| entry.ok()).collect();
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        let path = entry.path();
-        match index_user_template(&path, templates) {
-            Ok(Some(meta)) => {
-                templates.insert(meta.id.clone(), meta);
+    let managed_root = managed_templates_root();
+    if managed_root.exists() {
+        let mut entries: Vec<_> = fs::read_dir(&managed_root)?
+            .filter_map(|entry| entry.ok())
+            .collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let Some(meta) = instance_template(&path)? else { continue; };
+            if templates.contains_key(&meta.id) {
+                anyhow::bail!(
+                    "managed visual template id collides with bundled template: {}",
+                    meta.id
+                );
             }
-            Ok(None) => {}
-            Err(error) => {
-                let id = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(str::to_string);
-                record_skip(&mut skipped, &path, id, error)
-            }
+            templates.insert(meta.id.clone(), meta);
         }
     }
-    skipped
+    Ok(templates)
 }
 
-/// Index one directory under the user template root.
+/// Managed templates are one instance's imports, never part of the shipped
+/// visuals package.
 ///
-/// `Ok(None)` means there is nothing here to index and nothing wrong: a stray
-/// file, a directory with no manifest, a manifest with no source yet. Those
-/// were never errors and are not skips either — recording them would bury the
-/// real ones.
-///
-/// `Err` means this directory claims to be a template and is not a valid one.
-/// Every refusal below used to abort the whole index; the caller now turns it
-/// into a recorded skip. Note that none of them get *weaker* by being scoped:
-/// the symlink refusals still refuse — a symlinked user template is still never
-/// followed, still never read, still never indexed. What changed is only the
-/// blast radius, from "no template on this machine resolves" to "this one does
-/// not".
-fn index_user_template(
-    path: &Path,
-    indexed: &BTreeMap<String, TemplateMeta>,
-) -> anyhow::Result<Option<TemplateMeta>> {
-    // This root is agent-writable, so the scan refuses symlinks the way the
-    // families recursion and `import_managed_template` always have, rather than
-    // following one out of the instance state root.
-    let metadata =
-        fs::symlink_metadata(path).with_context(|| format!("reading {}", path.display()))?;
-    if metadata.file_type().is_symlink() {
-        anyhow::bail!(
-            "user visual template registry refuses symlink: {}",
-            path.display()
-        );
+/// This carried its own `SYNTH_DESKTOP_DATA_ROOT` lookup and fell back to
+/// `visuals_root()`, so with the variable unset an import wrote into the
+/// package directory itself — contaminating the source tree, and adding that
+/// instance's imported template to every later build's template index. Resolve
+/// the instance the one way the rest of the app resolves it, which also honours
+/// a bundle descriptor and the canonical data root.
+fn managed_templates_root() -> PathBuf {
+    crate::instance::data_root().join("visuals").join("templates")
+}
+
+pub(super) fn user_template_path(id: &str) -> anyhow::Result<PathBuf> {
+    let root = managed_templates_root();
+    let path = root.join(id);
+    if path.parent() != Some(root.as_path()) || path.file_name().and_then(|name| name.to_str()) != Some(id) {
+        anyhow::bail!("invalid user visual template id");
     }
-    if !metadata.is_dir() {
-        return Ok(None);
+    Ok(path)
+}
+
+fn checked_template_file(path: &Path) -> anyhow::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => anyhow::bail!("template requires a regular file: {}", path.display()),
+        Ok(meta) if meta.len() > MANAGED_TEMPLATE_MAX_BYTES => anyhow::bail!("template exceeds size limit"),
+        Ok(_) => Ok(true),
     }
-    if checked_template_file(&path.join("template.json"))?.is_none() {
-        return Ok(None);
-    }
-    let renderer = path.join("renderer.html");
-    let shell = path.join("shell.tsx");
-    let has_renderer = checked_template_file(&renderer)?.is_some();
-    let has_shell = checked_template_file(&shell)?.is_some();
-    let shape = match (has_renderer, has_shell) {
-        // Ambiguous, so fail closed rather than pick. The two shapes render
-        // through different machinery under different capability models;
-        // silently preferring one would mean the file the author edits is
-        // not the file that runs, and would let whoever can write only the
-        // other file flip which model applies to an existing template.
-        (true, true) => anyhow::bail!(
-            "user visual template declares both renderer.html and shell.tsx: {}",
-            path.display()
-        ),
-        (true, false) => UserTemplateShape::Managed,
-        (false, true) => UserTemplateShape::User,
-        // A manifest with neither source is a scaffold, not a template yet.
-        // Skipped as it always has been, never an error.
-        (false, false) => return Ok(None),
+}
+
+pub(super) fn instance_template(path: &Path) -> anyhow::Result<Option<TemplateMeta>> {
+    let dir = match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        other => other?,
     };
+    if dir.file_type().is_symlink() || !dir.is_dir() { anyhow::bail!("template directory must not be a symlink"); }
+    if !checked_template_file(&path.join("template.json"))? { return Ok(None); }
+    let html = checked_template_file(&path.join("renderer.html"))?;
+    let tsx = checked_template_file(&path.join("shell.tsx"))?;
+    if html && tsx { anyhow::bail!("template cannot contain both renderer.html and shell.tsx"); }
+    if !html && !tsx { return Ok(None); }
     let mut meta = load_template_meta(path)?;
-    if indexed.contains_key(&meta.id) {
-        anyhow::bail!(
-            "managed visual template id collides with bundled template: {}",
-            meta.id
-        );
-    }
     meta.path = Some(path.display().to_string());
-    match shape {
-        UserTemplateShape::Managed => {
-            meta.renderer_path = Some(renderer.display().to_string());
-            meta.shell_path = None;
-        }
-        UserTemplateShape::User => {
-            meta.shell_path = Some(shell.display().to_string());
-            meta.renderer_path = None;
-        }
+    if tsx {
+        meta.source_kind = Some("user".into());
+        meta.renderer_kind = Some("template".into());
+        meta.shell_path = Some(path.join("shell.tsx").display().to_string());
+    } else {
+        meta.source_kind = Some("managed".into());
+        meta.renderer_path = Some(path.join("renderer.html").display().to_string());
     }
-    meta.source_kind = Some(shape.source_kind().into());
     Ok(Some(meta))
 }
 
-/// Record one skipped user-tier directory, and say so out loud.
-///
-/// The log line is the surface for the case `resolve_template` cannot cover:
-/// nobody asks a broken template for its id when they do not know it broke.
-fn record_skip(
-    skipped: &mut Vec<SkippedUserTemplate>,
-    path: &Path,
-    id: Option<String>,
-    error: anyhow::Error,
-) {
-    let reason = format!("{error:#}");
-    eprintln!(
-        "synth-desktop: skipped user visual template {}: {reason}",
-        path.display()
-    );
-    skipped.push(SkippedUserTemplate { id, reason });
+pub(super) fn prepare_user_save(id: &str, manifest: &str, source: &str) -> anyhow::Result<PreparedManagedImport> {
+    let destination = user_template_path(id)?;
+    if destination.join("renderer.html").exists() { anyhow::bail!("cannot replace an HTML package with a TSX template"); }
+    if let Ok(existing) = resolve_template(id) {
+        if existing.source_kind.as_deref() != Some("user") { anyhow::bail!("cannot overwrite a bundled template; fork under a new id"); }
+    }
+    if manifest.len() as u64 > MANAGED_TEMPLATE_MAX_BYTES || source.len() > 256 * 1024 { anyhow::bail!("user template exceeds size limit"); }
+    let meta = decode_template_meta(&destination, manifest.as_bytes(), String::new())?;
+    Ok(PreparedManagedImport { meta, manifest: manifest.as_bytes().to_vec(), renderer: source.as_bytes().to_vec(), destination, renderer_file: "shell.tsx", source_kind: "user" })
 }
 
-/// Structural check for one file in a user template directory: absent is
-/// `Ok(None)`, a usable regular file is `Ok(Some(len))`, and anything else is a
-/// named error rather than a silent skip.
-///
-/// `MANAGED_TEMPLATE_MAX_BYTES` gated only `import_managed_template` before, so
-/// a hand-edited or agent-written file entered the registry uncapped. It is
-/// applied here too, to the manifest and to whichever source the directory
-/// declares. The pane keeps its own, stricter 256 KiB cap on sourced TSX; this
-/// one is the structural backstop, not a replacement for it.
-fn checked_template_file(path: &Path) -> anyhow::Result<Option<u64>> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error).with_context(|| format!("reading {}", path.display()));
-        }
-    };
-    if metadata.file_type().is_symlink() {
-        anyhow::bail!(
-            "user visual template registry refuses symlink: {}",
-            path.display()
-        );
-    }
-    if !metadata.is_file() {
-        anyhow::bail!(
-            "user visual template entry must be a regular file: {}",
-            path.display()
-        );
-    }
-    if metadata.len() > MANAGED_TEMPLATE_MAX_BYTES {
-        anyhow::bail!(
-            "user visual template file exceeds {MANAGED_TEMPLATE_MAX_BYTES} bytes: {}",
-            path.display()
-        );
-    }
-    Ok(Some(metadata.len()))
-}
-
-/// User-authored visual templates for this instance, beside `config.toml` and
-/// `.env`: `<state root>/visuals/templates`.
-///
-/// This resolved the data root itself, and a local copy of that rule drifted
-/// exactly the way `instance_paths.rs` says local copies do. It read
-/// `SYNTH_DESKTOP_DATA_ROOT` directly and fell back to `visuals_root()`, which
-/// already ends in `visuals`, then joined `visuals/templates` onto it. Unset
-/// environment therefore produced `<root>/visuals/visuals/templates`, a path
-/// that cannot exist: every install that is not the dev launcher — canonical
-/// installs and descriptor-launched bundles, which is to say production — ran
-/// with the whole registry silently dead. In a packaged app it was worse than
-/// dead. `visuals_root()` there is `<App>.app/Contents/Resources/visuals`, so
-/// `import_managed_template` wrote into the signed application bundle and
-/// invalidated its signature.
-///
-/// `instance::state_root()` is the one rule: the instance data root when a
-/// descriptor or `SYNTH_DESKTOP_DATA_ROOT` names one, `~/.synth-desktop`
-/// otherwise. Resolve from there, never from where the shipped visuals live.
-pub(super) fn user_templates_root() -> PathBuf {
-    crate::instance::state_root()
-        .join("visuals")
-        .join("templates")
-}
-
-/// Copy one reviewed, networkless HTML visual package into this instance's
-/// managed registry. This is intentionally a two-file contract: accepting a
-/// directory tree would turn import into an unbounded code and asset loader.
+/// Legacy synchronous seam: no broker means no permission to persist code.
+/// The approved path prepares exactly two files, obtains consent, then writes
+/// those immutable bytes through `PreparedManagedImport::persist`.
 pub fn import_managed_template(source_path: &str) -> anyhow::Result<TemplateMeta> {
+    let _ = source_path;
+    Err(crate::session::template_persist::unapproved())
+}
+
+pub(crate) struct PreparedManagedImport {
+    meta: TemplateMeta,
+    manifest: Vec<u8>,
+    renderer: Vec<u8>,
+    destination: PathBuf,
+    renderer_file: &'static str,
+    source_kind: &'static str,
+}
+
+impl PreparedManagedImport {
+    pub(crate) fn request(&self) -> anyhow::Result<crate::session::template_persist::PersistRequest> {
+        let other_file = if self.source_kind == "user" { "renderer.html" } else { "shell.tsx" };
+        if checked_template_file(&self.destination.join(other_file))? {
+            anyhow::bail!("template cannot change renderer tier during approval");
+        }
+        if let Ok(meta) = fs::symlink_metadata(&self.destination) {
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                anyhow::bail!("managed template destination must be a real directory");
+            }
+        }
+        let mut digest = Sha256::new();
+        digest.update(self.renderer_file.as_bytes());
+        digest.update((self.manifest.len() as u64).to_le_bytes());
+        digest.update(&self.manifest);
+        digest.update((self.renderer.len() as u64).to_le_bytes());
+        digest.update(&self.renderer);
+        Ok(crate::session::template_persist::PersistRequest {
+            template_id: self.meta.id.clone(),
+            destination: self.destination.display().to_string(),
+            package_digest: format!("sha256:{:x}", digest.finalize()),
+            byte_size: (self.manifest.len() + self.renderer.len()) as u64,
+            overwrites: self.destination.exists(),
+            source_kind: self.source_kind.into(),
+        })
+    }
+
+    pub(crate) fn persist(mut self, consent: crate::session::template_persist::PersistConsent) -> anyhow::Result<TemplateMeta> {
+        consent.bind(&self.request()?)?;
+        fs::create_dir_all(&self.destination)?;
+        for (name, bytes) in [("template.json", &self.manifest), (self.renderer_file, &self.renderer)] {
+            // Atomic file replacement does not follow an existing file symlink.
+            let mut file = tempfile::NamedTempFile::new_in(&self.destination)?;
+            std::io::Write::write_all(&mut file, bytes)?;
+            file.persist(self.destination.join(name))?;
+        }
+        self.meta = load_template_meta(&self.destination)?;
+        self.meta.path = Some(self.destination.display().to_string());
+        if self.source_kind == "managed" {
+            self.meta.renderer_path = Some(self.destination.join(self.renderer_file).display().to_string());
+        } else {
+            self.meta.renderer_kind = Some("template".into());
+            self.meta.shell_path = Some(self.destination.join(self.renderer_file).display().to_string());
+        }
+        self.meta.source_kind = Some(self.source_kind.into());
+        Ok(self.meta)
+    }
+}
+
+pub(crate) fn prepare_managed_import(source_path: &str) -> anyhow::Result<PreparedManagedImport> {
     let source = Path::new(source_path);
     if !source.is_absolute() {
         anyhow::bail!("source_path must be an absolute directory");
@@ -580,17 +555,15 @@ pub fn import_managed_template(source_path: &str) -> anyhow::Result<TemplateMeta
             anyhow::bail!("managed template file exceeds {MANAGED_TEMPLATE_MAX_BYTES} bytes");
         }
     }
-    let mut meta = load_template_meta(&source)?;
+    let manifest_bytes = fs::read(&manifest)?;
+    let meta = load_template_meta_bytes(&source, &manifest_bytes)?;
     let renderer_bytes = fs::read(&renderer)?;
+    if manifest_bytes.len() as u64 > MANAGED_TEMPLATE_MAX_BYTES || renderer_bytes.len() as u64 > MANAGED_TEMPLATE_MAX_BYTES {
+        anyhow::bail!("managed template file exceeds {MANAGED_TEMPLATE_MAX_BYTES} bytes");
+    }
     validate_managed_renderer(&renderer_bytes)?;
-    let destination = user_templates_root().join(&meta.id);
-    fs::create_dir_all(&destination)?;
-    fs::write(destination.join("template.json"), fs::read(&manifest)?)?;
-    fs::write(destination.join("renderer.html"), renderer_bytes)?;
-    meta.path = Some(destination.display().to_string());
-    meta.renderer_path = Some(destination.join("renderer.html").display().to_string());
-    meta.source_kind = Some("managed".into());
-    Ok(meta)
+    let destination = managed_templates_root().join(&meta.id);
+    Ok(PreparedManagedImport { meta, manifest: manifest_bytes, renderer: renderer_bytes, destination, renderer_file: "renderer.html", source_kind: "managed" })
 }
 
 fn validate_managed_renderer(bytes: &[u8]) -> anyhow::Result<()> {
@@ -668,54 +641,68 @@ fn discover_template_directories(
     canonical_root: &Path,
     out: &mut Vec<PathBuf>,
 ) -> anyhow::Result<()> {
-    let metadata = fs::symlink_metadata(directory)?;
-    if metadata.file_type().is_symlink() {
-        anyhow::bail!(
-            "visual template registry refuses symlink: {}",
-            directory.display()
-        );
-    }
-    let canonical = fs::canonicalize(directory)?;
-    if !canonical.starts_with(canonical_root) {
-        anyhow::bail!(
-            "visual template path escapes family root: {}",
-            directory.display()
-        );
-    }
-
-    let manifest = directory.join("template.json");
-    if manifest.exists() {
-        let manifest_metadata = fs::symlink_metadata(&manifest)?;
-        if manifest_metadata.file_type().is_symlink() {
+    // This runs while an optimizer launch future is already carrying a large
+    // amount of state. Recursive filesystem descent can exhaust a Tokio
+    // worker's comparatively small stack even for an ordinary registry. Keep
+    // traversal state on the heap instead.
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let metadata = fs::symlink_metadata(&directory)?;
+        if metadata.file_type().is_symlink() {
             anyhow::bail!(
                 "visual template registry refuses symlink: {}",
-                manifest.display()
+                directory.display()
             );
         }
-        out.push(directory.to_path_buf());
-        return Ok(());
-    }
-
-    let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        let file_type = entry.file_type()?;
-        if file_type.is_symlink() {
+        let canonical = fs::canonicalize(&directory)?;
+        if !canonical.starts_with(canonical_root) {
             anyhow::bail!(
-                "visual template registry refuses symlink: {}",
-                entry.path().display()
+                "visual template path escapes family root: {}",
+                directory.display()
             );
         }
-        if file_type.is_dir() {
-            discover_template_directories(&entry.path(), canonical_root, out)?;
+
+        let manifest = directory.join("template.json");
+        if manifest.exists() {
+            let manifest_metadata = fs::symlink_metadata(&manifest)?;
+            if manifest_metadata.file_type().is_symlink() {
+                anyhow::bail!(
+                    "visual template registry refuses symlink: {}",
+                    manifest.display()
+                );
+            }
+            out.push(directory);
+            continue;
+        }
+
+        let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries.into_iter().rev() {
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                anyhow::bail!(
+                    "visual template registry refuses symlink: {}",
+                    entry.path().display()
+                );
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            }
         }
     }
     Ok(())
 }
 
 fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
-    let raw = fs::read_to_string(path.join("template.json"))?;
-    let value: Value = serde_json::from_str(&raw)?;
+    load_template_meta_bytes(path, &fs::read(path.join("template.json"))?)
+}
+
+fn load_template_meta_bytes(path: &Path, raw: &[u8]) -> anyhow::Result<TemplateMeta> {
+    decode_template_meta(path, raw, template_package_digest(path)?)
+}
+
+fn decode_template_meta(path: &Path, raw: &[u8], template_digest: String) -> anyhow::Result<TemplateMeta> {
+    let value: Value = serde_json::from_slice(raw)?;
     let id = value
         .get("id")
         .and_then(Value::as_str)
@@ -757,9 +744,28 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
         (_, Some(b)) => b.as_array().cloned().unwrap_or_default(),
         _ => Vec::new(),
     };
+    let observation_contract: Option<TemplateObservationContract> = value
+        .get("observationContract")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .with_context(|| format!("template {id} has an invalid observationContract"))?;
+    if let Some(declared) = observation_contract
+        .as_ref()
+        .and_then(|contract| contract.readiness.authoring_affordances.as_ref())
+    {
+        if declared.is_empty() {
+            anyhow::bail!("template {id} authoringAffordances must not be empty");
+        }
+        let unique = declared.iter().copied().collect::<BTreeSet<_>>();
+        if unique.len() != declared.len() {
+            anyhow::bail!("template {id} authoringAffordances contains duplicates");
+        }
+    }
     let mut meta = TemplateMeta {
         schema_version,
         id,
+        template_digest,
         title,
         genre: value
             .get("genre")
@@ -786,6 +792,10 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
         shell_path: None,
         renderer_path: None,
         source_kind: None,
+        renderer_kind: value
+            .get("rendererKind")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         example_binding: None,
         binding_schema: declared.clone(),
         inputs: declared.clone(),
@@ -795,11 +805,7 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default(),
-        observation_contract: value
-            .get("observationContract")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()?,
+        observation_contract,
     };
     let shell = path.join("shell.tsx");
     if shell.exists() {

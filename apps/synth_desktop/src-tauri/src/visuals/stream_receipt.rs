@@ -414,7 +414,7 @@ struct VisualState {
     revision: i64,
     /// Declared stream ids in binding order. The renderer resets its ingest
     /// when this changes; so does this, for the same reason.
-    stream_key: Vec<String>,
+    stream_key: DeclaredStreams,
     state: StreamTransportState,
     state_since: Instant,
     ever_left_declared: bool,
@@ -461,11 +461,7 @@ impl VisualState {
         let now = chrono::Utc::now().to_rfc3339();
         Self {
             revision,
-            stream_key: declared
-                .streams
-                .iter()
-                .map(|stream| stream.stream_id.clone())
-                .collect(),
+            stream_key: declared.clone(),
             state: if declared.streams.is_empty() {
                 StreamTransportState::Idle
             } else {
@@ -497,7 +493,7 @@ impl VisualState {
             .evidence_books
             .entry(stream_id.to_string())
             .or_default();
-        if book.kept >= MAX_RETAINED_EVIDENCE
+        if book.truncated || book.kept >= MAX_RETAINED_EVIDENCE
             || book.bytes.saturating_add(size) > MAX_RETAINED_BYTES
         {
             book.truncated = true;
@@ -506,7 +502,7 @@ impl VisualState {
         book.bytes += size;
         book.kept += 1;
         self.evidence
-            .push((stream_id.to_string(), envelope.clone()));
+            .push((stream_id.to_string(), stream_fold::normalize_identity(envelope)));
         true
     }
 
@@ -649,12 +645,7 @@ fn entry<'a>(
     let observation = store.entry(visual_id.to_string()).or_default();
     let stale = observation.transport.as_ref().is_some_and(|state| {
         state.revision != revision
-            || state.stream_key
-                != declared
-                    .streams
-                    .iter()
-                    .map(|stream| stream.stream_id.clone())
-                    .collect::<Vec<_>>()
+            || state.stream_key != *declared
     });
     if stale {
         // A revision or a re-binding replaces the stream set. Carrying the old
@@ -682,6 +673,11 @@ fn read<'a>(
         .transport
         .as_ref()
         .filter(|state| state.revision == revision)
+}
+
+fn newer(store: &BTreeMap<String, VisualObservation>, visual_id: &str, revision: i64) -> bool {
+    store.get(visual_id).and_then(|value| value.transport.as_ref())
+        .is_some_and(|state| state.revision > revision)
 }
 
 /// The evidence-side entry: revision scoped, and blind to the declared set.
@@ -719,6 +715,7 @@ pub fn record_poll_attempt(
     poll_url: &str,
 ) {
     let mut store = store();
+    if newer(&store, visual_id, revision) { return; }
     let state = entry(&mut store, visual_id, revision, declared);
     let Some(stream) = declared
         .streams
@@ -745,6 +742,7 @@ pub fn record_poll_page(
     page: &Value,
 ) -> PollOutcome {
     let mut store = store();
+    if newer(&store, visual_id, revision) { return PollOutcome::default(); }
     let state = entry(&mut store, visual_id, revision, declared);
     state.touch();
     state.failed_last = false;
@@ -823,10 +821,9 @@ pub fn record_poll_page(
     }
 
     state.recompute(declared);
-    let evidence_truncated = state
-        .evidence_books
-        .get(&stream.stream_id)
-        .is_some_and(|book| book.truncated);
+    // The response projection combines every stream, so its truncation flag
+    // must not become false merely because a quieter stream answered next.
+    let evidence_truncated = state.evidence_books.values().any(|book| book.truncated);
     PollOutcome {
         new_gaps: batch.new_gaps,
         new_conflicts: batch.new_conflicts,
@@ -847,6 +844,7 @@ pub fn record_poll_failure(
     failure: StreamPollFailure,
 ) {
     let mut store = store();
+    if newer(&store, visual_id, revision) { return; }
     let state = entry(&mut store, visual_id, revision, declared);
     state.touch();
     state.failed_last = true;
@@ -870,7 +868,14 @@ pub fn record_poll_failure(
 /// streams declared and none opened" and "no streams declared at all".
 pub fn receipt(visual_id: &str, revision: i64, declared: &DeclaredStreams) -> StreamReceipt {
     let mut store = store();
-    let state = entry(&mut store, visual_id, revision, declared);
+    // Looking up an old revision must not erase a newer process observation.
+    let mut absent = VisualState::new(revision, declared);
+    let state = if newer(&store, visual_id, revision) { &mut absent }
+        else { entry(&mut store, visual_id, revision, declared) };
+    receipt_from_state(visual_id, revision, declared, state)
+}
+
+fn receipt_from_state(visual_id: &str, revision: i64, declared: &DeclaredStreams, state: &VisualState) -> StreamReceipt {
     let streams: Vec<StreamReceiptStream> = declared
         .streams
         .iter()
@@ -919,6 +924,18 @@ pub fn receipt(visual_id: &str, revision: i64, declared: &DeclaredStreams) -> St
     }
 }
 
+/// Capture accounting and retained bytes under one lock. The projection is
+/// computed afterwards, without allowing a newer receipt to label older bytes.
+pub fn evidence_snapshot(visual_id: &str, revision: i64, declared: &DeclaredStreams) -> (StreamReceipt, Vec<Value>, bool) {
+    let mut store = store();
+    let mut absent = VisualState::new(revision, declared);
+    let state = if newer(&store, visual_id, revision) { &mut absent }
+        else { entry(&mut store, visual_id, revision, declared) };
+    (receipt_from_state(visual_id, revision, declared, state),
+        state.evidence.iter().map(|(_, envelope)| envelope.clone()).collect(),
+        state.evidence_books.values().any(|book| book.truncated))
+}
+
 // ---------------------------------------------------------------------------
 // Responsibility 3: the evidence prefix the seal and the projection replay.
 // ---------------------------------------------------------------------------
@@ -942,6 +959,7 @@ pub fn record_evidence(visual_id: &str, revision: i64, stream_id: &str, envelope
         return;
     }
     let mut store = store();
+    if newer(&store, visual_id, revision) { return; }
     let state = evidence_entry(&mut store, visual_id, revision);
     let batch = state.fold.accept_batch(envelopes.iter());
     let mut retaining = true;
@@ -1069,5 +1087,31 @@ pub fn page_cursor(page: &Value) -> PageCursor {
             .and_then(Value::as_bool)
             .unwrap_or(false),
     }
+}
+
+/// A host receipt complements, and never substitutes for, screenshot/DOM proof.
+pub fn certification(receipt: &StreamReceipt, minimum_evidence: u64) -> anyhow::Result<Value> {
+    let failure = if !receipt.observed {
+        Some(("visual_observation_unavailable", "Show this revision in Desktop so the host can observe its streams", true))
+    } else if !receipt.streams_missing_transport.is_empty()
+        || receipt.responding_stream_count != receipt.declared_stream_count
+        || !matches!(receipt.state, StreamTransportState::Live | StreamTransportState::Terminal) {
+        Some(("visual_stream_unsettled", "Every declared stream must have a working poll authority and respond before certification", true))
+    } else if receipt.tracking_truncated {
+        Some(("visual_stream_tracking_truncated", "The host exhausted its accounting bound; this receipt cannot prove complete stream integrity", false))
+    } else if !receipt.gaps.is_empty() {
+        Some(("stream_replay_gap", "Replay the missing producer history before certifying this revision", true))
+    } else if !receipt.conflicts.is_empty() {
+        Some(("visual_stream_conflict", "The same producer identity carried conflicting bodies; repair the producer before certification", false))
+    } else if receipt.recovered < minimum_evidence {
+        Some(("visual_stream_no_evidence", "The host has not observed enough distinct non-control evidence for this template", true))
+    } else { None };
+    if let Some((code, message, retryable)) = failure {
+        return Err(crate::error::StructuredFailure::new(code, message, message)
+            .retryable(retryable).with_details(serde_json::json!({
+                "receipt": receipt, "minimumTransportEnvelopeCount": minimum_evidence,
+            })).into());
+    }
+    Ok(serde_json::to_value(receipt)?)
 }
 

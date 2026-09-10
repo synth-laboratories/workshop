@@ -111,12 +111,12 @@ pub fn commit(
 ) -> KernelResult<CommitPlan> {
     if state.lifecycle.is_terminal() && state.terminal.is_some() {
         // Replays of already-committed producer events are allowed; new facts
-        // that would move a sealed run are not. Evidence amendments are the
-        // sole append-only lane after sealing and retain the original terminal
-        // sequence.
+        // that would move a sealed run are not. Typed evidence enrichment is
+        // append-only after sealing and retains the original terminal sequence.
         let plan = plan_producer_batch(log, batch)?;
         if batch.iter().zip(&plan).any(|(event, verdict)| {
-            *verdict == ProducerVerdict::Append && event.event_type != "optimizer.evidence.amended"
+            *verdict == ProducerVerdict::Append
+                && !is_post_terminal_evidence_event(&event.event_type)
         }) {
             return Err(KernelError::new(
                 KernelErrorCode::TerminalAlreadySealed,
@@ -146,7 +146,8 @@ pub fn commit(
         .filter(|verdict| **verdict == ProducerVerdict::ConfirmedReplay)
         .count();
     for event in &committed {
-        if state.terminal.is_some() && event.producer.event_type != "optimizer.evidence.amended" {
+        if state.terminal.is_some() && !is_post_terminal_evidence_event(&event.producer.event_type)
+        {
             return Err(KernelError::new(
                 KernelErrorCode::TerminalAlreadySealed,
                 format!(
@@ -203,6 +204,13 @@ pub fn commit(
         replayed,
         state,
     })
+}
+
+fn is_post_terminal_evidence_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "optimizer.evidence.amended" | "storage.snapshot.recorded"
+    )
 }
 
 fn apply_lifecycle(
@@ -264,6 +272,27 @@ fn apply_lifecycle(
                 _ => (TerminalKind::Completed, None),
             });
         }
+    }
+    if event.producer.event_type == "training.lifecycle"
+        && event.producer.payload.get("state").and_then(serde_json::Value::as_str) == Some("pause_requested")
+    {
+        // A request is not a completed pause: keep execution running while
+        // exposing the durable drain request to all read-model consumers.
+        state.condition = RunCondition::PauseRequested;
+    }
+    if event.producer.event_type == "optimizer.run.paused" {
+        state.condition = match event.producer.payload.get("state").and_then(serde_json::Value::as_str) {
+            Some("blocked_evaluation") => RunCondition::EvaluationBlocked,
+            Some("blocked_budget") => RunCondition::BudgetBlocked,
+            Some("blocked_uncertain") => RunCondition::OperationUncertain,
+            _ => RunCondition::Healthy,
+        };
+    }
+    if event.producer.event_type == "optimizer.run.resumed" {
+        state.condition = RunCondition::Healthy;
+    }
+    if event.producer.event_type == "optimizer.condition.waiting_for_producer" {
+        state.condition = RunCondition::WaitingForProducer;
     }
     if event.producer.event_type == "optimizer.condition.environment_unreachable" {
         state.condition = RunCondition::EnvironmentUnreachable;

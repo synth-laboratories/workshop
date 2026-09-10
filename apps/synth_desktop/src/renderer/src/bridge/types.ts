@@ -28,8 +28,10 @@ import type {
 	OptimizerAlgorithmInfo,
 	OptimizerRunRecord
 } from "@synth/runtime-protocol";
+import type { PresentationState, VisualRecording, VisualSnapshot } from "@synth/visuals-protocol";
 export type { OptimizerAlgorithmInfo, OptimizerRunRecord };
 import type {
+	AnalysisSettings as JesterkyAnalysisSettings,
 	ArtifactMutationReceipt,
 	BeginResult,
 	BrowserRuntimeStatus,
@@ -48,6 +50,7 @@ import type {
 	ExperimentRecord,
 	ExperimentStatus,
 	InstanceDiagnostics,
+	HumanAnnotationSessionView,
 	HostedTrainingModel,
 	HostedTrainingModelCatalog,
 	LagunaAdapterStatus,
@@ -86,7 +89,19 @@ import type {
 	ReportVisibilityRequest,
 	ResearchLogEntry,
 	OptimizerRunOutputs,
+	EvidencePage,
+	EvidenceRange,
+	VisualRenderReceipt,
+	OptimizerRunViewEnvelope,
 	OptimizerRunViewV2,
+	OptimizerRunSummary,
+	OptimizerRunSummaryEnvelope,
+	RunCollection,
+	RunCollectionFilter,
+	RunCollectionQuery,
+	RunCollectionPage,
+	RunCollectionRow,
+	HistoricalProjection,
 	OptimizerFrameContent,
 	OptimizerFrameDelta,
 	OptimizerFrameRef,
@@ -101,25 +116,20 @@ import type {
 	Status,
 	TariffCard,
 	TemplateMeta,
+	NativeTerminalFrame,
+	NativeTerminalMountRequest,
 	TerminalCreateRequest,
 	TerminalEvent,
 	TerminalInfo,
 	TrainingArtifact,
 	TrainingModelHit,
 	UpdateStatus,
-	UserTemplateValidation,
 	VisualAnnotation,
 	VisualSeal,
 	VisualSealBundle,
 	VisualUpload,
 	WhisperModelHit,
 	WhisperRuntimeStatus,
-	ProjectSourceApproval,
-	ProjectSourceCatalog,
-	ProjectSourceInspection,
-	ProjectSourceRequest,
-	ProjectSourceRow,
-	ReleaseTierReport,
 	WorkspaceAccessMode,
 	WorkspaceAccessSettings,
 	WorkspaceAttachment,
@@ -161,7 +171,6 @@ export type {
 	PendingGrantSummary,
 	PluginPermission,
 	PluginStatus,
-	ReleaseTierReport,
 	ReportAudience,
 	ReportAudienceState,
 	ReportBlock,
@@ -182,7 +191,19 @@ export type {
 	ReportVisibilityRequest,
 	ResearchLogEntry,
 	OptimizerRunOutputs,
+	EvidencePage,
+	EvidenceRange,
+	VisualRenderReceipt,
+	OptimizerRunViewEnvelope,
 	OptimizerRunViewV2,
+	OptimizerRunSummary,
+	OptimizerRunSummaryEnvelope,
+	RunCollection,
+	RunCollectionFilter,
+	RunCollectionQuery,
+	RunCollectionPage,
+	RunCollectionRow,
+	HistoricalProjection,
 	OptimizerFrameContent,
 	OptimizerFrameDelta,
 	OptimizerFrameRef,
@@ -195,24 +216,20 @@ export type {
 	SecretsInbox,
 	SkillHit,
 	TariffCard,
+	NativeTerminalFrame,
+	NativeTerminalMountRequest,
 	TerminalCreateRequest,
 	TerminalEvent,
 	TerminalInfo,
 	TrainingArtifact,
 	TrainingModelHit,
 	UpdateStatus,
-	UserTemplateValidation,
 	VisualAnnotation,
 	VisualSeal,
 	VisualSealBundle,
 	VisualUpload,
 	WhisperModelHit,
 	WhisperRuntimeStatus,
-	ProjectSourceApproval,
-	ProjectSourceCatalog,
-	ProjectSourceInspection,
-	ProjectSourceRequest,
-	ProjectSourceRow,
 	WorkspaceAccessMode,
 	WorkspaceAccessSettings,
 	WorkspaceAttachment,
@@ -248,6 +265,16 @@ export type RuntimeBridge = {
 		onStatus?: (status: { state: string; detail?: string }) => void,
 		onActivity?: (event: CodexActivityEvent) => void
 	): Promise<EventSubscription>;
+};
+
+/** Annotation projections have a narrow native bridge; generic runtime HTTP is
+ * intentionally browser-only so its authenticated loopback capability never
+ * reaches a Desktop renderer. */
+export type AnalysisBridge = {
+	projection(kind: string, digest: string): Promise<unknown>;
+	findings(traceDigest: string): Promise<{ findings: unknown[] }>;
+	campaigns(evalRunId: string): Promise<{ campaigns: unknown[] }>;
+	review(input: { findingId: string; evidenceHeadDigest: string; decision: string; rationale: string }): Promise<unknown>;
 };
 
 export type LagunaPhase =
@@ -418,6 +445,16 @@ export type SynthConfigBridge = {
 	}): Promise<DesktopPermissionSettings>;
 };
 
+export type ProjectSourcesBridge = {
+	get(): Promise<import("../generated/protocol").ProjectSourceCatalog>;
+	refresh(): Promise<import("../generated/protocol").ProjectSourceCatalog>;
+	add(containers: boolean, recipes: boolean): Promise<import("../generated/protocol").ProjectSourceCatalog | null>;
+	remove(path: string): Promise<import("../generated/protocol").ProjectSourceCatalog>;
+	requests(sessionId?: string | null): Promise<import("../generated/protocol").ProjectSourceRequest[]>;
+	approve(requestId: string): Promise<import("../generated/protocol").ProjectSourceApproval | null>;
+	deny(requestId: string): Promise<import("../generated/protocol").ProjectSourceRequest>;
+};
+
 export type CodexSessionStart = {
 	sessionId: string;
 	workspace: string;
@@ -471,7 +508,7 @@ export type CodexBridge = {
 		sessionId: string,
 		prompt: string,
 		effort?: string,
-		options?: { clientMessageId?: string }
+		options?: { clientMessageId?: string; uiContext?: string }
 	): Promise<CodexSessionInfo>;
 	/**
 	 * Atomic attach-or-resume plus turn start. Optional because browser demo
@@ -487,7 +524,7 @@ export type CodexBridge = {
 		request: CodexSessionStart,
 		prompt: string,
 		effort?: string,
-		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string; recoveryMode?: boolean }
+		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string; recoveryMode?: boolean; uiContext?: string }
 	): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
 	/** Atomically attaches/resumes a Codex thread and starts ad-hoc compaction. */
@@ -564,50 +601,44 @@ export type UpdatesBridge = {
 	openDownload(): Promise<void>;
 };
 
+
+
+export type HumanAnnotationsBridge = {
+	preview(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	create(request: Record<string, unknown>): Promise<{ taskId: string; sessionId: string; taskDigest: string; state: string; created: boolean }>;
+	open(sessionId: string): Promise<HumanAnnotationSessionView>;
+	show(sessionId: string): Promise<HumanAnnotationSessionView>;
+	setAnswer(request: Record<string, unknown>): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	clearAnswer(sessionId: string, expectedRevision: number, questionId: string): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	createComment(request: Record<string, unknown>): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	audioBegin(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	audioAppend(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	audioFinish(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	audioRead(sessionId: string, attachmentId: string): Promise<{ attachmentId: string; mediaType: string; base64Data: string }>;
+	audioTranscribe(request: Record<string, unknown>): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	correctTranscript(request: Record<string, unknown>): Promise<{ sessionId: string; draftRevision: number; state: string; updatedAt: string }>;
+	submit(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	list(query?: Record<string, unknown>): Promise<Array<Record<string, unknown>>>;
+	status(id: string): Promise<Record<string, unknown>>;
+	cancel(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	exportResult(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	supersede(request: Record<string, unknown>): Promise<{ taskId: string; sessionId: string; taskDigest: string; state: string; created: boolean }>;
+	campaignCreate(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	campaignStatus(campaignId: string): Promise<Record<string, unknown>>;
+	campaignClose(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	campaignAdjudicate(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	onShow(listener: (sessionId: string) => void): () => void;
+};
+
 export type VisualTemplateMeta = TemplateMeta;
 
 export type VisualsBridge = {
 	listTemplates(genre?: string | null): Promise<VisualTemplateMeta[]>;
 	getTemplate(templateId: string): Promise<VisualTemplateMeta>;
-	/**
-	 * `shell.tsx` of a user-authored template, for the pane to compile. Refused
-	 * for every other tier, so this is not a general file read.
-	 */
-	templateShellSource(templateId: string): Promise<string>;
-	/**
-	 * Persist authored TSX as a reusable template under the instance state
-	 * root. `manifest` is `template.json`'s text; the host stamps `id` into it
-	 * and rebuilds the registry over the bytes it wrote, rolling back anything
-	 * the registry refuses.
-	 *
-	 * This writes code the app compiles at every launch, not a pane render, so
-	 * the host raises a `visual_template_persist` approval before writing and
-	 * rejects if the person declines. `sessionId` is the conversation the card
-	 * is raised on: there is no window-ambient session here, because the grant
-	 * belongs to the conversation that asked for the write.
-	 */
-	saveTemplate(sessionId: string, templateId: string, manifest: string, source: string): Promise<VisualTemplateMeta>;
-	/**
-	 * Scaffold a new user template by forking an existing one under a new id.
-	 * Fork, never shadow: a shipped id keeps meaning exactly one thing.
-	 *
-	 * Approval-gated on `sessionId` exactly as `saveTemplate` is: a fork also
-	 * leaves code behind that the app compiles at every launch.
-	 */
-	createTemplate(sessionId: string, templateId: string, fromTemplateId: string, title?: string | null): Promise<VisualTemplateMeta>;
-	/**
-	 * Structural verdict on one user template directory. Never rejects for a
-	 * template that is merely unfinished. The import allowlist is not checked
-	 * here — `visuals/runtime/sourcedValidate.ts` owns it and the pane runs it;
-	 * `sourceScan` on the result says so.
-	 */
-	validateTemplate(templateId: string): Promise<UserTemplateValidation>;
-	/**
-	 * The user template root changed on disk. The listener re-asks the host
-	 * rather than trusting the event payload, so a hand edit and an in-app save
-	 * take the same path.
-	 */
-	onTemplatesChanged(listener: () => void): () => void;
+	templateShellSource?(templateId: string): Promise<string>;
+	saveTemplate?(sessionId: string, templateId: string, manifest: string, source: string): Promise<VisualTemplateMeta>;
+	createTemplate?(sessionId: string, templateId: string, fromTemplateId: string, title?: string | null): Promise<VisualTemplateMeta>;
+	validateTemplate?(templateId: string): Promise<unknown>;
 	list(query?: {
 		status?: string;
 		sessionId?: string;
@@ -617,6 +648,14 @@ export type VisualsBridge = {
 		offset?: number;
 	}): Promise<VisualRecord[]>;
 	get(visualId: string): Promise<VisualRecord>;
+	engine?(visualId: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;
+	onEngineChanged?(callback: (identity: { visualId: string; revision: number; viewKey: string }) => void): () => void;
+	presentation(visualId: string): Promise<PresentationState | null>;
+	putPresentation(visualId: string, presentation: PresentationState & { expectedStateVersion: number }): Promise<PresentationState>;
+	snapshots(visualId: string): Promise<VisualSnapshot[]>;
+	putSnapshot(visualId: string, snapshot: VisualSnapshot): Promise<VisualSnapshot>;
+	recordings(visualId: string): Promise<VisualRecording[]>;
+	putRecording(visualId: string, recording: VisualRecording): Promise<VisualRecording>;
 	reportObservation(observation: {
 		schemaVersion: "synth.rendered-visual-observation.v1";
 		visualId: string;
@@ -719,6 +758,7 @@ export type PluginLifecycleOperation =
 	| "disable"
 	| "install"
 	| "start"
+	| "restart"
 	| "stop"
 	| "update"
 	| "remove";
@@ -768,10 +808,13 @@ export type BrowserAdminBridge = {
 	revokeOrigin(origin: string): Promise<BrowserRuntimeStatus>;
 };
 
+export type { JesterkyAnalysisSettings };
+
 export type PluginsBridge = {
+	jesterkyAnalysisSettings?(settings?: JesterkyAnalysisSettings): Promise<JesterkyAnalysisSettings>;
 	status(pluginId?: string | null): Promise<PluginStatus>;
 	list(): Promise<PluginStatus[]>;
-	setReleaseChannel(pluginId: "optimizers", channel: "official" | "dev"): Promise<PluginStatus>;
+	setReleaseChannel(pluginId: "optimizers" | "jesterky", channel: "official" | "dev"): Promise<PluginStatus>;
 	/**
 	 * Human-triggered lifecycle. Approval policy, active-run guards, retention
 	 * classes, and receipts are enforced natively — the renderer never decides
@@ -924,9 +967,11 @@ export type OptimizerInferDelta = {
 
 export type OptimizersBridge = {
 	listAlgorithms(): Promise<OptimizerAlgorithmInfo[]>;
-	listRecipes(): Promise<OptimizerRecipeInfo[]>;
+	listRecipes(sessionRef?: string): Promise<OptimizerRecipeInfo[]>;
 	startRecipe(request: {
 		recipeId: string;
+        /** Frozen container experiment specification for feature-gated CISPO recipes. */
+        planOverride?: Record<string, unknown>;
 		sessionRef?: string;
 		openVisual?: boolean;
 		baseModel?: string;
@@ -959,6 +1004,34 @@ export type OptimizersBridge = {
 	}): Promise<OptimizerRunRecord[]>;
 	get(optimizerRunId: string): Promise<OptimizerRunRecord>;
 	runViewV2(optimizerRunId: string): Promise<OptimizerRunViewV2>;
+	/**
+	 * One coherent read for first paint: the kernel projection, the run record
+	 * the templates still read compatibility fields from, and the durable
+	 * journal tail. Pass `ifNewerThan` with a projection revision already held
+	 * to get `unchanged` back instead of the same bytes again.
+	 */
+	runView(optimizerRunId: string, ifNewerThan?: number | null): Promise<OptimizerRunViewEnvelope>;
+	/**
+	 * The bounded, algorithm-neutral run summary — the only read an ordinary
+	 * mount performs. Conditional on `ifNewerThan` like `runView`.
+	 */
+	runSummary(optimizerRunId: string, ifNewerThan?: number | null): Promise<OptimizerRunSummaryEnvelope>;
+	/** One keyset page of a durable collection. The limit is always explicit. */
+	runCollection(optimizerRunId: string, collection: RunCollection, query: RunCollectionQuery): Promise<RunCollectionPage>;
+	/** One row's durable detail — a candidate's content, one evaluation. */
+	runCollectionItem(optimizerRunId: string, collection: RunCollection, itemId: string): Promise<RunCollectionRow | null>;
+	/** The projection at `sequence`, folded backend-side from a checkpoint. */
+	projectionAt(optimizerRunId: string, sequence: number): Promise<HistoricalProjection>;
+	/**
+	 * Everything in `window` the caller does not already hold. `held` is the
+	 * coverage from the previous answer, sent back verbatim.
+	 */
+	evidencePage(
+		optimizerRunId: string,
+		window: EvidenceRange,
+		held?: EvidenceRange[] | null,
+		limit?: number | null
+	): Promise<EvidencePage>;
 	create(request: {
 		algorithmId: string;
 		algorithmVersion?: string;
@@ -1012,6 +1085,7 @@ export type OptimizersBridge = {
 	publishSavedLora?(checkpointId: string): Promise<SavedLoraCheckpoint>;
 	inferCheckpoint(request: { checkpointId: string; family: "chat_completions" | "responses"; body: Record<string, unknown> }): Promise<unknown>;
 	onInferDelta?(listener: (event: OptimizerInferDelta) => void): () => void;
+	containerExperimentAction(optimizerRunId: string, action: "recover" | "start" | "verify_checkpoint", checkpointId?: string): Promise<unknown>;
 	reconcileTraining(optimizerRunId: string): Promise<{
 		schemaVersion: "workshop.training_snapshot.v1";
 		runId: string;
@@ -1024,7 +1098,23 @@ export type OptimizersBridge = {
 		replayedThrough: number;
 		subscribedFrom: number;
 		templateDigest?: string;
+		/** Visual revision this render belongs to. */
+		visualRevision?: number | null;
+		/** Durable projection revision the render was produced from. */
+		projectionRevision?: number | null;
+		/** Digest of that projection, so identical revisions with different
+		 *  content are detectable. */
+		dataDigest?: string;
 	}): Promise<unknown>;
+	/**
+	 * Proof that this visual revision has rendered before, if it has. Read on
+	 * reopen to tell a normal revision advance from evidence that has gone
+	 * backwards under a visual that already showed something newer.
+	 */
+	visualRenderReceipt?(
+		visualId: string,
+		visualRevision?: number | null
+	): Promise<VisualRenderReceipt | null>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 };
 
@@ -1065,6 +1155,11 @@ export type TerminalBridge = {
 	snapshot(terminalId: string, afterSequence?: number): Promise<TerminalEvent[]>;
 	write(terminalId: string, data: string): Promise<void>;
 	resize(terminalId: string, cols: number, rows: number): Promise<void>;
+	mountNative(request: NativeTerminalMountRequest): Promise<boolean>;
+	setNativeFrame(terminalId: string, frame: NativeTerminalFrame): Promise<void>;
+	setNativeVisible(terminalId: string, visible: boolean): Promise<void>;
+	focusNative(terminalId: string): Promise<void>;
+	unmountNative(terminalId: string): Promise<void>;
 	close(terminalId: string): Promise<void>;
 	onEvent(listener: (event: TerminalEvent) => void): () => void;
 };
@@ -1080,25 +1175,6 @@ export type WorkspaceScopeBridge = {
 	denyRequest(requestId: string): Promise<WorkspaceGrantRequest>;
 };
 
-/**
- * Project sources: folders Workshop may discover executable declarations in.
- *
- * Deliberately separate from `WorkspaceScopeBridge`. A workspace attachment
- * grants file access to one conversation; a project source additionally lets
- * declared container commands from that folder be started. `approve` opens the
- * native picker and admits only if the selection matches the requested folder,
- * so no method here can widen a grant on its own.
- */
-export type ProjectSourcesBridge = {
-	get(): Promise<ProjectSourceCatalog>;
-	refresh(): Promise<ProjectSourceCatalog>;
-	add(containers: boolean, recipes: boolean): Promise<ProjectSourceCatalog | null>;
-	remove(path: string): Promise<ProjectSourceCatalog>;
-	listRequests(sessionId: string | null): Promise<ProjectSourceRequest[]>;
-	approveRequest(requestId: string): Promise<ProjectSourceApproval | null>;
-	denyRequest(requestId: string): Promise<ProjectSourceRequest>;
-};
-
 export type SemanticEvalApi = {
 	schemaVersion: "synth.desktop-eval-api.v1";
 	getState(): unknown;
@@ -1108,11 +1184,9 @@ export type SemanticEvalApi = {
 
 export type SynthSignInBegin = {
 	verificationUri: string;
-	/** Pairing code the browser approval page also shows; the user confirms they match. */
 	userCode?: string | null;
-	expiresAtEpochS: number;
-	/** Host-directed poll cadence (RFC 8628 `interval`). */
 	intervalS?: number;
+	expiresAtEpochS: number;
 };
 
 export type SynthSignInPoll =
@@ -1144,11 +1218,20 @@ export type SynthAccountPlan = {
 	state?: string;
 	/** False when the backend reports no dollar allowance: show no dollars. */
 	metered?: boolean;
+	effectivePriceUsd?: number;
+	billingInterval?: string;
+	grantKind?: "subscription" | "trial" | "promotion" | "admin" | "none";
+	entitlementState?: "pending" | "active" | "exhausted" | "expired" | "revoked";
+	entitlementStartsAt?: string;
+	entitlementExpiresAt?: string;
+	campaignId?: string;
+	claimState?: "eligible" | "claimed" | "unavailable";
 	monthlyAllowanceUsd?: number;
 	usedUsd?: number;
 	remainingUsd?: number;
 	resetsAt?: string;
 	renewsAt?: string;
+	cancelAtPeriodEnd?: boolean;
 	source?: SynthAccountSource;
 };
 
@@ -1260,29 +1343,6 @@ export type ProductTelemetryBridge = {
 	flushNow(): Promise<number>;
 };
 
-export type ReleaseTier = "core" | "stable" | "beta" | "alpha" | "dev";
-
-export type ReleaseTierFeature = {
-	name: string;
-	summary: string;
-	owner: string;
-	minTier: ReleaseTier;
-	/** How the envelope is structural for this feature: cargo-gated host code,
-	 * define-gated renderer code, or a declared (pre-envelope) classification. */
-	enforcement: "compiled" | "bundled" | "declared";
-	/** Classified inside this build's envelope (minTier ≤ build tier). */
-	included: boolean;
-	/** Actually in the binary: included, or grandfathered pre-envelope code. */
-	present: boolean;
-	enabled: boolean;
-	runtimeFlag: string | null;
-};
-
-export type ReleaseTierBridge = {
-	/** The host binary's compiled maturity envelope (contracts/release-tiers-v1.toml). */
-	get(): Promise<ReleaseTierReport>;
-};
-
 export type CodexOauthBegin = BeginResult;
 
 export type CodexOauthStatus = Status;
@@ -1330,3 +1390,5 @@ export type SecretsBridge = {
 	grantUse(secretId: string, runId: string, recipeId: string, rememberRecipe: boolean, requestId?: string): Promise<unknown>;
 	denyUse(secretId: string): Promise<unknown>;
 };
+
+export type { HumanAnnotationSessionView };

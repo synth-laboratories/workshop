@@ -7,15 +7,17 @@ use super::{
     eval_relay::{self, RelayContext, RelaySettings},
     events::OptimizerEventDraft,
     models::{
-        OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
-        OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
+        OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
+        OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef,
+        OptimizerRunRecord,
     },
     service::ChatVisualPublication,
     workspace_recipe::{self, WorkspaceRecipe},
     OptimizerManager, OptimizerService,
 };
 use crate::container_stream::{
-    authoritative_poll_telemetry, declared_poll_url, declared_stream_descriptor,
+    authoritative_poll_telemetry, declared_annotation_poll_url, declared_annotation_sse_url,
+    declared_poll_url, declared_reward_poll_url, declared_sse_url, declared_stream_descriptor,
     refuse_auto_transport, resolve_declared_url, wait_for_stream_subscribed, StreamDiagnostics,
     SUBSCRIBE_READY_TIMEOUT,
 };
@@ -34,10 +36,39 @@ const EXPERIMENT_SCHEMA: &str = "synth.experiment.overview.v1";
 /// what a seed row opens, and it is bound to the same run rather than to a
 /// snapshot, so it keeps filling in while the campaign runs.
 const WORKBENCH_TEMPLATE: &str = "trace.workbench.v1";
+/// The live superset viewer minted beside the experiment pane when a recipe
+/// declares `[live_annotation]`: each rollout's declared stream and its
+/// annotation sibling are appended to its one multi-stream input as rollouts
+/// are prepared, so the pane shows the summary layer over the underlying events.
+const LIVE_ANNOTATION_TEMPLATE: &str = "live.annotated_rollouts.v1";
+const LIVE_ANNOTATION_VISUAL_ROLE: &str = "live_annotation";
+const LIVE_EVAL_VISUAL_ROLE: &str = "live_eval";
+const HARBOR_LIVE_TEMPLATE: &str = "live.harbor_eval.v1";
+const CRAFTAX_LIVE_TEMPLATE: &str = "live.craftax.v1";
 const EVAL_ALGORITHM_ID: &str = "eval";
+const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
 const DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT: Duration =
     crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT;
+
+fn live_eval_visual_spec(
+    declared_template: Option<&str>,
+    has_live_annotation: bool,
+) -> Option<(&str, &str, &str)> {
+    if has_live_annotation {
+        return Some((
+            LIVE_ANNOTATION_TEMPLATE,
+            LIVE_ANNOTATION_VISUAL_ROLE,
+            "live_annotation_provisional",
+        ));
+    }
+    match declared_template {
+        Some(template @ (HARBOR_LIVE_TEMPLATE | CRAFTAX_LIVE_TEMPLATE)) => {
+            Some((template, LIVE_EVAL_VISUAL_ROLE, "live_eval_provisional"))
+        }
+        _ => None,
+    }
+}
 
 /// A failure of the evidence lane — durable events, projections, the terminal
 /// manifest, or the chat-owned visual — as opposed to a failure of the compute.
@@ -93,15 +124,33 @@ struct EvalSpec {
     concurrency: usize,
     train: Vec<i64>,
     heldout: Vec<i64>,
+    train_task_instance_ids: Vec<String>,
+    heldout_task_instance_ids: Vec<String>,
     cost_ceiling_usd: f64,
     maximum_model_calls_per_rollout: u32,
     maximum_steps_per_rollout: u32,
     admitted_use_policy: Option<crate::secrets::SecretsUsePolicy>,
     requires_credential_advertisement: bool,
     relay: RelaySettings,
+    /// Optional post-rollout annotation stage (lane B). Off unless the
+    /// workspace recipe declares `[annotation]`; runs only after the seal.
+    annotation: Option<super::annotation_stage::AnnotationStageSpec>,
+    /// Optional live annotation protocol (lane C): observe-only provisional
+    /// findings streamed beside each rollout while it runs. Off unless the
+    /// workspace recipe declares `[live_annotation]`.
+    live_annotation: Option<super::live_annotation::LiveAnnotationSource>,
 }
 
 impl EvalSpec {
+    fn research_context(&self, task:Value, seed:Value)->Value {
+        let mut context=json!({"schemaVersion":"synth.eval-research-context.v1","environment":self.family,"taskId":task,"seed":seed,"model":self.model,"candidateId":self.policy_config,
+            "policySourceRevision":self.policy_source_revision,"policyConfigurationDigest":self.policy_configuration_digest,"harness":self.harness});
+        for key in ["effort","environmentVersion","promptRevision","protocolRevision","harnessRevision","rewardId","rewardVersion","definitionDigest","units","repeat","checkpointId"] {
+            if let Some(value)=self.policy.get(key){context[key]=value.clone();}
+        }
+        if context["effort"].is_null(){context["effort"]=self.policy.get("reasoning_effort").cloned().unwrap_or(Value::Null);}
+        context
+    }
     fn from_execution_spec(
         execution: &super::admission::ExecutionSpec,
         family: String,
@@ -148,6 +197,8 @@ impl EvalSpec {
                 .map(|seed| seed.0)
                 .collect(),
             heldout: Vec::new(),
+            train_task_instance_ids: Vec::new(),
+            heldout_task_instance_ids: Vec::new(),
             cost_ceiling_usd: recipe.resource_limits.hard_total_cost_micros.as_micros() as f64
                 / 1_000_000.0,
             maximum_model_calls_per_rollout: recipe
@@ -157,13 +208,29 @@ impl EvalSpec {
                 .get(),
             maximum_steps_per_rollout: recipe.resource_limits.maximum_steps_per_rollout.0.get(),
             admitted_use_policy: Some(admitted_use_policy),
+            // Inline provider credentials are owned by Workshop's scoped proxy,
+            // not by the container, so container-local credential readiness is
+            // neither required nor an honest signal for this execution path.
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
+            annotation: None,
+            live_annotation: None,
         })
     }
 
     fn requires_credential_advertisement(&self) -> bool {
         self.requires_credential_advertisement
+    }
+
+    fn requires_scoped_proxy_registration(&self) -> bool {
+        // Provider routes are run-scoped capabilities. An advertised policy
+        // config may prove that the harness/model pair exists, but its stored
+        // base URL necessarily belongs to an earlier run (or is only a
+        // non-routable package placeholder). Re-register every provider-backed
+        // policy for this run so the container receives the freshly issued
+        // Workshop proxy route before any rollout starts. This applies equally
+        // to typed inline specifications and workspace recipes.
+        provider_needs_credentials(&self.provider)
     }
 
     fn blocking_http_timeout(&self) -> Duration {
@@ -197,20 +264,6 @@ impl EvalSpec {
         capability_bound.map_or(configured, |bound| configured.max(bound))
     }
 
-    /// Keep terminal observation alive for the full approved credential lease.
-    /// A harness may spend most of its model-call window before running a
-    /// verifier, and revoking at the shorter HTTP default would orphan that
-    /// otherwise bounded work.
-    fn terminal_poll_timeout(&self) -> Duration {
-        let lease_seconds = self
-            .admitted_use_policy
-            .as_ref()
-            .map(|policy| policy.lifetime_seconds)
-            .unwrap_or_else(|| crate::limits::SECRETS_CAPABILITY_TTL.as_secs());
-        self.blocking_http_timeout()
-            .max(Duration::from_secs(lease_seconds))
-    }
-
     fn from_workspace(recipe: &WorkspaceRecipe, workspace: &std::path::Path) -> Result<Self> {
         let policy_code = recipe
             .policy_source
@@ -221,11 +274,21 @@ impl EvalSpec {
                     .with_context(|| format!("read policy source {}", path.display()))
             })
             .transpose()?;
+        // Code edits must invalidate the installed policy even when the recipe
+        // TOML is unchanged. Configuration and model have separate digests.
+        let policy_source_revision = policy_code.as_ref()
+            .map(|code| super::admission::digest_bytes(code.as_bytes()).as_str().to_string())
+            .unwrap_or_else(|| recipe.source_hash.clone());
         let policy_configuration_digest =
             super::admission::CanonicalJson::new(Value::Object(recipe.policy.clone()))?
                 .digest()
                 .as_str()
                 .to_string();
+        let live_annotation = recipe
+            .live_annotation
+            .as_ref()
+            .map(|spec| super::live_annotation::LiveAnnotationSource::resolve(spec, workspace))
+            .transpose()?;
         Ok(Self {
             recipe_id: recipe.id.clone(),
             family: recipe.family.clone(),
@@ -240,13 +303,15 @@ impl EvalSpec {
             policy_config: recipe.policy_config.clone(),
             policy: recipe.policy.clone(),
             policy_code,
-            policy_source_revision: recipe.source_hash.clone(),
+            policy_source_revision,
             policy_configuration_digest,
             provider: recipe.provider.clone(),
             model: recipe.model.clone(),
             concurrency: recipe.concurrency,
             train: recipe.train_seeds.clone(),
             heldout: recipe.heldout_seeds.clone(),
+            train_task_instance_ids: recipe.train_task_instance_ids.clone(),
+            heldout_task_instance_ids: recipe.heldout_task_instance_ids.clone(),
             cost_ceiling_usd: recipe.bounds.max_cost_usd,
             maximum_model_calls_per_rollout: recipe
                 .policy
@@ -265,6 +330,8 @@ impl EvalSpec {
             admitted_use_policy: None,
             requires_credential_advertisement: recipe.requires_credential_advertisement,
             relay: recipe.relay,
+            annotation: recipe.annotation.clone(),
+            live_annotation,
         })
     }
 
@@ -281,6 +348,20 @@ impl EvalSpec {
                 seed: *seed,
             }))
             .collect()
+    }
+
+    fn task_instance_id(&self, example: &EvalExample) -> String {
+        let pool = if example.pool == "heldout" {
+            (&self.heldout, &self.heldout_task_instance_ids)
+        } else {
+            (&self.train, &self.train_task_instance_ids)
+        };
+        pool.0
+            .iter()
+            .position(|seed| *seed == example.seed)
+            .and_then(|index| pool.1.get(index))
+            .cloned()
+            .unwrap_or_else(|| format!("{}:seed:{}", self.family, example.seed))
     }
 
     fn policy_config_body(&self, openai_base_url: Option<&str>) -> Option<Value> {
@@ -332,15 +413,44 @@ pub(super) async fn start(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow::anyhow!("workspace eval recipes require session_ref"))?;
-    let workspace = workspace_recipe::require_session_workspace(service.database(), session)?;
-    let recipe = workspace_recipe::find_recipe(&workspace, &request.recipe_id)?;
+    let (workspace, recipe) =
+        workspace_recipe::find_session_recipe(service.database(), session, &request.recipe_id)?;
     if recipe.algorithm != workspace_recipe::AlgorithmKind::Eval {
         bail!("recipe `{}` is not an eval recipe", recipe.id);
     }
-    let spec = EvalSpec::from_workspace(&recipe, &workspace)?;
+    let mut spec = EvalSpec::from_workspace(&recipe, &workspace)?;
     let container =
         find_ready_container(service, &spec.family, request.container_id.as_deref()).await?;
-    start_eval(service, request.session_ref.clone(), spec, container, None).await
+    let info = fresh_container_info(&container.base_url, "workspace eval identity").await?;
+    bind_workspace_container_identity(&mut spec, &info);
+    crate::project_sources::require_manifest(&recipe.source_path, crate::project_sources::Capability::Recipes)?;
+    // `start_eval` carries the state for the complete rollout/evidence
+    // pipeline. In debug builds that future is large enough that embedding it
+    // directly in each caller's state can overflow a Tokio worker before the
+    // first request is dispatched. Keep the large state on the heap.
+    Box::pin(start_eval(
+        service,
+        request.session_ref.clone(),
+        spec,
+        container,
+        None,
+        None,
+    ))
+    .await
+}
+
+// A workspace recipe selects the registered container. Its advertised world
+// and evaluator take precedence over legacy family-derived recipe defaults.
+fn bind_workspace_container_identity(spec: &mut EvalSpec, info: &Value) {
+    for (field, logical, target) in [
+        ("world_ref", "/logical_service_ids/world", &mut spec.world_ref),
+        ("evaluation_plan_ref", "/logical_service_ids/evaluator", &mut spec.evaluation_plan_ref),
+    ] {
+        if let Some(value) = info.pointer(logical).or_else(|| info.get(field))
+            .and_then(Value::as_str).filter(|value| !value.trim().is_empty()) {
+            *target = value.to_string();
+        }
+    }
 }
 
 /// The inline executor accepts only the final, approval-bound stage.
@@ -348,20 +458,12 @@ pub(super) async fn start_inline(
     service: &OptimizerService,
     approved: super::admission::ApprovedExecutionSpec,
     session_ref: Option<String>,
+    run_id: Option<String>,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     let recipe = approved.recipe();
     let (mut container, family) =
         find_ready_container_by_id(service, recipe.container.container_id.as_str()).await?;
-    let info = crate::http::http_client()
-        .get(format!("{}/info", container.base_url))
-        .send()
-        .await
-        .context("refresh inline container declaration")?
-        .error_for_status()
-        .context("inline container /info was not successful")?
-        .json::<Value>()
-        .await
-        .context("decode inline container /info")?;
+    let info = fresh_container_info(&container.base_url, "inline container").await?;
     refresh_inline_container_provenance(&mut container, &info)?;
     let evaluator_ref = info
         .pointer("/logical_service_ids/evaluator")
@@ -416,7 +518,15 @@ pub(super) async fn start_inline(
             spec.policy_code = Some(bytes);
         }
     }
-    start_eval(service, session_ref, spec, container, Some(approved)).await
+    Box::pin(start_eval(
+        service,
+        session_ref,
+        spec,
+        container,
+        Some(approved),
+        run_id,
+    ))
+    .await
 }
 
 async fn find_ready_container_by_id(
@@ -448,6 +558,7 @@ async fn start_eval(
     spec: EvalSpec,
     mut container: ReadyContainer,
     approved: Option<super::admission::ApprovedExecutionSpec>,
+    requested_run_id: Option<String>,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     let preflight_info = preflight_container_credentials(&container, &spec).await?;
     if approved.is_some() {
@@ -458,7 +569,8 @@ async fn start_eval(
     }
     let examples = spec.examples();
     let suffix = Uuid::new_v4().simple().to_string();
-    let run_id = format!("opt_eval_{}_{}", spec.family, &suffix[..12]);
+    let run_id =
+        requested_run_id.unwrap_or_else(|| format!("opt_eval_{}_{}", spec.family, &suffix[..12]));
     let effective_contract = service.negotiate_effective_contract(
         &run_id,
         &container.id,
@@ -477,6 +589,10 @@ async fn start_eval(
         "expectedVisual": effective_contract.primary_visual.template_id.clone(),
         "effectiveContract": effective_contract,
         "policyRef": { "harness": spec.harness, "config": spec.policy_config },
+        "policySourceRevision": spec.policy_source_revision,
+        "policyConfigurationDigest": spec.policy_configuration_digest,
+        "provider": spec.provider,
+        "model": spec.model,
         "taskPools": { "train": spec.train.len(), "heldout": spec.heldout.len() },
         "concurrency": spec.concurrency,
         "costCeilingUsd": spec.cost_ceiling_usd,
@@ -558,7 +674,10 @@ async fn start_eval(
         // worker are started so an existing narrower capability for this run
         // is refused pre-dispatch rather than failing on call 41. The worker's
         // later route lookup reuses this exact capability.
-        if let Err(error) = container_openai_proxy_base(&run.id, &spec) {
+        if let Err(error) = provider_needs_credentials(&spec.provider)
+            .then(|| container_openai_proxy_base(&run.id, &spec))
+            .transpose()
+        {
             let detail = format!("provider capability preflight failed: {error:#}");
             append_terminal(service, &run.id, "failed", detail).await?;
             return Err(error);
@@ -569,6 +688,7 @@ async fn start_eval(
     // appears only after there is something to see cannot show a rollout
     // starting, which is the thing it exists to show.
     let workbench_id = mint_workbench_visual(service, &run, &spec).await?;
+    let live_eval_visual_id = mint_live_eval_visual(service, &run, &spec).await?;
     let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run.id.clone(), cancel_tx)
@@ -578,6 +698,7 @@ async fn start_eval(
     let planned_trials = examples.len();
     let worker_visual_id = visual_id.clone();
     let worker_workbench_id = workbench_id.clone();
+    let worker_live_visual_id = live_eval_visual_id.clone();
     let worker_spec = spec.clone();
     tokio::spawn(async move {
         if let Err(error) = run_eval_worker(
@@ -588,10 +709,14 @@ async fn start_eval(
             examples,
             worker_visual_id.clone(),
             worker_workbench_id.clone(),
+            worker_live_visual_id.clone(),
             cancel_rx,
         )
         .await
         {
+            let _ =
+                settle_live_annotation_visual(&worker, worker_live_visual_id.as_deref(), None, "failed")
+                    .await;
             // A worker can fail before its first progress projection (for
             // example when Workshop refuses to mint a secrets proxy).  Its
             // durable run is terminal in that case, so its chat-owned visual
@@ -627,6 +752,11 @@ async fn start_eval(
                         format!("could not record visual delivery failure for {worker_run_id}: {record_error:#}"),
                     );
                 }
+            }
+            if let Err(error) = settle_live_annotation_visual(
+                &worker, worker_live_visual_id.as_deref(), Some(&worker_visual_id), "failed",
+            ).await {
+                let _ = worker.record_visual_projection_delivery_failure(&worker_run_id, &error).await;
             }
         }
         worker.unregister_local_recipe(&worker_run_id).await;
@@ -711,23 +841,11 @@ async fn preflight_container_credentials(
     container: &ReadyContainer,
     spec: &EvalSpec,
 ) -> Result<Value> {
-    let client = crate::http::http_client_with_timeout(Duration::from_secs(15));
-    let info = client
-        .get(format!("{}/info", container.base_url))
-        .send()
-        .await
-        .with_context(|| format!("{} credential preflight GET /info", spec.family))?;
-    if !info.status().is_success() {
-        bail!(
-            "{} credential preflight returned {}",
-            spec.family,
-            info.status()
-        );
-    }
-    let info = info
-        .json::<Value>()
-        .await
-        .with_context(|| format!("decode {} credential preflight", spec.family))?;
+    let info = fresh_container_info(
+        &container.base_url,
+        &format!("{} credential preflight", spec.family),
+    )
+    .await?;
     let roles = info
         .pointer("/metadata/model_roles")
         .and_then(Value::as_object);
@@ -793,6 +911,47 @@ async fn preflight_container_credentials(
                 "message": format!("{owner} requires {credential}; configure it before starting the eval"),
             })
         );
+    }
+    Ok(info)
+}
+
+async fn fresh_container_info(base_url: &str, label: &str) -> Result<Value> {
+    let client = crate::http::http_client_with_timeout(Duration::from_secs(15));
+    let mut info = client
+        .get(format!("{}/info", base_url.trim_end_matches('/')))
+        .send()
+        .await
+        .with_context(|| format!("{label} GET /info"))?
+        .error_for_status()
+        .with_context(|| format!("{label} /info was not successful"))?
+        .json::<Value>()
+        .await
+        .with_context(|| format!("decode {label} /info"))?;
+    if info.get("imageDigest").is_none() || info.get("producerSourceRevision").is_none() {
+        let health = client
+            .get(format!("{}/health", base_url.trim_end_matches('/')))
+            .send()
+            .await
+            .with_context(|| format!("{label} GET /health identity"))?
+            .error_for_status()
+            .with_context(|| format!("{label} /health identity was not successful"))?
+            .json::<Value>()
+            .await
+            .with_context(|| format!("decode {label} /health identity"))?;
+        if let Some(object) = info.as_object_mut() {
+            if let Some(identity) = health.get("runtime_identity") {
+                if object.get("imageDigest").is_none() {
+                    if let Some(value) = identity.get("image_digest") {
+                        object.insert("imageDigest".into(), value.clone());
+                    }
+                }
+                if object.get("producerSourceRevision").is_none() {
+                    if let Some(value) = identity.get("producer_source_revision") {
+                        object.insert("producerSourceRevision".into(), value.clone());
+                    }
+                }
+            }
+        }
     }
     Ok(info)
 }
@@ -889,17 +1048,345 @@ async fn mint_workbench_visual(
     Ok(visual_id)
 }
 
+/// The run's declared live pane. It is minted honestly empty
+/// (`pending_stream_bindings`) with the run, then bound per rollout after
+/// prepare. A plain Harbor/Craftax eval gets its family-specific viewer; a
+/// recipe with Lane C annotations gets the annotated-rollouts superset.
+///
+/// The experiment overview remains a separate summary artifact. Previously we
+/// replaced its template with `live.harbor_eval.v1` while leaving its
+/// `experiment` binding intact. The renderer quite correctly found no stream
+/// and rested on `connecting` for the entire rollout.
+async fn mint_live_eval_visual(
+    service: &OptimizerService,
+    run: &OptimizerRunRecord,
+    spec: &EvalSpec,
+) -> Result<Option<String>> {
+    let declared_template = run
+        .summary
+        .pointer("/effectiveContract/primaryVisual/templateId")
+        .and_then(Value::as_str);
+    let Some((template_id, role, semantics)) =
+        live_eval_visual_spec(declared_template, spec.live_annotation.is_some())
+    else {
+        return Ok(None);
+    };
+    let bindings = if spec.live_annotation.is_some() {
+        json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "inputs": [{
+                "input": "stream", "kind": "inline", "schema": "synth.trace-stream-event.v1", "data": { "events": [] }
+            }, {
+                "input": "optimizer_run", "kind": "optimizer_run", "source": run.id,
+            }]
+        })
+    } else {
+        crate::visuals::pending_stream_bindings()
+    };
+    let (visual_id, _event) = service
+        .publish_chat_owned_visual(ChatVisualPublication {
+            run_id: run.id.clone(),
+            session_ref: run.session_ref.clone(),
+            template_id: template_id.into(),
+            title: if spec.live_annotation.is_some() {
+                format!("{} · live annotations", spec.title)
+            } else {
+                format!("{} · live", spec.title)
+            },
+            bindings,
+            metadata: json!({
+                "optimizerRunId": run.id,
+                "recipeId": spec.recipe_id,
+                "semantics": semantics,
+                "protocolId": spec.live_annotation.as_ref().map(|source| source.spec.protocol_id.clone()),
+            }),
+            status: VisualStatus::Live,
+            role: role.into(),
+        })
+        .await?;
+    Ok(Some(visual_id))
+}
+
+/// Merge per-rollout stream descriptors into a live visual's bindings.
+///
+/// There is no host-side append mode, so this is the read-modify-write the
+/// MCP shim performs client-side: keep existing `live_sse` descriptors, drop
+/// the honest-empty placeholder, de-duplicate by source, and re-emit the
+/// canonical envelope. Pure, so the merge rule is testable without a registry.
+pub(crate) fn merge_live_stream_bindings(existing: &Value, incoming: &[Value]) -> Result<Value> {
+    let mut descriptors: Vec<Value> = crate::visuals::binding_descriptors(existing)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|row| row.get("kind").and_then(Value::as_str) != Some("inline"))
+        .collect();
+    for row in incoming {
+        let source = row.get("source").and_then(Value::as_str);
+        if source.is_some()
+            && descriptors
+                .iter()
+                .any(|known| known.get("source").and_then(Value::as_str) == source)
+        {
+            continue;
+        }
+        descriptors.push(row.clone());
+    }
+    Ok(json!({
+        "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+        "inputs": descriptors,
+    }))
+}
+
+fn live_stream_descriptor(sse_url: &str, poll_url: &str) -> Value {
+    json!({
+        "input": "stream",
+        "kind": "live_sse",
+        "source": sse_url,
+        "poll_url": poll_url,
+        "schema": "synth.trace-stream-event.v1",
+    })
+}
+
+/// Append one rollout's declared streams (its own and its annotation sibling)
+/// to the live annotation visual. Serialized per run: concurrent rollouts
+/// would otherwise lose descriptors to last-writer-wins.
+async fn append_live_annotation_bindings(
+    service: &OptimizerService,
+    visual_id: &str,
+    lock: &tokio::sync::Mutex<()>,
+    rollout_id: &str,
+    rollout_sse_url: &str,
+    rollout_poll_url: &str,
+    annotation_sse_url: Option<&str>,
+    annotation_poll_url: Option<&str>,
+) -> Result<()> {
+    crate::visuals::assert_declared_stream_source(rollout_sse_url)?;
+    let mut incoming = vec![live_stream_descriptor(rollout_sse_url, rollout_poll_url)];
+    if let (Some(sse), Some(poll)) = (annotation_sse_url, annotation_poll_url) {
+        crate::visuals::assert_declared_stream_source(sse)?;
+        incoming.push(live_stream_descriptor(sse, poll));
+    }
+    let _guard = lock.lock().await;
+    let visual = service.visuals().get(visual_id.to_string()).await?;
+    let bindings = merge_live_stream_bindings(&visual.bindings, &incoming)?;
+    let (_, event) = service
+        .visuals()
+        .update(
+            visual_id.to_string(),
+            VisualUpdateRequest {
+                title: None,
+                bindings: Some(bindings),
+                status: None,
+                renderer_kind: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                content: None,
+                metadata: Some(json!({ "lastBoundRolloutId": rollout_id, "streamState": "bound_before_start" })),
+                bump_revision: Some(true),
+            },
+        )
+        .await?;
+    service.publish_visual_event(event)?;
+    Ok(())
+}
+
+/// Preserve the recorded stream authority while adding the settled projection.
+/// The producer may go offline after completion; its absence is not a new run state.
+fn harbor_terminal_bindings(existing: &Value, overview: &Value) -> Result<Value> {
+    let snapshot = crate::visuals::binding_descriptors(overview)?
+        .into_iter()
+        .find(|row| row.get("input").and_then(Value::as_str) == Some("experiment")
+            && row.pointer("/data/schemaVersion").and_then(Value::as_str) == Some(EXPERIMENT_SCHEMA)
+            && row.pointer("/data/aggregate/lifecycle").and_then(Value::as_str) == Some("terminal"))
+        .ok_or_else(|| anyhow::anyhow!("Harbor settlement requires a terminal experiment snapshot"))?;
+    let mut inputs = crate::visuals::binding_descriptors(existing)?;
+    inputs.retain(|row| row.get("input").and_then(Value::as_str) != Some("experiment"));
+    inputs.push(snapshot);
+    Ok(json!({ "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION, "inputs": inputs }))
+}
+
+/// What one Harbor live-visual repair did. Every arm is a terminal answer for
+/// the run it was asked about; none of them reruns evaluation or edits evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum HarborVisualRepair {
+    /// A new revision now carries the terminal snapshot. The old revision is
+    /// retained by the registry and stays resolvable.
+    Repaired { from_revision: i64, to_revision: i64 },
+    /// The visual already carries the same terminal snapshot. A second repair
+    /// of the same run is this, not another revision.
+    AlreadySettled,
+    /// Nothing here to repair: no Harbor live pane, or a run still in flight
+    /// that will settle through the ordinary path.
+    NotApplicable,
+    /// The overview holds no terminal experiment snapshot to project. The
+    /// producer is the only source of one, so this fails without writing.
+    ProducerUnavailable,
+}
+
+/// The terminal experiment snapshot a Harbor live pane should carry offline.
+fn harbor_terminal_snapshot(bindings: &Value) -> Option<Value> {
+    crate::visuals::binding_descriptors(bindings)
+        .ok()?
+        .into_iter()
+        .find(|row| {
+            row.get("input").and_then(Value::as_str) == Some("experiment")
+                && row.pointer("/data/schemaVersion").and_then(Value::as_str) == Some(EXPERIMENT_SCHEMA)
+                && row.pointer("/data/aggregate/lifecycle").and_then(Value::as_str) == Some("terminal")
+        })
+}
+
+/// Repair one historical Harbor live visual that settled before terminal
+/// snapshots were retained.
+///
+/// Bounded to a single already-terminal run, idempotent, and additive: it
+/// publishes a new revision through the ordinary update path, so previous
+/// revisions and every receipt that names them keep resolving. It never
+/// re-runs evaluation, never edits the terminal manifest or summary, and
+/// never invents a snapshot the producer did not record.
+pub(super) async fn repair_harbor_terminal_visual(
+    service: &OptimizerService,
+    run: &OptimizerRunRecord,
+) -> Result<HarborVisualRepair> {
+    // A run that has not settled still owns its own live pane; repairing it
+    // would race the worker that is about to settle it honestly.
+    let visual_status = match run.status.as_str() {
+        "completed" | "cancelled" | "degraded" => VisualStatus::Saved,
+        "failed" | "failed_evidence" => VisualStatus::Failed,
+        _ => return Ok(HarborVisualRepair::NotApplicable),
+    };
+    let Some(summary) = run.summary.as_object() else {
+        return Ok(HarborVisualRepair::NotApplicable);
+    };
+    let by_role = summary.get("visualIds").and_then(Value::as_object);
+    let Some(live_visual_id) = by_role
+        .and_then(|roles| roles.get(LIVE_EVAL_VISUAL_ROLE))
+        .and_then(Value::as_str)
+    else {
+        return Ok(HarborVisualRepair::NotApplicable);
+    };
+    let live = service.visuals().get(live_visual_id.to_string()).await?;
+    if live.template_id != HARBOR_LIVE_TEMPLATE {
+        return Ok(HarborVisualRepair::NotApplicable);
+    }
+    let Some(overview_id) = summary.get("visualId").and_then(Value::as_str) else {
+        return Ok(HarborVisualRepair::NotApplicable);
+    };
+    let overview = service.visuals().get(overview_id.to_string()).await?;
+    let Some(snapshot) = harbor_terminal_snapshot(&overview.bindings) else {
+        return Ok(HarborVisualRepair::ProducerUnavailable);
+    };
+    // The same snapshot already projected is the duplicate-repair case and the
+    // unchanged-source case at once: nothing to write, so no new revision.
+    if harbor_terminal_snapshot(&live.bindings).as_ref() == Some(&snapshot) {
+        return Ok(HarborVisualRepair::AlreadySettled);
+    }
+    let bindings = harbor_terminal_bindings(&live.bindings, &overview.bindings)?;
+    let from_revision = live.current_revision;
+    let (updated, _) = service
+        .visuals()
+        .update_at_revision(
+            live_visual_id.to_string(),
+            VisualUpdateRequest {
+                title: None,
+                bindings: Some(bindings),
+                status: Some(visual_status),
+                renderer_kind: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                content: None,
+                metadata: None,
+                // Additive by construction: the repaired projection becomes a
+                // new revision, and the revision the run settled at stays
+                // exactly as the producer left it.
+                bump_revision: Some(true),
+            },
+            // A concurrent writer means someone else is settling this pane.
+            // Losing the compare-and-set is a refusal, not a retry.
+            Some(from_revision),
+        )
+        .await?;
+    Ok(HarborVisualRepair::Repaired {
+        from_revision,
+        to_revision: updated.current_revision,
+    })
+}
+
+async fn settle_live_annotation_visual(
+    service: &OptimizerService,
+    visual_id: Option<&str>,
+    overview_id: Option<&str>,
+    status: &str,
+) -> Result<()> {
+    let Some(visual_id) = visual_id else {
+        return Ok(());
+    };
+    let visual = service.visuals().get(visual_id.to_string()).await?;
+    let bindings = if visual.template_id == HARBOR_LIVE_TEMPLATE {
+        if let Some(overview_id) = overview_id {
+            let overview = service.visuals().get(overview_id.to_string()).await?;
+            Some(harbor_terminal_bindings(&visual.bindings, &overview.bindings)?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let visual_status = match status {
+        "completed" | "cancelled" | "degraded" => VisualStatus::Saved,
+        _ => VisualStatus::Failed,
+    };
+    let (_, event) = service
+        .visuals()
+        .update(
+            visual_id.to_string(),
+            VisualUpdateRequest {
+                title: None,
+                bindings,
+                status: Some(visual_status),
+                renderer_kind: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                content: None,
+                metadata: None,
+                bump_revision: Some(true),
+            },
+        )
+        .await?;
+    service.publish_visual_event(event)?;
+    Ok(())
+}
+
+/// The protocol pin a dispatch should use: the run summary's current
+/// `liveAnnotationPin`, which `annotation_protocol_update` may have advanced
+/// since the worker started, falling back to the pin taken at start.
+async fn current_annotation_pin(
+    service: &OptimizerService,
+    run_id: &str,
+    fallback: Option<&Value>,
+) -> Option<Value> {
+    match service.get(run_id.to_string()).await {
+        Ok(run) => run
+            .summary
+            .get("liveAnnotationPin")
+            .cloned()
+            .filter(|pin| {
+                pin.get("protocolRevisionId")
+                    .and_then(Value::as_str)
+                    .is_some()
+            })
+            .or_else(|| fallback.cloned()),
+        Err(_) => fallback.cloned(),
+    }
+}
+
 async fn mint_experiment_visual(
     service: &OptimizerService,
     run: &OptimizerRunRecord,
     spec: &EvalSpec,
     total: usize,
 ) -> Result<String> {
-    let template_id = run
-        .summary
-        .pointer("/effectiveContract/primaryVisual/templateId")
-        .and_then(Value::as_str)
-        .unwrap_or(EXPERIMENT_TEMPLATE);
     let progress = inline_progress_projection(service, &run.id).await?;
     // One publication, not five calls: mint-or-reuse, bind to the run, publish
     // the durable show, select it for the owning chat, and shelve it in that
@@ -908,7 +1395,7 @@ async fn mint_experiment_visual(
         .publish_chat_owned_visual(ChatVisualPublication {
             run_id: run.id.clone(),
             session_ref: run.session_ref.clone(),
-            template_id: template_id.into(),
+            template_id: EXPERIMENT_TEMPLATE.into(),
             title: spec.title.clone(),
             // The overview is minted before the workstation exists, so the
             // first projection carries no drill-down target. `persist_progress`
@@ -966,6 +1453,7 @@ fn experiment_bindings(
             seed_row(
                 record,
                 example,
+                &spec.task_instance_id(example),
                 progress_projection
                     .and_then(|projection| projection.get("rollouts"))
                     .and_then(|rollouts| rollouts.get(index.to_string()))
@@ -1023,19 +1511,8 @@ fn experiment_bindings(
     } else {
         eta_label(&elapsed, completed, total)
     };
-    let provider_requests = authoritative_usage
-        .and_then(|usage| usage.extra.get("providerUsageReceipt"))
-        .and_then(|receipt| receipt.get("calls"))
-        .and_then(Value::as_u64);
-    let usage_label = if total_tokens > 0 && provider_requests.is_some() {
-        format!(
-            "{total_tokens} tokens · {} provider requests",
-            provider_requests.unwrap_or_default()
-        )
-    } else if total_tokens > 0 {
+    let usage_label = if total_tokens > 0 {
         format!("{total_tokens} tokens")
-    } else if let Some(provider_requests) = provider_requests {
-        format!("{provider_requests} provider requests")
     } else if status == "running" {
         "awaiting telemetry".to_string()
     } else {
@@ -1106,8 +1583,14 @@ fn experiment_bindings(
         "degraded" => format!(
             "The run is terminal but partial: {completed} of {total} rollouts completed and {failed_rollouts} failed."
         ),
+        // Counted positively, because the negative form inverts its own
+        // meaning at zero. A run whose four rollouts were all *cancelled* has
+        // `failed_rollouts == 0`, and "0 of 4 rollouts did not complete
+        // successfully" then asserts that all four did -- on a surface whose
+        // own status line says the evaluation failed. How many completed is
+        // the number the reader wants anyway, and it cannot flip.
         "failed" => format!(
-            "The evaluation failed: {failed_rollouts} of {total} rollouts did not complete successfully."
+            "The evaluation failed: {completed} of {total} rollouts completed successfully."
         ),
         "failed_evidence" => {
             "The rollouts stopped, but required evaluator evidence is missing or unusable."
@@ -1215,10 +1698,8 @@ fn experiment_bindings(
                 "metrics": [
                     {"label": "Train mean", "value": train_mean, "detail": if train_mean.is_none() { "omitted until the split is complete" } else { "mean of present rewards" }},
                     {"label": "Heldout mean", "value": heldout_mean, "detail": if spec.heldout.is_empty() { "this recipe has no heldout pool" } else if heldout_mean.is_none() { "omitted until the split is complete" } else { "mean of present rewards" }},
-                    {"label": "Overall mean", "value": mean_reward, "detail": "missing rewards stay missing"},
-                    {"label": "Provider requests", "value": provider_requests, "detail": "authoritative Workshop proxy request attempts across the run"}
+                    {"label": "Overall mean", "value": mean_reward, "detail": "missing rewards stay missing"}
                 ],
-                "providerUsage": Value::Null,
                 "results": {
                     "rollouts": rollouts,
                 },
@@ -1265,10 +1746,16 @@ fn experiment_bindings(
 fn seed_row(
     record: Option<&Value>,
     example: &EvalExample,
+    task_instance_id: &str,
     state: Option<&str>,
     workbench_id: &str,
 ) -> Value {
     let seed = json!(example.seed);
+    let task_label = task_instance_id
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(task_instance_id);
     let reported_facts = record
         .and_then(|record| record.get("reportedFacts"))
         .cloned()
@@ -1287,7 +1774,8 @@ fn seed_row(
     };
     json!({
         "id": record.and_then(|record| record.get("rolloutId")).cloned().unwrap_or_else(|| json!(format!("planned:{}", example.seed))),
-        "label": match seed { Value::Null => "seed".to_string(), ref value => format!("Seed {value}") },
+        "label": if task_instance_id.contains('/') { task_label.to_string() } else { format!("Seed {}", example.seed) },
+        "taskInstanceId": task_instance_id,
         "seed": seed,
         "reward": record.and_then(|record| record.get("reward")).cloned().unwrap_or(Value::Null),
         "status": state.map(|value| json!(value)).or_else(|| record.and_then(|record| record.get("status")).cloned()).unwrap_or_else(|| json!("planned")),
@@ -1395,8 +1883,12 @@ async fn run_eval_worker(
     examples: Vec<EvalExample>,
     visual_id: String,
     workbench_id: String,
+    live_visual_id: Option<String>,
     cancel: super::CancelObserver,
 ) -> Result<()> {
+    let _revoke_capabilities = crate::secrets::RevokeRunOnDrop(run_id.clone());
+    // Binding appends on the live annotation visual are read-modify-write.
+    let binding_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let _ownership = service.hold_run_ownership(&run_id)?;
     evidence(
         "run_started",
@@ -1442,6 +1934,32 @@ async fn run_eval_worker(
     let policy_pin =
         register_policy_pin(&client, &container.base_url, spec, &info, &run_id).await?;
     persist_policy_pin(&service, &run_id, &policy_pin).await?;
+    // Lane C: the live annotation protocol is pinned once per run, exactly like
+    // the policy. The gate reads the refreshed declaration, so a container
+    // that cannot host the lane refuses before any rollout is prepared.
+    let annotation_pin = match spec.live_annotation.as_ref() {
+        Some(source) => {
+            super::live_annotation::require_advertised(&info)?;
+            // Model requests are executed by the container platform, not by
+            // Workshop and not by the isolated protocol child. Bind that
+            // caller to the same run-scoped proxy capability as the policy.
+            let source = if source.model_name().is_some() {
+                let proxy_base = container_openai_proxy_base(&run_id, spec)?;
+                source.with_workshop_proxy(&proxy_base)?
+            } else {
+                source.clone()
+            };
+            let pin = super::live_annotation::register_protocol_pin(
+                &client,
+                &container.base_url,
+                &source,
+            )
+            .await?;
+            super::live_annotation::persist_protocol_pin(&service, &run_id, &pin).await?;
+            Some(pin)
+        }
+        None => None,
+    };
     // Frame bodies get their own client: it refuses redirects, so a container
     // event's `url` cannot steer Workshop's fetch off the container's origin.
     let media_client = eval_relay::frame_media_client()?;
@@ -1524,6 +2042,12 @@ async fn run_eval_worker(
             let media_client = media_client.clone();
             let base = media_origin.clone();
             let pin = policy_pin.clone();
+            // Re-read per dispatch: a mid-run `annotation_protocol_update`
+            // advances the run's pin, and the next rollout should use it.
+            let annotation_pin =
+                current_annotation_pin(&service, &run_id, annotation_pin.as_ref()).await;
+            let live_visual_id = live_visual_id.clone();
+            let binding_lock = binding_lock.clone();
             let spec = spec.clone();
             let service = service.clone();
             let run_id = run_id.clone();
@@ -1539,6 +2063,9 @@ async fn run_eval_worker(
                     container_id: &container_id,
                     spec: &spec,
                     policy_pin: &pin,
+                    annotation_pin: annotation_pin.as_ref(),
+                    live_visual_id: live_visual_id.as_deref(),
+                    binding_lock: &binding_lock,
                 };
                 let result =
                     run_one_example(&trial, index as u32, example, &mut trial_cancel).await;
@@ -1603,10 +2130,15 @@ async fn run_eval_worker(
     // visible, then settle the run failed with the contradiction in its detail.
     // Returning here used to lose those rows; wrapping it as EvidenceLaneFailure
     // incorrectly settled the same cost-ceiling run as retryable `degraded`.
-    let provider_usage_failure = append_provider_usage_reconciliation(&service, &run_id)
-        .await
-        .err()
-        .map(|error| format!("provider usage reconciliation failed: {error:#}"));
+    let expected_provider_calls = records
+        .iter()
+        .filter_map(|record| record.pointer("/usage/calls").and_then(Value::as_u64))
+        .sum();
+    let provider_usage_failure =
+        append_provider_usage_reconciliation_at_least(&service, &run_id, expected_provider_calls)
+            .await
+            .err()
+            .map(|error| format!("provider usage reconciliation failed: {error:#}"));
 
     let failed = records
         .iter()
@@ -1615,8 +2147,7 @@ async fn run_eval_worker(
     let evaluator_failures = records
         .iter()
         .filter(|row| {
-            row.pointer("/raw/evaluatorOutcome/status")
-                .or_else(|| row.pointer("/evaluatorOutcome/status"))
+            row.pointer("/evaluatorOutcome/status")
                 .and_then(Value::as_str)
                 == Some("failed")
         })
@@ -1625,15 +2156,10 @@ async fn run_eval_worker(
         .iter()
         .filter(|row| {
             matches!(
-                row.pointer("/raw/evaluatorOutcome/reason")
-                    .or_else(|| row.pointer("/evaluatorOutcome/reason"))
+                row.pointer("/evaluatorOutcome/reason")
                     .and_then(Value::as_str),
                 Some("evaluator_measurement_missing" | "evaluator_numeric_reward_missing")
-            ) || (row.get("reportedStatus").and_then(Value::as_str) == Some("completed")
-                && !has_evaluator_measurement(&json!({
-                    "reward": row.get("reward").cloned().unwrap_or(Value::Null),
-                    "metrics": row.get("metrics").cloned().unwrap_or(Value::Null),
-                })))
+            )
         })
         .count();
     let budget_exceeded = over_cost_ceiling(&records, spec.cost_ceiling_usd);
@@ -1658,6 +2184,11 @@ async fn run_eval_worker(
             total,
             status,
         ),
+    )
+    .await?;
+    evidence(
+        "live_annotation_visual",
+        settle_live_annotation_visual(&service, live_visual_id.as_deref(), Some(&visual_id), status),
     )
     .await?;
     // This is the final mutable summary/visual projection. `append_terminal`
@@ -1717,6 +2248,88 @@ async fn run_eval_worker(
         ),
     )
     .await?;
+    // Lane B: the optional post-rollout annotation stage. It starts only now,
+    // after the terminal manifest and selection are sealed, so it can never
+    // move objective reward or the run outcome; its own failure is recorded
+    // on the run as an evidence amendment and never fails this worker.
+    if let Some(annotation) = spec.annotation.as_ref() {
+        super::annotation_stage::run_after_terminal(
+            &service,
+            &run_id,
+            annotation,
+            &container.id,
+            &container.base_url,
+            &records,
+        )
+        .await;
+    }
+    // Lane C reconciliation: after the seal (and after lane B, so sealed
+    // labels can corroborate), fold the relayed provisional findings and check
+    // their citations against the verified journal. Recorded as an evidence
+    // amendment; never a worker failure and never a sealed finding.
+    if spec.live_annotation.is_some() {
+        match crate::session::live_annotation_projection::reconcile_run(
+            &service,
+            service.database(),
+            &run_id,
+            &records,
+        )
+        .await
+        {
+            Ok(summary) => {
+                if let Err(error) =
+                    record_live_annotation_reconciliation(&service, &run_id, &summary).await
+                {
+                    crate::platform::logging::report(
+                        "container_eval",
+                        "live_annotation",
+                        format!("could not record live annotation reconciliation for {run_id}: {error:#}"),
+                    );
+                }
+            }
+            Err(error) => crate::platform::logging::report(
+                "container_eval",
+                "live_annotation",
+                format!("live annotation reconciliation failed for {run_id}: {error:#}"),
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// Record the lane C reconciliation summary as an evidence amendment on the
+/// sealed run, the way lane B records its stage report.
+async fn record_live_annotation_reconciliation(
+    service: &OptimizerService,
+    run_id: &str,
+    summary: &Value,
+) -> Result<()> {
+    let owned = run_id.to_string();
+    let terminal_sequence = service
+        .database()
+        .run_read(move |conn| {
+            let state = super::kernel::persist::load_state(conn, &owned)?
+                .context("evaluation run has no saved kernel projection")?;
+            Ok(state
+                .terminal
+                .as_ref()
+                .map(|terminal| terminal.final_sequence))
+        })
+        .await?
+        .context("live annotation reconciliation may record only after a sealed terminal state")?;
+    let draft =
+        super::events::OptimizerEventDraft::new("optimizer.evidence.amended", EVAL_ALGORITHM_ID)
+            .idempotency_key(format!(
+                "eval:live-annotation-reconciliation:{terminal_sequence}"
+            ))
+            .delta(Map::from_iter([
+                ("terminalSequence".into(), json!(terminal_sequence)),
+                ("liveAnnotationReconciliation".into(), summary.clone()),
+            ]))
+            .raw(json!({ "source": "live_annotation_projection" }));
+    service
+        .append_event_payloads(run_id.to_string(), vec![draft])
+        .await?;
     Ok(())
 }
 
@@ -1727,7 +2340,41 @@ async fn append_provider_usage_reconciliation(
     let Some(secrets) = crate::secrets::live() else {
         return Ok(());
     };
+    secrets.revoke_run(run_id)?;
     let Some(receipt) = secrets.provider_usage_receipt(run_id)? else {
+        return Ok(());
+    };
+    append_provider_usage_receipt(service, run_id, receipt).await
+}
+
+/// The container may publish its terminal event immediately after receiving
+/// the final provider response while the proxy's SQLite debit is still
+/// committing on another connection. Do not freeze a terminal manifest from a
+/// momentarily empty or short receipt. The wait is local, bounded, and never
+/// performs another provider call.
+async fn append_provider_usage_reconciliation_at_least(
+    service: &OptimizerService,
+    run_id: &str,
+    expected_calls: u64,
+) -> Result<()> {
+    let Some(secrets) = crate::secrets::live() else {
+        return Ok(());
+    };
+    secrets.revoke_run(run_id)?;
+    let mut last = None;
+    for attempt in 0..20 {
+        last = secrets.provider_usage_receipt(run_id)?;
+        if last
+            .as_ref()
+            .is_some_and(|receipt| receipt.calls >= expected_calls)
+        {
+            break;
+        }
+        if attempt < 19 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+    let Some(receipt) = last else {
         return Ok(());
     };
     append_provider_usage_receipt(service, run_id, receipt).await
@@ -1744,10 +2391,11 @@ async fn append_provider_usage_receipt(
             receipt.run_id,
         );
     }
-    if let Some(existing) = service
+    let events = service
         .events_after(run_id.to_string(), 0, Some(5_000))
-        .await?
-        .into_iter()
+        .await?;
+    if let Some(existing) = events
+        .iter()
         .find(|event| event.event_type == "optimizer.usage.reconciled")
     {
         let existing_digest = existing
@@ -1764,10 +2412,55 @@ async fn append_provider_usage_receipt(
         );
     }
     let current = service.get(run_id.to_string()).await?.usage;
-    let cost_delta = match (receipt.cost_usd, current.cost_usd) {
-        (Some(receipt_cost), Some(committed_cost)) => json!(receipt_cost - committed_cost),
-        (Some(receipt_cost), None) => json!(receipt_cost),
-        (None, _) => Value::Null,
+    // Container evaluators may own a grader credential while Workshop's
+    // scoped proxy owns only the policy credential. In that mixed-authority
+    // case the proxy receipt must reconcile against the policy lane, not the
+    // policy+grader aggregate reported by the container.
+    let proxy_lane = proxy_policy_usage(&events).filter(|lane| lane.saw_tokens);
+    let expected_prompt = proxy_lane
+        .as_ref()
+        .map(|lane| lane.prompt_tokens)
+        .unwrap_or(current.prompt_tokens);
+    let expected_completion = proxy_lane
+        .as_ref()
+        .map(|lane| lane.completion_tokens)
+        .unwrap_or(current.completion_tokens);
+    // A split container's policy cost is explicitly an estimate. The proxy
+    // receipt is the billing authority and may legitimately be lower; only a
+    // non-split, already-committed proxy total is a lower bound.
+    let expected_cost = proxy_lane.is_none().then_some(current.cost_usd).flatten();
+    if (proxy_lane.is_none() && current.calls > receipt.calls)
+        || expected_prompt > receipt.input_tokens
+        || expected_completion > receipt.output_tokens
+    {
+        bail!(
+            "provider_usage_reconciliation_conflict: receipt totals for {run_id} are below committed proxy-attributable usage (calls {} < {}, prompt {} < {}, completion {} < {})",
+            receipt.calls,
+            if proxy_lane.is_some() { 0 } else { current.calls },
+            receipt.input_tokens,
+            expected_prompt,
+            receipt.output_tokens,
+            expected_completion,
+        );
+    }
+    if let (Some(receipt_cost), Some(committed_cost)) = (receipt.cost_usd, expected_cost) {
+        // The proxy rounds each response to integer micro-dollars, while a
+        // producer may sum full-precision costs before reporting its total.
+        // Allow at most half a micro-dollar per request plus aggregate rounding;
+        // a larger deficit still means conflicting accounting authorities.
+        let rounding_bound = ((receipt.calls as f64 + 1.0) * 0.000_000_5).max(0.000_001);
+        if receipt_cost + rounding_bound < committed_cost {
+            bail!(
+                "provider_usage_reconciliation_conflict: receipt cost ${receipt_cost:.6} is below committed cost ${committed_cost:.6}"
+            );
+        }
+    }
+
+    let cost_delta = match (receipt.cost_usd, expected_cost, proxy_lane.is_some()) {
+        (_, _, true) => Value::Null,
+        (Some(receipt_cost), Some(committed_cost), false) => json!(receipt_cost - committed_cost),
+        (Some(receipt_cost), None, false) => json!(receipt_cost),
+        (None, _, false) => Value::Null,
     };
     let item = json!({
         "schemaVersion": receipt.schema_version,
@@ -1776,7 +2469,12 @@ async fn append_provider_usage_receipt(
         "calls": receipt.calls,
         "promptTokens": receipt.input_tokens,
         "completionTokens": receipt.output_tokens,
+        // Billed calls with no readable usage object are a reconciliation gap.
+        // Publishing them beside a bare `0` is what let the 2026-09-03 DeepSWE
+        // sample present "36 billed calls" as a complete statement.
+        "tokensComplete": receipt.tokens_complete,
         "costUsd": receipt.cost_usd,
+        "costComplete": receipt.cost_usd.is_some(),
         "capabilities": receipt.capabilities,
     });
     let usage_delta = Map::from_iter([
@@ -1786,16 +2484,21 @@ async fn append_provider_usage_receipt(
         ),
         (
             "prompt_tokens".into(),
-            json!(receipt.input_tokens.saturating_sub(current.prompt_tokens)),
+            json!(receipt.input_tokens - expected_prompt),
         ),
         (
             "completion_tokens".into(),
-            json!(receipt
-                .output_tokens
-                .saturating_sub(current.completion_tokens)),
+            json!(receipt.output_tokens - expected_completion),
         ),
         ("cost_usd".into(), cost_delta),
-        ("usage_completeness".into(), json!("reconciled")),
+        (
+            "usage_completeness".into(),
+            json!(if receipt.tokens_complete && receipt.cost_usd.is_some() {
+                "reconciled"
+            } else {
+                "reconciliation_pending"
+            }),
+        ),
     ]);
     service
         .append_event_payloads(
@@ -1813,6 +2516,22 @@ async fn append_provider_usage_receipt(
         )
         .await?;
     Ok(())
+}
+
+fn proxy_policy_usage(events: &[OptimizerEventEnvelope]) -> Option<LaneUsage> {
+    let mut policy = LaneUsage::default();
+    let mut found = false;
+    for event in events {
+        let lane = event
+            .item
+            .as_ref()
+            .and_then(|item| item.pointer("/raw/usage/policy"));
+        if lane.is_some_and(Value::is_object) {
+            add_lane(&mut policy, lane);
+            found = true;
+        }
+    }
+    found.then_some(policy)
 }
 
 /// The campaign plan and one queued event per planned trial, appended as one
@@ -1856,7 +2575,15 @@ async fn append_eval_plan(
                     ("candidate_id".into(), json!(spec.policy_config)),
                     ("seed".into(), json!(example.seed)),
                     ("scenario".into(), json!(spec.family)),
+                    // The task a reader recognises, carried from the plan so a
+                    // queued row is named before it starts. `seed 3` names
+                    // nothing; `deepswe/numba-stencil-boundary-modes` does.
+                    (
+                        "task_instance_id".into(),
+                        json!(spec.task_instance_id(example)),
+                    ),
                     ("stage".into(), json!("screen")),
+                    ("researchContext".into(),spec.research_context(json!(spec.task_instance_id(example)),json!(example.seed))),
                 ]))
                 .raw(json!({ "source": "container_eval" })),
         );
@@ -1886,7 +2613,12 @@ async fn append_eval_terminal(
             || json!({ "reward": record.get("reward").cloned().unwrap_or(Value::Null) }),
         );
     let evidence_refs = eval_terminal_evidence_refs(spec, record)?;
-    let usage_delta = terminal_usage_reconciliation(record, cancelled, spec.cost_ceiling_usd);
+    let usage_delta = terminal_usage_reconciliation(
+        record,
+        cancelled,
+        spec.cost_ceiling_usd,
+        provider_needs_credentials(&spec.provider) && !spec.model.trim().is_empty(),
+    );
     let evidence_state = record
         .get("evidenceState")
         .and_then(Value::as_str)
@@ -1933,6 +2665,13 @@ async fn append_eval_terminal(
             "scenario": spec.family,
             "reward": record.get("reward").cloned().unwrap_or(Value::Null),
             "metrics": metrics,
+            "researchContext": ({
+                let mut context=spec.research_context(record.get("taskInstanceId").or_else(||record.get("task_instance_id")).cloned().unwrap_or(Value::Null),seed.clone());
+                if let Some(recorded)=record.get("researchContext").or_else(||record.get("research_context")).and_then(Value::as_object){
+                    for key in ["environmentVersion","taskId","seed","repeat","rewardId","rewardVersion","definitionDigest","units","checkpointId"]{if let Some(value)=recorded.get(key){context[key]=value.clone();}}
+                }
+                context
+            }),
             "raw": record,
         }))
         .artifact_refs(evidence_refs)
@@ -1955,7 +2694,28 @@ fn terminal_usage_reconciliation(
     record: &Value,
     cancelled: bool,
     cost_ceiling_usd: f64,
+    provider_receipt_authoritative: bool,
 ) -> Map<String, Value> {
+    // A provider-backed container reports its agent/runtime accounting in the
+    // terminal record, but the Workshop proxy is the billing authority. Those
+    // domains are not directly comparable: Codex, for example, reports cached
+    // context tokens that the provider receipt accounts for separately. Keep
+    // the producer values in the retained record and wait for the proxy receipt
+    // to populate optimizer usage; otherwise the later authoritative receipt
+    // can look smaller and incorrectly fail a successfully scored run.
+    if provider_receipt_authoritative {
+        return Map::from_iter([
+            ("rollouts".into(), json!(1)),
+            (
+                "usage_completeness".into(),
+                json!(if cancelled {
+                    "partial"
+                } else {
+                    "pending_provider_receipt"
+                }),
+            ),
+        ]);
+    }
     let measured = usage_from_records(std::slice::from_ref(record), cost_ceiling_usd);
     let reported_blob = record.get("usage").unwrap_or(&Value::Null);
     let reported_tokens = usage_token_pair(reported_blob);
@@ -2152,7 +2912,14 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         return policy.clone();
     }
     let trials = spec.examples().len() as u64;
-    let calls_per_trial = spec.maximum_model_calls_per_rollout.max(1) as u64;
+    let annotation_calls_per_trial = spec
+        .live_annotation
+        .as_ref()
+        .map(|source| source.maximum_model_calls_per_rollout())
+        .unwrap_or(0);
+    let calls_per_trial = (spec.maximum_model_calls_per_rollout as u64)
+        .saturating_add(annotation_calls_per_trial)
+        .max(1);
     let total_calls = trials.saturating_mul(calls_per_trial).max(1);
     let input_tokens = spec
         .policy
@@ -2169,52 +2936,80 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         .get("thinking_budget")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let output_per_call = answer_tokens.saturating_add(thinking_tokens);
-    // Harbor's Codex adapter uses the Responses API, while other supported
-    // eval clients still use Chat Completions. Grant only the operation the
-    // declared adapter uses; widening every workspace recipe to both routes
-    // would violate least privilege.
+    let policy_output_per_trial = (spec.maximum_model_calls_per_rollout as u64)
+        .saturating_mul(answer_tokens.saturating_add(thinking_tokens));
+    let annotation_output_per_trial = spec
+        .live_annotation
+        .as_ref()
+        .map(|source| source.maximum_model_output_tokens_per_rollout())
+        .unwrap_or(0);
     let mut models = Vec::new();
     if !spec.model.is_empty() {
         models.push(spec.model.clone());
-        if let Some(model) = spec.model.strip_prefix("openai/") {
+    }
+    if let Some(model) = spec
+        .live_annotation
+        .as_ref()
+        .and_then(|source| source.model_name())
+    {
+        if !models.iter().any(|candidate| candidate == model) {
             models.push(model.to_string());
         }
-        models.sort();
-        models.dedup();
     }
-    // The exact Codex SWE policy runs Luna with high reasoning. Bind that
-    // workload-owned setting into the same narrow capability; every other
-    // recipe keeps its declared effort.
-    let exact_codex_swe_pin = spec.harness.eq_ignore_ascii_case("openrouter")
-        && spec.policy_config == "codex-cli-openrouter-swe-proxy-v1"
-        && spec.provider.eq_ignore_ascii_case("openrouter")
-        && spec.model == "openai/gpt-5.6-luna";
-    let reasoning_efforts = if exact_codex_swe_pin {
-        vec!["high".to_string()]
-    } else {
-        spec.policy
-            .get("reasoning_effort")
-            .or_else(|| spec.policy.get("effort"))
-            .and_then(Value::as_str)
-            .map(|value| vec![value.to_string()])
-            .unwrap_or_default()
-    };
-    let operations = if exact_codex_swe_pin {
-        vec!["responses.create".into()]
-    } else {
-        vec!["chat.completions.create".into()]
-    };
+    let mut reasoning_efforts = spec
+        .policy
+        .get("reasoning_effort")
+        .or_else(|| spec.policy.get("effort"))
+        .and_then(Value::as_str)
+        .map(|value| vec![value.to_string()])
+        .unwrap_or_default();
+    if let Some(effort) = spec
+        .live_annotation
+        .as_ref()
+        .and_then(|source| source.reasoning_effort())
+    {
+        if !reasoning_efforts
+            .iter()
+            .any(|candidate| candidate == effort)
+        {
+            reasoning_efforts.push(effort.to_string());
+        }
+    }
     super::admission::provider_use_policy_from_bounds(
-        operations,
+        container_proxy_operations(spec),
         models,
         reasoning_efforts,
         total_calls.min(u32::MAX as u64) as u32,
         (spec.cost_ceiling_usd * 1_000_000.0).round().max(0.0) as u64,
         crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
         input_tokens,
-        (output_per_call > 0).then(|| total_calls.saturating_mul(output_per_call)),
+        (policy_output_per_trial > 0 || annotation_output_per_trial > 0).then(|| {
+            trials
+                .saturating_mul(policy_output_per_trial.saturating_add(annotation_output_per_trial))
+        }),
     )
+}
+
+/// Match the run-scoped proxy capability to the provider wire protocol used by
+/// the selected harness. Codex is a Responses client; granting only Chat
+/// Completions produces a correctly routed but unusable capability and every
+/// rollout fails before its first model call.
+fn container_proxy_operations(spec: &EvalSpec) -> Vec<String> {
+    match spec.harness.trim().to_ascii_lowercase().as_str() {
+        "codex_agentic" | "harbor_fused" => vec!["responses.create".into()],
+        _ => vec!["chat.completions.create".into()],
+    }
+}
+
+/// Whether this recipe holds a provider credential at all.
+///
+/// A container-local policy such as `dataset_gold` or `scripted_react` declares
+/// `provider = "none"` and issues no external model call. Asking the secrets
+/// proxy for a capability on its behalf cannot succeed -- there is no variable
+/// to map -- and the denial reads as a credential misconfiguration rather than
+/// as what it is: a recipe that needs no credential.
+fn provider_needs_credentials(provider: &str) -> bool {
+    !matches!(provider.trim().to_ascii_lowercase().as_str(), "" | "none")
 }
 
 fn container_openai_proxy_base(run_id: &str, spec: &EvalSpec) -> Result<String> {
@@ -2258,6 +3053,48 @@ fn container_openai_proxy_base(run_id: &str, spec: &EvalSpec) -> Result<String> 
     Ok(base)
 }
 
+/// Harnesses that run a nested CLI whose own sandbox is implemented with
+/// Linux user namespaces. Workshop's container-eval lane always runs these
+/// inside an already-isolated task container, where a second namespace cannot
+/// be created.
+const NESTED_CLI_HARNESSES: [&str; 1] = ["codex_agentic"];
+
+/// Inner sandboxes that require a fresh user namespace. Inside the task
+/// container `bwrap` cannot create one, so every command the agent runs fails
+/// with `bwrap: No permissions to create a new namespace` while the model is
+/// asked again and again — the exact shape of the 2026-09-03 DeepSWE sample,
+/// which burned 36 provider requests and measured nothing.
+const NAMESPACE_BACKED_SANDBOXES: [&str; 3] = ["workspace-write", "read-only", "workspace_write"];
+
+/// Assert the effective policy configuration Workshop is about to register
+/// still declares a sandbox that can actually run inside the task container.
+fn assert_nested_sandbox_policy(spec: &EvalSpec, body: &Value) -> Result<()> {
+    if !NESTED_CLI_HARNESSES.contains(&spec.harness.as_str()) {
+        return Ok(());
+    }
+    let declared = body
+        .pointer("/config/sandbox")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(sandbox) = declared else {
+        bail!(
+            "policy_sandbox_unset: recipe {} registers policy config `{}` for the nested `{}` harness without declaring [policy] sandbox. Registration replaces the container's seeded configuration, so the seed's sandbox would be lost and the inner CLI would fall back to a namespace sandbox it cannot create inside the task container.",
+            spec.recipe_id,
+            spec.policy_config,
+            spec.harness,
+        );
+    };
+    if NAMESPACE_BACKED_SANDBOXES.contains(&sandbox) {
+        bail!(
+            "policy_sandbox_unsupported_in_container: recipe {} registers policy config `{}` with sandbox `{sandbox}`, which needs a Linux user namespace the already-isolated task container cannot create. Declare [policy] sandbox = \"danger-full-access\"; the task container is the isolation boundary.",
+            spec.recipe_id,
+            spec.policy_config,
+        );
+    }
+    Ok(())
+}
+
 async fn register_policy_pin(
     client: &reqwest::Client,
     base: &str,
@@ -2267,6 +3104,9 @@ async fn register_policy_pin(
 ) -> Result<Value> {
     if spec.harness == "nanohorizon" {
         return register_nanohorizon_policy_pin(client, base, spec, run_id).await;
+    }
+    if spec.harness == "isolated_policy_process" && spec.policy_code.is_some() {
+        return register_source_policy_pin(client, base, spec).await;
     }
     let pin = json!({ "harness": spec.harness, "config": spec.policy_config });
     let advertised = container_info
@@ -2278,7 +3118,11 @@ async fn register_policy_pin(
             entry.get("harness").and_then(Value::as_str) == Some(spec.harness.as_str())
                 && entry.get("config").and_then(Value::as_str) == Some(spec.policy_config.as_str())
         });
-    if spec.policy_code.is_none() && !spec.requires_credential_advertisement() && advertised {
+    if spec.policy_code.is_none()
+        && !spec.requires_credential_advertisement()
+        && !spec.requires_scoped_proxy_registration()
+        && advertised
+    {
         return Ok(json!({
             "harness": spec.harness,
             "config": spec.policy_config,
@@ -2291,7 +3135,9 @@ async fn register_policy_pin(
     // A container-backed policy may intentionally hold no provider secret of
     // its own while still requiring Workshop to register a scoped proxy route.
     // Only an already-advertised immutable config may skip registration.
-    let openai_base = Some(container_openai_proxy_base(run_id, spec)?);
+    let openai_base = provider_needs_credentials(&spec.provider)
+        .then(|| container_openai_proxy_base(run_id, spec))
+        .transpose()?;
     if let Some(code) = spec.policy_code.as_deref() {
         let response = client
             .put(format!("{base}/policy"))
@@ -2306,7 +3152,7 @@ async fn register_policy_pin(
         }
     }
     let Some(body) = spec.policy_config_body(openai_base.as_deref()) else {
-        if spec.requires_credential_advertisement() {
+        if spec.requires_credential_advertisement() || spec.requires_scoped_proxy_registration() {
             return Err(secrets_proxy_error(
                 "secrets_proxy_route_unbound",
                 "this recipe requires a Workshop proxy base_url; refusing a public provider origin",
@@ -2314,6 +3160,11 @@ async fn register_policy_pin(
         }
         return Ok(pin);
     };
+    // Registering a config id replaces the container's seeded configuration
+    // wholesale: keys the recipe leaves out are dropped, not inherited. For a
+    // nested agentic CLI that silently downgrades the sandbox, so the
+    // effective policy is asserted here, before any provider call is made.
+    assert_nested_sandbox_policy(spec, &body)?;
     let response = client
         .post(format!("{base}/policy-configs"))
         .json(&body)
@@ -2504,11 +3355,19 @@ async fn register_nanohorizon_policy_pin(
         bail!("container registered a different NanoHorizon policy config");
     }
 
+    register_source_policy_pin(client, base, spec).await
+}
+
+async fn register_source_policy_pin(
+    client: &reqwest::Client,
+    base: &str,
+    spec: &EvalSpec,
+) -> Result<Value> {
     let model_digest = expected_model_digest(spec)?;
     let mut state = read_container_policy(client, base).await?;
     if !installed_policy_matches(&state, spec, &model_digest) {
         let code = spec.policy_code.as_deref().context(
-            "policy_source_unavailable: NanoHorizon requires source bytes from the approved immutable revision",
+            "policy_source_unavailable: code policy requires source bytes from the approved immutable revision",
         )?;
         let response = client
             .put(format!("{base}/policy"))
@@ -2577,7 +3436,7 @@ fn failed_record(
     let mut record = json!({
         "pool": example.pool,
         "seed": example.seed,
-        "taskInstanceId": format!("seed:{}", example.seed),
+        "taskInstanceId": spec.task_instance_id(&example),
         "status": "failed",
         "error": error,
         "evaluatorOutcome": {
@@ -2620,6 +3479,11 @@ fn dispatched_failure_record(
     let integrity = error
         .downcast_ref::<eval_relay::RelayIntegrityError>()
         .is_some();
+    // An environment refusal is not a model result and must not be counted as
+    // one. Name it here so the aggregate, the visual and any later comparison
+    // can tell "the container could not run commands" from "the policy tried
+    // and was wrong".
+    let infrastructure = error.downcast_ref::<eval_relay::InfrastructureFailure>();
     let evidence_state = if integrity { "rejected" } else { "missing" };
     let mut record = json!({
         "rolloutId": rollout_id,
@@ -2634,9 +3498,21 @@ fn dispatched_failure_record(
         "lastObservedStep": relay.last_relayed_step,
         "usage": relay.to_json()["observedUsage"].clone(),
         "relay": relay.to_json(),
+        "failureClass": if infrastructure.is_some() {
+            "infrastructure"
+        } else if integrity {
+            "evidence_integrity"
+        } else {
+            "producer"
+        },
+        "infrastructureFailure": infrastructure.map(eval_relay::InfrastructureFailure::to_json),
         "evaluatorOutcome": {
             "status": "failed",
-            "reason": "evaluator_not_reached",
+            "reason": if infrastructure.is_some() {
+                "infrastructure_failure"
+            } else {
+                "evaluator_not_reached"
+            },
             "detail": detail,
             "source": "container_evaluator",
         },
@@ -2692,7 +3568,7 @@ fn cancelled_record(
     let mut record = json!({
         "pool": example.pool,
         "seed": example.seed,
-        "taskInstanceId": format!("seed:{}", example.seed),
+        "taskInstanceId": spec.task_instance_id(&example),
         "status": "cancelled",
         "cancellation": request.as_ref(),
         "cancellationReceipt": request.as_ref(),
@@ -2860,7 +3736,24 @@ pub(super) async fn reconcile_evidence(
             } else {
                 FrameTraceMode::SealedComplete
             };
-        verify_complete_native_frame_trace(record, &imported, &rollout_id, frame_mode)?;
+        // Contiguous frame coverage is only checkable against an independently
+        // reported terminal step count. The retained frames cannot attest to
+        // their own completeness -- the highest frame is covered by definition
+        // -- so without that count the claim is unverifiable rather than false.
+        //
+        // Craftax retains native frames and reports no step count, which put
+        // `requires_native_frame_coverage` and the verifier in disagreement:
+        // the guard switched the check on because frames existed, and the
+        // verifier then aborted because the count did not. One unreported
+        // counter voided the evidence for every rollout in the run, including
+        // four that had sealed cleanly. Degrade that rollout to partial and
+        // keep going; `attach_reported_facts` already records the reason as
+        // `steps_not_reported`.
+        let coverage_unverifiable = matches!(frame_mode, FrameTraceMode::SealedComplete)
+            && record.get("steps").and_then(Value::as_u64).is_none();
+        if requires_native_frame_coverage(record, &imported) && !coverage_unverifiable {
+            verify_complete_native_frame_trace(record, &imported, &rollout_id, frame_mode)?;
+        }
         let imported_trace = imported
             .get("traces")
             .and_then(Value::as_array)
@@ -2873,7 +3766,12 @@ pub(super) async fn reconcile_evidence(
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
             .insert("sealedTrace".into(), imported);
         attach_reported_facts(record);
-        let trace_kind = if matches!(frame_mode, FrameTraceMode::SealedPartial { .. }) {
+        // A rollout whose coverage could not be checked is partial evidence, not
+        // complete evidence. Reporting it as `trace_v5` would claim a guarantee
+        // nothing verified.
+        let trace_kind = if coverage_unverifiable
+            || matches!(frame_mode, FrameTraceMode::SealedPartial { .. })
+        {
             "trace_v5_partial"
         } else {
             "trace_v5"
@@ -3130,6 +4028,24 @@ fn verify_complete_native_frame_trace(
     Ok(())
 }
 
+/// Text-only and rubric-only evaluators legitimately emit no native frames or
+/// environment-step counter. Enforce contiguous frame coverage only when the
+/// terminal record or imported bundle says this rollout is frame-bearing.
+fn requires_native_frame_coverage(terminal_record: &Value, imported: &Value) -> bool {
+    terminal_record
+        .get("steps")
+        .and_then(Value::as_u64)
+        .is_some()
+        || imported
+            .get("importedFrameCount")
+            .and_then(Value::as_u64)
+            .is_some_and(|count| count > 0)
+        || imported
+            .get("importedFrameSteps")
+            .and_then(Value::as_array)
+            .is_some_and(|steps| !steps.is_empty())
+}
+
 fn verify_required_sealed_trace(
     terminal_record: &Value,
     imported: &Value,
@@ -3197,12 +4113,15 @@ fn verify_required_sealed_trace(
         .with_context(|| {
             format!("required_trace_provenance_missing: rollout `{rollout_id}` has no producer revision binding")
         })?;
-    verify_complete_native_frame_trace(
-        terminal_record,
-        imported,
-        rollout_id,
-        FrameTraceMode::SealedComplete,
-    )
+    if requires_native_frame_coverage(terminal_record, imported) {
+        verify_complete_native_frame_trace(
+            terminal_record,
+            imported,
+            rollout_id,
+            FrameTraceMode::SealedComplete,
+        )?;
+    }
+    Ok(())
 }
 
 fn is_successful_eval_record(row: &Value) -> bool {
@@ -3284,8 +4203,6 @@ async fn persist_progress(
         });
     let mean = mean_for_pool(records, "train").or_else(|| mean_reward(records));
     let usage = usage_from_records(records, spec.cost_ceiling_usd);
-    let provider_usage =
-        crate::secrets::live().and_then(|secrets| secrets.provider_usage_for_run(run_id));
     let failed_count = records
         .iter()
         .filter(|row| !is_successful_eval_record(row))
@@ -3295,6 +4212,7 @@ async fn persist_progress(
     let cost_ceiling_usd = spec.cost_ceiling_usd;
     let provider = spec.provider.clone();
     let model = spec.model.clone();
+    let provider_receipt_authoritative = provider_needs_credentials(&provider) && !model.trim().is_empty();
     let run_before_patch = service.get(run_id.to_string()).await?;
     let started_at = run_before_patch
         .started_at
@@ -3302,7 +4220,6 @@ async fn persist_progress(
         .unwrap_or(&run_before_patch.created_at)
         .to_string();
     let progress_for_summary = progress_projection.clone();
-    let provider_usage_for_summary = provider_usage.clone();
     // Patched under the durable record rather than written from a snapshot: a
     // worker that read the run before its own `started` event must not restore
     // that reading over the events it has since appended.
@@ -3324,9 +4241,6 @@ async fn persist_progress(
             }
             summary.insert("evalStatus".into(), json!(status_value));
             summary.insert("costCeilingUsd".into(), json!(cost_ceiling_usd));
-            if let Some(provider_usage) = provider_usage_for_summary.clone() {
-                summary.insert("providerUsage".into(), provider_usage);
-            }
             summary.insert(
                 "modelIdentity".into(),
                 json!({
@@ -3343,11 +4257,11 @@ async fn persist_progress(
                 json!({
                     "policy": usage.extra.get("policyUsage").cloned().unwrap_or(Value::Null),
                     "grader": usage.extra.get("graderUsage").cloned().unwrap_or(Value::Null),
-                    "provider": provider_usage_for_summary,
                 }),
             );
             run.summary = Value::Object(summary);
-            run.usage = usage_with_authoritative_provider_receipt(usage, &run.usage);
+            run.usage =
+                progress_usage_projection(usage, &run.usage, provider_receipt_authoritative);
             Ok(())
         })
         .await?;
@@ -3600,6 +4514,7 @@ fn usage_from_records(
     }
     usage.prompt_tokens = policy.prompt_tokens + grader.prompt_tokens;
     usage.completion_tokens = policy.completion_tokens + grader.completion_tokens;
+    usage.calls = policy.calls + grader.calls;
     for lane in [&policy, &grader] {
         match lane.cost_usd {
             Some(cost) => {
@@ -3655,32 +4570,73 @@ fn usage_with_authoritative_provider_receipt(
     {
         return measured;
     }
-    if let Some(calls) = receipt
-        .and_then(|receipt| receipt.get("calls"))
+    let mut policy = LaneUsage::default();
+    policy.calls = receipt
+        .and_then(|value| value.get("calls"))
         .and_then(Value::as_u64)
-    {
-        measured.calls = calls;
-    }
-    if let Some(tokens) = receipt
-        .and_then(|receipt| receipt.get("promptTokens"))
+        .unwrap_or(0);
+    policy.prompt_tokens = receipt
+        .and_then(|value| value.get("promptTokens"))
         .and_then(Value::as_u64)
-    {
-        measured.prompt_tokens = tokens;
-    }
-    if let Some(tokens) = receipt
-        .and_then(|receipt| receipt.get("completionTokens"))
+        .unwrap_or(0);
+    policy.completion_tokens = receipt
+        .and_then(|value| value.get("completionTokens"))
         .and_then(Value::as_u64)
-    {
-        measured.completion_tokens = tokens;
-    }
-    measured.cost_usd = receipt
-        .and_then(|receipt| receipt.get("costUsd"))
+        .unwrap_or(0);
+    policy.cost_usd = receipt
+        .and_then(|value| value.get("costUsd"))
         .and_then(Value::as_f64);
+    policy.saw_tokens = policy.prompt_tokens > 0 || policy.completion_tokens > 0;
+    let mut grader = LaneUsage::default();
+    add_lane(&mut grader, measured.extra.get("graderUsage"));
+    measured.calls = policy.calls + grader.calls;
+    measured.prompt_tokens = policy.prompt_tokens + grader.prompt_tokens;
+    measured.completion_tokens = policy.completion_tokens + grader.completion_tokens;
+    measured.cost_usd = match (policy.cost_usd, grader.cost_usd, grader.saw_tokens) {
+        (Some(policy), Some(grader), _) => Some(policy + grader),
+        (Some(policy), None, false) => Some(policy),
+        _ => None,
+    };
+    if let Some(runtime_policy) = measured.extra.get("policyUsage").cloned() {
+        measured.extra.entry("runtimePolicyUsage").or_insert(runtime_policy);
+    }
     measured
+        .extra
+        .insert("policyUsage".into(), policy.to_json());
+    // Consumers render tokens as `unavailable` on this flag rather than
+    // printing the zero that a missing usage object leaves behind.
+    measured.extra.insert(
+        "tokenTelemetryComplete".into(),
+        json!(receipt
+            .and_then(|value| value.get("tokensComplete"))
+            .and_then(Value::as_bool)
+            .unwrap_or(policy.calls == 0 || policy.saw_tokens)),
+    );
+    measured
+}
+
+/// Mutable progress projections may include the container runtime's own model
+/// accounting. For provider-backed evals that is an observability lane, not a
+/// billing lane: the Workshop proxy receipt is authoritative and can
+/// legitimately report a different token basis (including zero token fields
+/// with a settled cost). Preserve durable optimizer usage until that receipt
+/// arrives instead of letting a final progress patch reintroduce producer
+/// tokens immediately before reconciliation.
+fn progress_usage_projection(
+    measured: super::models::OptimizerUsageSummary,
+    current: &super::models::OptimizerUsageSummary,
+    provider_receipt_authoritative: bool,
+) -> super::models::OptimizerUsageSummary {
+    if provider_receipt_authoritative {
+        current.clone()
+    } else {
+        usage_with_authoritative_provider_receipt(measured, current)
+    }
 }
 
 #[derive(Default)]
 struct LaneUsage {
+    calls: u64,
     prompt_tokens: u64,
     completion_tokens: u64,
     cost_usd: Option<f64>,
@@ -3690,8 +4646,9 @@ struct LaneUsage {
 impl LaneUsage {
     fn to_json(&self) -> Value {
         json!({
-            "promptTokens": self.prompt_tokens,
-            "completionTokens": self.completion_tokens,
+            "calls": self.calls,
+            "promptTokens": self.saw_tokens.then_some(self.prompt_tokens),
+            "completionTokens": self.saw_tokens.then_some(self.completion_tokens),
             "costUsd": self.cost_usd,
         })
     }
@@ -3704,6 +4661,9 @@ fn add_lane(lane: &mut LaneUsage, blob: Option<&Value>) {
     if let Some(tokens) = u64_field(blob, &["prompt_tokens", "promptTokens"]) {
         lane.prompt_tokens += tokens;
         lane.saw_tokens = true;
+    }
+    if let Some(calls) = u64_field(blob, &["calls"]) {
+        lane.calls += calls;
     }
     if let Some(tokens) = u64_field(blob, &["completion_tokens", "completionTokens"]) {
         lane.completion_tokens += tokens;
@@ -3747,6 +4707,11 @@ struct TrialContext<'a> {
     container_id: &'a str,
     spec: &'a EvalSpec,
     policy_pin: &'a Value,
+    /// Live annotation protocol pin for this run, when the recipe declares one.
+    annotation_pin: Option<&'a Value>,
+    /// The run's live annotated-rollouts visual, bound per rollout after prepare.
+    live_visual_id: Option<&'a str>,
+    binding_lock: &'a tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4011,10 +4976,23 @@ async fn run_one_example(
     if spec.harness == "nanohorizon" && policy_revision_id.is_none() {
         bail!("policy_revision_unbound: refusing NanoHorizon rollout before prepare");
     }
+    let annotation_protocol_revision_id = ctx
+        .annotation_pin
+        .and_then(|pin| pin.get("protocolRevisionId"))
+        .and_then(Value::as_str);
+    if spec.live_annotation.is_some() && annotation_protocol_revision_id.is_none() {
+        bail!("live_annotation_unbound: refusing rollout before the protocol pin");
+    }
     let telemetry = {
         let mut telemetry = authoritative_poll_telemetry();
         if let Some(object) = telemetry.as_object_mut() {
             object.insert("retention".into(), json!("run"));
+            if ctx.live_visual_id.is_some() || spec.live_annotation.is_some() {
+                // The live pane binds declared SSE sources for both streams
+                // (the relay keeps polling); SSE is a declared, non-auto
+                // transport, so the authoritative-run refusal does not apply.
+                object.insert("transport".into(), json!("sse"));
+            }
             // Frames are asked for when the recipe retains them. The eval lane
             // used to pin `frame.enabled: false` and then report "0 native
             // frames", which was true and entirely self-inflicted.
@@ -4030,21 +5008,39 @@ async fn run_one_example(
         example.seed,
         &Uuid::new_v4().simple().to_string()[..8]
     );
-    let task_instance_id = format!("{}:seed:{}", spec.family, example.seed);
+    let task_instance_id = spec.task_instance_id(&example);
     let trial_id = format!("trial:{}:{}", spec.family, example.seed);
     let work_item_id = format!("eval:trial:{work_index}");
+    let mut prepare_body = json!({
+        "rollout_id": rollout_id,
+        "task_instance_id": task_instance_id,
+        "seed": example.seed,
+        "world_ref": spec.world_ref,
+        "evaluation_plan_ref": spec.evaluation_plan_ref,
+        "policy_ref": { "harness": spec.harness, "config": spec.policy_config },
+        "max_steps": spec.maximum_steps_per_rollout,
+        "max_calls": spec.maximum_model_calls_per_rollout,
+        "model": spec.model,
+        "reasoning_effort": spec.policy.get("reasoning_effort").or_else(|| spec.policy.get("effort")),
+        "limits": {"maximumStepsPerRollout": spec.maximum_steps_per_rollout},
+        "telemetry": telemetry
+    });
+    if prepare_body["reasoning_effort"].is_null() {
+        prepare_body.as_object_mut().unwrap().remove("reasoning_effort");
+    }
+    if let Some(revision) = policy_revision_id {
+        prepare_body["policy_revision_id"] = json!(revision);
+    }
+    if let Some(revision) = annotation_protocol_revision_id {
+        prepare_body
+            .as_object_mut()
+            .expect("rollout prepare body is an object")
+            .insert("annotation_protocol_revision_id".into(), json!(revision));
+    }
     let prepare = ctx
         .client
         .post(format!("{}/rollouts/prepare", ctx.base))
-        .json(&json!({
-            "rollout_id": rollout_id,
-            "task_instance_id": task_instance_id,
-            "seed": example.seed,
-            "policy_ref": { "harness": spec.harness, "config": spec.policy_config },
-            "max_steps": spec.maximum_steps_per_rollout,
-            "require_trace_v5": true,
-            "telemetry": telemetry
-        }))
+        .json(&prepare_body)
         .send()
         .await
         .context("POST /rollouts/prepare")?;
@@ -4060,6 +5056,37 @@ async fn run_one_example(
     let stream =
         declared_stream_descriptor(&prepared)?.context("prepare omitted stream descriptor")?;
     let poll_url = resolve_declared_url(ctx.base, &declared_poll_url(&stream)?)?;
+    let reward_poll_url = declared_reward_poll_url(&stream)
+        .map(|url| resolve_declared_url(ctx.base, &url))
+        .transpose()?;
+    let annotation_poll_url = declared_annotation_poll_url(&stream)
+        .map(|url| resolve_declared_url(ctx.base, &url))
+        .transpose()?;
+    if annotation_protocol_revision_id.is_some() && annotation_poll_url.is_none() {
+        bail!(
+            "live_annotation_channel_missing: the container accepted a protocol pin but declared no annotation stream"
+        );
+    }
+    if let Some(live_visual_id) = ctx.live_visual_id {
+        // Bind the pane before start, like every live visual: a viewer
+        // opened now sees `stream.subscribed` and then the first event.
+        let rollout_sse_url = resolve_declared_url(ctx.base, &declared_sse_url(&stream)?)?;
+        let annotation_sse_url = declared_annotation_sse_url(&stream)
+            .map(|url| resolve_declared_url(ctx.base, &url))
+            .transpose()?;
+        append_live_annotation_bindings(
+            ctx.service,
+            live_visual_id,
+            ctx.binding_lock,
+            &rollout_id,
+            &rollout_sse_url,
+            &poll_url,
+            annotation_sse_url.as_deref(),
+            annotation_poll_url.as_deref(),
+        )
+        .await
+        .context("bind the live annotation visual before start")?;
+    }
     wait_for_stream_subscribed(
         ctx.client,
         &poll_url,
@@ -4079,7 +5106,7 @@ async fn run_one_example(
         &rollout_id,
         example.seed,
         example.pool,
-        &spec.family,
+        &task_instance_id,
         &spec.policy_config,
     )
     .await?;
@@ -4090,6 +5117,7 @@ async fn run_one_example(
         "slot": "stream",
         "telemetry": telemetry,
         "task_instance_id": task_instance_id,
+        "seed": example.seed,
         "world_ref": spec.world_ref,
         "evaluation_plan_ref": spec.evaluation_plan_ref,
         "policy_ref": { "harness": spec.harness, "config": spec.policy_config },
@@ -4102,6 +5130,12 @@ async fn run_one_example(
             .expect("rollout start body is an object")
             .insert("policy_revision_id".into(), json!(revision));
     }
+    if let Some(revision) = annotation_protocol_revision_id {
+        start_body
+            .as_object_mut()
+            .expect("rollout start body is an object")
+            .insert("annotation_protocol_revision_id".into(), json!(revision));
+    }
     let relay_ctx = RelayContext {
         service: ctx.service,
         run_id: ctx.run_id,
@@ -4109,9 +5143,11 @@ async fn run_one_example(
         rollout_id: &rollout_id,
         seed: example.seed,
         pool: example.pool,
-        scenario: &spec.family,
+        scenario: &task_instance_id,
         base: ctx.base,
         poll_url: &poll_url,
+        reward_poll_url: reward_poll_url.as_deref(),
+        annotation_poll_url: annotation_poll_url.as_deref(),
         client: ctx.client,
         media_client: ctx.media_client,
         settings: spec.relay,
@@ -4192,13 +5228,7 @@ async fn run_one_example(
     };
 
     if !rollout_terminal(&state)? {
-        state = poll_until_terminal(
-            ctx.client,
-            ctx.base,
-            &rollout_id,
-            spec.terminal_poll_timeout(),
-        )
-        .await?;
+        state = poll_until_terminal(ctx.client, ctx.base, &rollout_id).await?;
     }
     let reported_status = RolloutReportedStatus::parse(&state)?;
     if !reported_status.is_terminal() {
@@ -4214,18 +5244,10 @@ async fn run_one_example(
         Some(
             state
                 .get("error")
-                .and_then(|error| {
-                    error.as_str().map(str::to_string).or_else(|| {
-                        error
-                            .get("detail")
-                            .or_else(|| error.get("reason"))
-                            .or_else(|| error.get("message"))
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
-                    })
-                })
-                .or_else(|| state.get("reason").and_then(Value::as_str).map(str::to_string))
-                .or_else(|| state.get("detail").and_then(Value::as_str).map(str::to_string))
+                .or_else(|| state.get("reason"))
+                .or_else(|| state.get("detail"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
                 .unwrap_or_else(|| {
                     "producer_terminal_failure_missing_reason: container reported a failed terminal state without error, reason, or detail"
                         .to_string()
@@ -4326,7 +5348,8 @@ async fn run_one_example(
         "trialId": trial_id,
         "pool": example.pool,
         "seed": example.seed,
-        "taskInstanceId": format!("seed:{}", example.seed),
+        "taskInstanceId": task_instance_id,
+        "researchContext": state.get("researchContext").or_else(||state.get("research_context")).cloned().unwrap_or(Value::Null),
         "status": record_status,
         "reportedStatus": reported_status.as_str(),
         "error": terminal_error,
@@ -4510,9 +5533,8 @@ async fn poll_until_terminal(
     client: &reqwest::Client,
     base: &str,
     rollout_id: &str,
-    timeout: Duration,
 ) -> Result<Value> {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now() + POLL_TIMEOUT;
     let outage_wait = crate::limits::OPTIMIZER_RUN_INDEX_WAIT;
     let mut event_endpoint_outage_started: Option<Instant> = None;
     loop {
@@ -4547,9 +5569,7 @@ async fn poll_until_terminal(
             Ok(_) => {
                 // Non-gateway, non-success: the rollout is not terminal yet
                 // (or the container is still admitting). Keep polling until
-                // the same bounded timeout as the rollout's blocking HTTP
-                // request. Long-running harnesses can legitimately outlive a
-                // generic UI request timeout.
+                // POLL_TIMEOUT, as before.
             }
             Err(error) if super::manager::observer_error_is_transient_gateway(&error) => {
                 let started = event_endpoint_outage_started.get_or_insert_with(Instant::now);
@@ -4774,13 +5794,8 @@ fn advertised_eval_protocol(metadata: &Value) -> Option<String> {
         return Some(protocol.to_string());
     }
     for pointer in [
-        "/capabilities/protocol",
-        "/capabilities/optimizer_contracts/gepa/version",
         "/optimizer_contracts/gepa/version",
         "/metadata/optimizer_contracts/gepa/version",
-        "/info/capabilities/optimizer_contracts/gepa/version",
-        "/info/optimizer_contracts/gepa/version",
-        "/info/metadata/optimizer_contracts/gepa/version",
     ] {
         if let Some(version) = metadata.pointer(pointer).and_then(Value::as_str) {
             if version == crate::container_capabilities::GEPA_V2_CONTRACT {
@@ -4790,7 +5805,6 @@ fn advertised_eval_protocol(metadata: &Value) -> Option<String> {
     }
     None
 }
-
 
 fn container_image_digest(metadata: &Value) -> Option<String> {
     // Registry hydration puts the producer's `/info` document below `info`.
@@ -4958,6 +5972,26 @@ fn container_matches_family(task_family: Option<&str>, metadata: &Value, family:
     }
     for key in ["runtime_family", "env_family", "task_family", "target_id"] {
         if let Some(value) = metadata.get(key).and_then(Value::as_str) {
+            candidates.push(value.to_ascii_lowercase());
+        }
+    }
+    // Harbor is the transport/runtime family, not the benchmark family. The
+    // producer's fresh `/info` document and the manifest declaration retain
+    // the benchmark-specific identity for Harbor-backed containers (for
+    // example `env:harbor_deepswe` and `harbor-deepswe`). Include those
+    // trusted registry fields so an explicitly selected, healthy DeepSWE
+    // container is not rejected merely because its top-level task_family is
+    // the generic `harbor` runtime.
+    // Externally registered adapters may use the generic family `external`;
+    // their fresh target_id is still an authoritative exact target identity.
+    for pointer in [
+        "/info/target_id",
+        "/info/platform_id",
+        "/info/environment_ref",
+        "/info/evaluation_plan_ref",
+        "/declarationOrigin/declarationId",
+    ] {
+        if let Some(value) = metadata.pointer(pointer).and_then(Value::as_str) {
             candidates.push(value.to_ascii_lowercase());
         }
     }

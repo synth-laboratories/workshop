@@ -14,6 +14,7 @@ pub mod error;
 pub mod evidence;
 pub mod outbox;
 pub mod persist;
+pub mod read_model;
 pub mod sequences;
 pub mod settle;
 pub mod types;
@@ -26,6 +27,10 @@ pub use commit::{commit, settle_result, CommitPlan, RunKernelState};
 pub use driver::{resolve as resolve_driver, DriverKind, ExternalRunRef, SealedRunSpec};
 pub use error::{KernelError, KernelErrorCode, KernelResult};
 pub use evidence::{EvidenceAmendment, EvidenceState, SealedTerminal, UsageCompleteness};
+pub use read_model::{
+    HistoricalProjection, OptimizerRunSummary, OptimizerRunSummaryEnvelope, RunCollection,
+    RunCollectionFilter, RunCollectionPage, RunCollectionQuery, RunCollectionRow,
+};
 pub use sequences::{
     assign_aggregate_sequences, plan_producer_batch, CommittedEvent, DurableProducerLog,
     ProducerEvent, ProducerVerdict,
@@ -37,6 +42,8 @@ pub use types::{
     TerminalKind, TerminalReason, WorkItemKind, WorkItemLifecycle, GELO_HOSTED_RECIPE_ID,
     KERNEL_SCHEMA_VERSION, PRODUCER_EVENT_SCHEMA_VERSION, RUN_VIEW_SCHEMA_VERSION,
 };
-pub use view::{project_view, project_view_with_context, OptimizerRunViewV2};
+pub use view::{
+    project_view, project_view_with_context, OptimizerRunViewEnvelope, OptimizerRunViewV2,
+};
 pub use work::{WorkItem, WorkSummary};
 

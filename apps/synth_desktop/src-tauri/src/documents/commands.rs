@@ -12,9 +12,8 @@
 //!
 //! # Registration
 //!
-//! These are not reachable until they are added to `collect_commands!` in
-//! `contract/specta.rs` and named in `contract/commands.rs`. See the handoff
-//! note beside this module for the exact lines.
+//! These commands are registered in `contract/specta.rs` and named in
+//! `contract/commands.rs`; Specta generates their renderer bindings.
 
 use std::sync::Arc;
 use tauri::State;

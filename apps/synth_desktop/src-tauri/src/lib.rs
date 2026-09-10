@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 mod account;
 mod account_cloud;
 pub mod browser;
@@ -15,7 +16,8 @@ pub mod intern_protocol_test_support {
         SyncCreateRequest,
     };
 }
-mod adapters;
+pub mod adapters;
+mod annotations_ipc;
 mod codex;
 mod codex_oauth;
 mod composition;
@@ -28,8 +30,9 @@ pub mod core_runtime;
 mod credential_broker;
 pub mod data;
 mod device_auth;
-pub mod diagnostics;
+mod desktop_links;
 pub mod documents;
+pub mod diagnostics;
 mod domain;
 mod domains;
 pub mod error;
@@ -37,6 +40,7 @@ pub mod error;
 mod eval_driver;
 pub mod experiments;
 mod http;
+pub mod human_annotations;
 mod instance;
 mod intern_api;
 pub mod ipc;
@@ -48,10 +52,9 @@ mod model_catalog;
 mod optimizers;
 mod platform;
 mod plugins;
-pub mod presentation;
 mod project_sources;
+pub mod presentation;
 pub mod recovery;
-pub mod release_tier;
 mod reports;
 mod runtime;
 mod secrets;
@@ -59,10 +62,6 @@ mod services;
 mod session;
 mod skills;
 pub mod storage;
-/// The one fold: envelope identity, dedupe, conflict, gap scan, projection,
-/// and the cursor arithmetic every ordered-journal reader in this crate used
-/// to write for itself. See its module header for the rules and the
-/// golden-fixture suite that pins the TypeScript mirror to it.
 pub mod stream_fold;
 mod synth_config;
 mod tariffs;
@@ -70,6 +69,7 @@ mod telemetry;
 mod terminal;
 pub mod trace_ingest;
 pub mod trace_query;
+pub mod trace_research;
 pub mod training_artifacts;
 pub mod training_models;
 mod update_check;
@@ -92,7 +92,8 @@ use data::{
 use error::AppError;
 use experiments::{
     ExperimentChildCreateRequest, ExperimentCreateRequest, ExperimentEvidenceAttachRequest,
-    ExperimentFinalizeRequest, ExperimentGroup, ExperimentRelateRequest,
+    ExperimentFinalizeRequest, ExperimentGroup, ExperimentRelateRequest, ExperimentUpdateRequest,
+    ResearchJournalAppendRequest, ResearchJournalEntry,
 };
 use intern_api::{
     InternControlResult, InternSendResult, InternSessionControlRequest, InternSessionCreateRequest,
@@ -108,7 +109,6 @@ use optimizers::{
     SavedLoraPatchRequest,
 };
 use plugins::PluginStatus;
-use project_sources::{ProjectSourceApproval, ProjectSourceCatalog, ProjectSourceRequest};
 use reports::{
     ExperimentRecord, ExperimentRecordUpsert, ReportAudienceRequest, ReportAudienceState,
     ReportComment, ReportCommentCreate, ReportCreateRequest, ReportQuery, ReportRecord,
@@ -130,12 +130,15 @@ use synth_config::{
 use tauri::{Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
-use terminal::{TerminalCreateRequest, TerminalEvent, TerminalInfo, TerminalManager};
+use terminal::{
+    NativeTerminalFrame, NativeTerminalMountRequest, TerminalCreateRequest, TerminalEvent,
+    TerminalInfo, TerminalManager,
+};
 use trace_ingest::{TraceBundleIngestRequest, TraceBundleIngestResult};
 use visuals::{
-    TemplateMeta, UserTemplateValidation, VisualAnnotation, VisualAnnotationCreate, VisualAsset,
-    VisualCreateRequest, VisualQuery, VisualRecord, VisualRendition, VisualRevision, VisualSeal,
-    VisualSealBundle, VisualUpdateRequest, VisualUpload,
+    TemplateMeta, VisualAnnotation, VisualAnnotationCreate, VisualAsset, VisualCreateRequest,
+    VisualQuery, VisualRecord, VisualRendition, VisualRevision, VisualSeal, VisualSealBundle,
+    VisualUpdateRequest, VisualUpload,
 };
 use workspace_scope::WorkspaceGrantRequest;
 use workspace_scope::{ConversationWorkspaceScope, WorkspaceAccessMode};
@@ -535,23 +538,25 @@ async fn hydrate_container(
     let task_family = info
         .as_ref()
         .and_then(|value| {
-            crate::visuals::classify_live_eval_family(value, None)
-                .map(|family| family.as_str().to_string())
-        })
-        .or_else(|| {
-            info.as_ref()
-                .and_then(|value| {
-                    value
-                        .get("env_family")
-                        .or_else(|| value.get("task_family"))
-                        // HealthBench publishes its explicit service family as
-                        // `runtime_family`; preserve that observed contract so
-                        // the selector can find the registered GEPA-v2 pool.
-                        // Do not infer from a caller name, port, or URL.
-                        .or_else(|| value.get("runtime_family"))
-                })
+            value
+                .pointer("/liveEval/benchmarkFamily")
+                .or_else(|| value.pointer("/metadata/liveEval/benchmarkFamily"))
+                .or_else(|| value.get("env_family"))
+                .or_else(|| value.get("task_family"))
+                // HealthBench publishes its explicit service family as
+                // `runtime_family`; preserve that observed contract so the
+                // selector can find the registered GEPA-v2 pool. A declared
+                // benchmarkFamily wins because Harbor is the visual/transport
+                // family, not the benchmark being evaluated.
+                .or_else(|| value.get("runtime_family"))
                 .and_then(|value| value.as_str())
                 .map(str::to_string)
+        })
+        .or_else(|| {
+            info.as_ref().and_then(|value| {
+                crate::visuals::classify_live_eval_family(value, None)
+                    .map(|family| family.as_str().to_string())
+            })
         })
         .or_else(|| {
             // Packaged GEPA services identify their task through the immutable
@@ -758,6 +763,29 @@ async fn data_containers_restart(
         .map_err(AppError::from)
 }
 
+// Consumer bridge only: query semantics and storage remain in the existing trace API.
+#[tauri::command]
+#[specta::specta]
+async fn data_trace_research_request(
+    state: State<'_, Arc<CoreRuntime>>,
+    operation: String,
+    arguments_json: String,
+) -> Result<String, AppError> {
+    let path = match operation.as_str() {
+        "window" => "/v1/traces/window",
+        "query" => "/v1/traces/query",
+        "page" => "/v1/traces/page",
+        "snapshot" => "/v1/traces/snapshot",
+        "source" => "/v1/traces/source",
+        "prepare_annotations" => "/v1/traces/prepare_annotations",
+        _ => return Err(AppError::from(anyhow::anyhow!("Unsupported trace research operation"))),
+    };
+    let arguments = serde_json::from_str(&arguments_json).map_err(|e| AppError::from(anyhow::anyhow!(e)))?;
+    let result = crate::visuals_ipc::dispatch("POST", path, arguments, state.inner().as_ref())
+        .await.map_err(AppError::from)?;
+    serde_json::to_string(&result).map_err(|e| AppError::from(anyhow::anyhow!(e)))
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn data_traces_list(
@@ -819,6 +847,101 @@ async fn data_trace_projection_resolve(
         .resolve_trace_projection(trace_digest, projection_kind)
         .await
         .map_err(AppError::from)
+}
+
+/// Read a bounded local annotation projection without exposing the authenticated
+/// loopback Visuals IPC token to the renderer.
+#[tauri::command]
+#[specta::specta]
+async fn analysis_projection_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    kind: String,
+    digest: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .storage()
+        .database()
+        .run_read(move |conn| {
+            crate::session::annotation_projection::projection_payload(conn, &kind, &digest)
+        })
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn analysis_findings_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    trace_digest: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .storage()
+        .database()
+        .run_read(move |conn| {
+            let findings = crate::session::annotation_projection::list_findings_for_trace(
+                conn,
+                &trace_digest,
+            )?;
+            Ok(serde_json::json!({ "findings": findings }))
+        })
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn analysis_campaigns_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    eval_run_id: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .storage()
+        .database()
+        .run_read(move |conn| {
+            let campaigns =
+                crate::session::annotation_projection::list_campaigns_for_eval(conn, &eval_run_id)?;
+            Ok(serde_json::json!({ "campaigns": campaigns }))
+        })
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn analysis_review_record(
+    state: State<'_, Arc<CoreRuntime>>,
+    finding_id: String,
+    evidence_head_digest: String,
+    decision: String,
+    rationale: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let persisted_finding_id = finding_id.clone();
+    let persisted_evidence_head_digest = evidence_head_digest.clone();
+    let persisted_decision = decision.clone();
+    let persisted_rationale = rationale.clone();
+    let review_id = state
+        .storage()
+        .database()
+        .run_transaction(move |conn| {
+            crate::session::annotation_projection::record_local_review(
+                conn,
+                &persisted_finding_id,
+                &persisted_evidence_head_digest,
+                &persisted_decision,
+                "workshop",
+                &persisted_rationale,
+            )
+        })
+        .await
+        .map_err(AppError::from)?;
+    Ok(contract::specta::OpaqueJson(serde_json::json!({
+        "reviewId": review_id,
+        "findingId": finding_id,
+        "decision": decision,
+    })))
 }
 
 #[tauri::command]
@@ -937,17 +1060,19 @@ async fn optimizers_algorithms_list(
 #[specta::specta]
 async fn optimizers_recipes_list(
     state: State<'_, Arc<CoreRuntime>>,
+    session_ref: Option<String>,
 ) -> Result<Vec<contract::specta::OpaqueJson>, AppError> {
     Ok(state
         .optimizers()
-        .list_recipes()
+        .list_recipes_for_session(session_ref.as_deref())
         .into_iter()
         .map(contract::specta::OpaqueJson)
         .collect())
 }
 
-/// Freeze inline policy source into one immutable candidate set. Its id is the
-/// only policy input `optimizers_recipe_start` accepts for an `eval.*` recipe.
+/// Freeze policy files from the session's workspace into one immutable
+/// candidate set. Its id is the only policy input `optimizers_recipe_start`
+/// accepts for an `eval.*` recipe.
 #[tauri::command]
 #[specta::specta]
 async fn optimizers_stage_eval_candidates(
@@ -973,6 +1098,28 @@ async fn optimizers_recipe_start(
     authorize_optimizer_recipe_start(&app, &state, &codex, request).await
 }
 
+fn optimizer_recipe_fixture_env(recipe_id: &str) -> Option<&'static str> {
+    match recipe_id {
+        "sft.craftax.nemotron-nano.tinker.v1" | "sft.banking77.nemotron-lightning.tinker.v1" => {
+            Some("SYNTH_OPTIMIZERS_SFT_FIXTURE")
+        }
+        "cispo.banking77.tinker.v1"
+        | "cispo.hosted.tinker.v1"
+        | "cispo.slime.hosted.v1"
+        | "cispo.banking77.slime.tinker.v1" => Some("SYNTH_OPTIMIZERS_CISPO_FIXTURE"),
+        _ => None,
+    }
+}
+
+fn optimizer_recipe_is_unpaid_fixture(recipe_id: &str) -> bool {
+    optimizer_recipe_fixture_env(recipe_id).is_some_and(|name| {
+        std::env::var(name)
+            .ok()
+            .is_some_and(|value| value.trim() == "1")
+    })
+}
+
+
 pub(crate) async fn authorize_optimizer_recipe_start(
     app: &tauri::AppHandle,
     state: &CoreRuntime,
@@ -981,53 +1128,43 @@ pub(crate) async fn authorize_optimizer_recipe_start(
 ) -> Result<OptimizerRunRecord, AppError> {
     let should_open_visual = request.open_visual.unwrap_or(false);
     let visual_session_ref = request.session_ref.clone();
-    let catalog = state
+    let recipe = state
         .optimizers()
-        .list_recipes_for_session(request.session_ref.as_deref());
-    let recipe = catalog
-        .iter()
+        .list_recipes_for_session(request.session_ref.as_deref())
+        .into_iter()
         .find(|recipe| recipe.get("id").and_then(Value::as_str) == Some(request.recipe_id.as_str()))
-        .cloned()
         .ok_or_else(|| {
-            // Distinguish "the id was never declared" from "the workspace
-            // catalog itself could not be produced" — the latter is not the
-            // caller's typo.
-            let workspace_blocker = catalog
-                .iter()
-                .filter(|entry| {
-                    entry.get("source").and_then(Value::as_str) == Some("workspace")
-                        && entry.get("availability").and_then(Value::as_str) == Some("unavailable")
-                })
-                .find_map(|entry| entry.get("availabilityReason").and_then(Value::as_str));
-            match workspace_blocker {
-                Some(reason) => AppError::from(anyhow::anyhow!(
-                    "unknown optimizer recipe: {}; {reason}",
-                    request.recipe_id
-                )),
-                None => AppError::from(anyhow::anyhow!(
-                    "unknown optimizer recipe: {}",
-                    request.recipe_id
-                )),
-            }
+            AppError::from(anyhow::anyhow!(
+                "unknown optimizer recipe: {}",
+                request.recipe_id
+            ))
         })?;
-    // A declared-but-invalid workspace recipe is addressable by id and must
-    // return its validation error, never start.
-    if recipe.get("availability").and_then(Value::as_str) == Some("invalid") {
-        let reason = recipe
-            .get("availabilityReason")
-            .and_then(Value::as_str)
-            .unwrap_or("the workspace recipe failed validation");
-        return Err(AppError::from(anyhow::anyhow!(
-            "optimizer recipe `{}` is declared but invalid: {reason}",
-            request.recipe_id
-        )));
-    }
-    // Local MLX recipes and the pinned local eval smoke do not incur provider
-    // charges. The click itself is the operator's explicit instruction.
+    // A workspace eval whose provider is explicitly `none` cannot issue a
+    // billable model call. Treat it like the other local no-provider paths:
+    // requiring a PaidCompute/CredentialAccess grant here both misrepresents
+    // the run and deadlocks sessions whose allowlist intentionally names only
+    // real providers. The recipe's rollout/step bounds remain enforced by the
+    // container evaluator.
+    let is_unpaid_workspace_eval = recipe.get("algorithmId").and_then(Value::as_str)
+        == Some("eval")
+        && recipe.get("source").and_then(Value::as_str) == Some("workspace")
+        && recipe.get("semantics").and_then(Value::as_str) == Some("baseline_eval")
+        && recipe
+            .get("credentialInputs")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty);
+    // Local MLX recipes, provider-free workspace evals, and explicitly enabled hosted fixtures do not incur
+    // provider charges. The card click is the operator's explicit instruction,
+    // so requiring an agent-session paid-compute receipt here makes the
+    // zero-cost Desktop acceptance path impossible. Exact recipe ids and the
+    // fixture env gate keep real hosted launches on the approval path below.
     if matches!(
         request.recipe_id.as_str(),
-        "sft.qwen35-2b.mlx.v1" | "cispo.mlx.v1" | "eval.fixture.policy-smoke.v1"
-    ) {
+        "sft.qwen35-2b.mlx.v1" | "cispo.mlx.v1"
+    ) || optimizer_recipe_is_unpaid_fixture(&request.recipe_id)
+        || recipe.get("provider").and_then(Value::as_str) == Some("none")
+        || is_unpaid_workspace_eval
+    {
         let (run, event) = state
             .optimizers()
             .start_recipe(request)
@@ -1042,11 +1179,13 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let requesting_agent = session_id
-        .map(|value| format!("Agent session {value}"))
+        .map(|value| if value.starts_with("operator-training-") { "Workshop operator".into() } else { format!("Agent session {value}") })
         .unwrap_or_else(|| "Workshop operator".into());
     let algorithm_id = recipe.get("algorithmId").and_then(Value::as_str);
     let is_local_eval = algorithm_id == Some("eval");
-    let is_container_baseline_eval = is_local_eval && is_source_declared_baseline_eval(&recipe);
+    let is_container_baseline_eval = is_local_eval
+        && recipe.get("source").and_then(Value::as_str) == Some("workspace")
+        && recipe.get("semantics").and_then(Value::as_str) == Some("baseline_eval");
     // Hosted SFT is owned by the public synth-optimizers control plane and
     // does not use the optional local Optimizers sidecar. Requiring that
     // sidecar made an otherwise configured public SFT recipe unreachable.
@@ -1056,7 +1195,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .get("limits")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let (max_cost_usd, max_rollouts) = if is_container_baseline_eval {
+    let (mut max_cost_usd, max_rollouts) = if is_container_baseline_eval {
         // These recipes evaluate the policy already pinned by a registered
         // container. They have no candidate set: requiring one here prevents
         // the public MCP route from ever reaching `container_eval::start`.
@@ -1092,6 +1231,17 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             .find_map(|key| limits.get(key).and_then(Value::as_u64)),
         )
     };
+    let requested_training_cap = if is_hosted_sft { "/sft/maxCostUsd" } else { "/cispo/maxCostUsd" };
+    if is_hosted_sft || algorithm_id == Some("cispo") {
+        if let Some(value) = request.plan_override.as_ref().and_then(|value| value.pointer(requested_training_cap)) {
+            let cap = value.as_f64().filter(|cap| cap.is_finite() && *cap > 0.0)
+                .ok_or_else(|| AppError::from(anyhow::anyhow!("Training maximum charge must be positive and finite")))?;
+            if max_cost_usd.is_none_or(|ceiling| cap > ceiling) {
+                return Err(AppError::from(anyhow::anyhow!("Training maximum charge exceeds the recipe ceiling")));
+            }
+            max_cost_usd = Some(cap);
+        }
+    }
     let paid_cap = session::approval::PaidComputeCap {
         max_cost_usd_micros: max_cost_usd.map(|value| (value * 1_000_000.0).round() as u64),
         max_rollouts,
@@ -1175,13 +1325,9 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     }
     let paid = session::approval::ApprovalKind::PaidCompute {
         operation: "optimizer.recipe.start".into(),
-        parameters: serde_json::json!({
-            "recipeId": request.recipe_id,
-            "algorithmId": recipe.get("algorithmId"),
-            "task": recipe.get("task"),
-            "limits": limits,
-        }),
-        estimated_cost_usd_micros: paid_cap.max_cost_usd_micros,
+        parameters: optimizer_recipe_approval_parameters(&recipe, &request.recipe_id, &limits),
+        // A cap is not an expected provider charge.
+        estimated_cost_usd_micros: None,
         requested_cap: paid_cap.clone(),
         requesting_agent,
         recipe_id: Some(request.recipe_id.clone()),
@@ -1320,6 +1466,7 @@ pub(crate) async fn authorize_inline_evaluation_start(
     request: optimizers::admission::InlineRequest,
     session_ref: Option<String>,
     open_visual: bool,
+    idempotency_key: String,
 ) -> Result<OptimizerRunRecord, AppError> {
     let session_id = session_ref
         .as_deref()
@@ -1331,6 +1478,22 @@ pub(crate) async fn authorize_inline_evaluation_start(
     let admissible = optimizers::inline_eval::admit_inline(state.optimizers(), request)
         .await
         .map_err(AppError::from)?;
+    let admitted_digest = admissible.digest().as_str().to_string();
+    let start_run_id = optimizers::inline_eval::idempotent_run_id(session_id, &idempotency_key);
+    if let Ok(existing) = state.optimizers().get(start_run_id.clone()).await {
+        let expected = admitted_digest.as_str();
+        let actual = existing
+            .summary
+            .get("executionSpecDigest")
+            .and_then(serde_json::Value::as_str);
+        if actual != Some(expected) {
+            return Err(AppError::invalid_argument(format!(
+                "idempotencyKey is already bound to a different evaluation specification (expected {expected}, found {})",
+                actual.unwrap_or("missing digest")
+            )));
+        }
+        return Ok(existing);
+    }
     let disclosure = admissible.approval_disclosure();
     let recipe = &admissible.spec().recipe;
     let max_cost_usd_micros = recipe.resource_limits.hard_total_cost_micros.as_micros();
@@ -1370,10 +1533,33 @@ pub(crate) async fn authorize_inline_evaluation_start(
     optimizers::inline_eval::reverify(state.optimizers(), &approved)
         .await
         .map_err(AppError::from)?;
-    let (run, event) =
-        optimizers::inline_eval::execute(state.optimizers(), approved, session_ref.clone())
-            .await
-            .map_err(AppError::from)?;
+    let execution = optimizers::inline_eval::execute(
+        state.optimizers(),
+        approved,
+        session_ref.clone(),
+        Some(start_run_id.clone()),
+    )
+    .await;
+    let (run, event) = match execution {
+        Ok(started) => started,
+        Err(error) => {
+            // Two identical callers can both be released by the same human
+            // decision. The deterministic row insert is the spend fence; the
+            // loser returns that row instead of turning a safe retry into an
+            // error or dispatching another campaign.
+            if let Ok(existing) = state.optimizers().get(start_run_id).await {
+                if existing
+                    .summary
+                    .get("executionSpecDigest")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(admitted_digest.as_str())
+                {
+                    return Ok(existing);
+                }
+            }
+            return Err(AppError::from(error));
+        }
+    };
     publish_optimizer_event(app, state, event).await?;
     let run = state
         .optimizers()
@@ -1484,12 +1670,19 @@ fn optimizer_recipe_credentials_from_catalog(recipe: &Value, recipe_id: &str) ->
     })
 }
 
-fn is_source_declared_baseline_eval(recipe: &Value) -> bool {
-    recipe.get("semantics").and_then(Value::as_str) == Some("baseline_eval")
-        && matches!(
-            recipe.get("source").and_then(Value::as_str),
-            Some("workspace" | "catalog")
-        )
+fn optimizer_recipe_approval_parameters(recipe: &Value, recipe_id: &str, limits: &Value) -> Value {
+    serde_json::json!({
+        "recipeId": recipe_id,
+        "algorithmId": recipe.get("algorithmId"),
+        "task": recipe.get("task"),
+        // Paid-compute policy is provider-scoped. Credential env-var names are
+        // implementation details and are not valid provider identities.
+        "model": {
+            "provider": recipe.get("provider"),
+            "id": recipe.get("model"),
+        },
+        "limits": limits,
+    })
 }
 
 
@@ -1528,6 +1721,138 @@ async fn optimizers_run_view_v2(
     state
         .optimizers()
         .run_view_v2(optimizer_run_id)
+        .await
+        .map_err(AppError::from)
+}
+
+/// One coherent read for a visual's first paint: the durable projection, the
+/// run record the templates still read compatibility fields from, and the
+/// journal tail an evidence reader pages against.
+///
+/// `if_newer_than` makes it conditional. A caller holding projection revision
+/// *n* passes it and is told `unchanged` instead of being handed the same
+/// bytes again — which is what turns a background freshness check into one
+/// indexed column read rather than a full projection load and IPC round trip.
+/// The render receipt for one visual revision, if it has ever rendered.
+///
+/// Read on reopen so a visual can tell "the projection has moved on" (normal)
+/// from "the projection is now older than, or different from, what I already
+/// showed" (a regression that must be reported rather than rendered).
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_visual_render_receipt(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+    visual_revision: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Option<crate::optimizers::models::VisualRenderReceipt>, AppError> {
+    state
+        .optimizers()
+        .visual_render_receipt(visual_id, visual_revision.map(|value| value.0).unwrap_or(0))
+        .await
+        .map_err(AppError::from)
+}
+
+/// Read the parts of an evidence window the caller does not already hold.
+///
+/// `held` is the coverage returned by the previous call, sent back verbatim.
+/// The answer is the complement, so re-opening Replay after a restart transfers
+/// only what is genuinely missing rather than the whole journal again.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_evidence_page(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    window: crate::optimizers::events::EvidenceRange,
+    held: Option<Vec<crate::optimizers::events::EvidenceRange>>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<crate::optimizers::events::EvidencePage, AppError> {
+    state
+        .optimizers()
+        .evidence_page(
+            optimizer_run_id,
+            window,
+            held.unwrap_or_default(),
+            limit.map(|value| value.0),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_view(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    if_newer_than: Option<contract::specta::OpaqueInteger<u64>>,
+) -> Result<crate::optimizers::kernel::OptimizerRunViewEnvelope, AppError> {
+    state
+        .optimizers()
+        .run_view_envelope(optimizer_run_id, if_newer_than.map(|value| value.0))
+        .await
+        .map_err(AppError::from)
+}
+
+/// The bounded run summary: what every live card, dialog, and visual mounts
+/// from. Conditional on `if_newer_than` like `optimizers_run_view`.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_summary(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    if_newer_than: Option<contract::specta::OpaqueInteger<u64>>,
+) -> Result<crate::optimizers::kernel::OptimizerRunSummaryEnvelope, AppError> {
+    state
+        .optimizers()
+        .run_summary(optimizer_run_id, if_newer_than.map(|value| value.0))
+        .await
+        .map_err(AppError::from)
+}
+
+/// One keyset page of a durable run collection. Every page has an explicit,
+/// clamped limit; there is no "all rows" form.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_collection(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    collection: crate::optimizers::kernel::RunCollection,
+    query: Option<crate::optimizers::kernel::RunCollectionQuery>,
+) -> Result<crate::optimizers::kernel::RunCollectionPage, AppError> {
+    state
+        .optimizers()
+        .run_collection(optimizer_run_id, collection, query.unwrap_or_default())
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_collection_item(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    collection: crate::optimizers::kernel::RunCollection,
+    item_id: String,
+) -> Result<Option<crate::optimizers::kernel::RunCollectionRow>, AppError> {
+    state
+        .optimizers()
+        .run_collection_item(optimizer_run_id, collection, item_id)
+        .await
+        .map_err(AppError::from)
+}
+
+/// The projection as it stood at `sequence`, folded backend-side from the
+/// nearest reducer checkpoint. The historical scrubber reads this instead of
+/// reducing the journal in the renderer.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_projection_at(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    sequence: contract::specta::OpaqueInteger<u64>,
+) -> Result<crate::optimizers::kernel::HistoricalProjection, AppError> {
+    state
+        .optimizers()
+        .projection_at(optimizer_run_id, sequence.0)
         .await
         .map_err(AppError::from)
 }
@@ -2009,6 +2334,18 @@ async fn optimizers_training_reconcile(
 
 #[tauri::command]
 #[specta::specta]
+async fn optimizers_container_experiment_action(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    action: String,
+    checkpoint_id: Option<String>,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state.optimizers().container_experiment_action(optimizer_run_id, action, checkpoint_id)
+        .await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn plugins_status(
     state: State<'_, Arc<CoreRuntime>>,
     plugin_id: Option<String>,
@@ -2016,6 +2353,7 @@ async fn plugins_status(
     // Validate rather than discard: returning the optimizers status for any id
     // asked about let the caller believe a plugin existed that does not.
     if let Some(plugin_id) = plugin_id.as_deref() {
+        if plugin_id == plugins::jesterky::ID { return Ok(plugins::jesterky::status()); }
         if plugin_id == plugins::types::COMPUTER_USE_PLUGIN_ID {
             let _ = state.computer_use().refresh_grants().await;
             return Ok(state.computer_use().status().await);
@@ -2027,6 +2365,13 @@ async fn plugins_status(
         }
     }
     Ok(state.plugins().status(&state).await)
+}
+
+/// Persist the optional analysis scope. This never launches paid work.
+#[tauri::command]
+#[specta::specta]
+async fn jesterky_analysis_settings(settings: Option<plugins::jesterky::AnalysisSettings>) -> Result<plugins::jesterky::AnalysisSettings, AppError> {
+    plugins::jesterky::analysis_settings(settings).map_err(AppError::from)
 }
 
 /// Human-triggered plugin lifecycle.
@@ -2075,6 +2420,7 @@ async fn plugins_list(state: State<'_, Arc<CoreRuntime>>) -> Result<Vec<PluginSt
     let _ = state.computer_use().refresh_grants().await;
     Ok(vec![
         state.plugins().status(&state).await,
+        plugins::jesterky::status(),
         state.computer_use().status().await,
     ])
 }
@@ -2250,6 +2596,10 @@ async fn plugins_set_release_channel(
     plugin_id: String,
     channel: String,
 ) -> Result<PluginStatus, AppError> {
+    if plugin_id == plugins::jesterky::ID {
+        plugins::PluginRegistry::for_plugin(&plugin_id).set_release_channel(&channel).map_err(AppError::from)?;
+        return Ok(plugins::jesterky::status());
+    }
     if plugin_id != plugins::OPTIMIZERS_PLUGIN_ID {
         return Err(AppError::from(anyhow::anyhow!(
             "unknown plugin_id `{plugin_id}`"
@@ -2646,10 +2996,8 @@ async fn visual_stream_poll(
                 .and_then(|cursor| cursor.get("closed"))
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
-            // Fold nothing, record everything the page can be asked about
-            // without folding: identity, sequence, kind, cursor, latency. The
-            // renderer still folds; this is the copy nobody has to be trusted
-            // to report.
+            // Fold bytes observed by the host, independently of anything the
+            // renderer reports about its DOM or local replay state.
             let outcome = visuals::stream_receipt::record_poll_page(
                 &visual.id,
                 visual.current_revision,
@@ -2714,14 +3062,12 @@ async fn visual_stream_poll(
             // which is the same O(page history) the renderer's own ingest
             // already pays on every batch; if that bites, the fix is an
             // incremental fold inside `stream_fold`, not a second projector.
-            let projection =
-                visuals::live_eval::observed_projection(&visual.id, visual.current_revision, None)
-                    .transpose()
-                    .map_err(AppError::from)?
-                    .map(|projection| visuals::live_eval::projection_view(&projection))
-                    .transpose()
-                    .map_err(AppError::from)?
-                    .map(contract::specta::OpaqueJson);
+            let (receipt, evidence, evidence_truncated) = visuals::stream_receipt::evidence_snapshot(
+                &visual.id, visual.current_revision, &receipt_streams);
+            let projection = if evidence.is_empty() { None } else {
+                Some(contract::specta::OpaqueJson(visuals::live_eval::seal_projection(&evidence)
+                    .map_err(AppError::from)?))
+            };
             Ok(VisualStreamPollResult {
                 schema_version: VISUAL_STREAM_POLL_SCHEMA.to_string(),
                 events: contract::specta::OpaqueJson(serde_json::Value::Array(
@@ -2729,12 +3075,8 @@ async fn visual_stream_poll(
                 )),
                 cursor: visuals::stream_receipt::page_cursor(&page),
                 projection,
-                evidence_truncated: outcome.evidence_truncated,
-                receipt: visuals::stream_receipt::receipt(
-                    &visual.id,
-                    visual.current_revision,
-                    &receipt_streams,
-                ),
+                evidence_truncated,
+                receipt,
             })
         }
         Err(error) => {
@@ -2900,10 +3242,12 @@ fn visuals_templates_list(
     state: State<'_, Arc<CoreRuntime>>,
     genre: Option<String>,
 ) -> Result<Vec<TemplateMeta>, AppError> {
-    state
-        .visuals()
-        .list_templates(genre.as_deref())
-        .map_err(AppError::from)
+    domains::visuals::operations::ListVisualTemplates::execute(
+        state.visuals(),
+        domains::visuals::operations::ListVisualTemplatesRequest { genre },
+    )
+    .map(|result| result.templates)
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -2916,88 +3260,6 @@ fn visuals_templates_get(
         .visuals()
         .get_template(&template_id)
         .map_err(AppError::from)
-}
-
-#[tauri::command]
-#[specta::specta]
-fn visuals_template_shell_source(
-    state: State<'_, Arc<CoreRuntime>>,
-    template_id: String,
-) -> Result<String, AppError> {
-    state
-        .visuals()
-        .template_shell_source(&template_id)
-        .map_err(AppError::from)
-}
-
-/// Persist authored TSX as a reusable template under the instance state root.
-///
-/// `manifest` is `template.json`'s text, not a typed struct: the manifest
-/// schema belongs to the template package, and a typed argument would silently
-/// drop every key the host does not happen to know about.
-///
-/// **This writes code the app compiles at every launch**, which is a different
-/// act from rendering in the pane, so it is gated: the write is described to a
-/// person as a `visual_template_persist` approval and only happens if they
-/// allow it. That is why this is `async` and why it takes both the app handle
-/// (the broker lives in its state) and the `session_id` the card is raised on —
-/// the synchronous `save_template` on the registry now always refuses, because
-/// a synchronous entry point cannot wait for a human.
-#[tauri::command]
-#[specta::specta]
-async fn visuals_template_save(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<CoreRuntime>>,
-    session_id: String,
-    template_id: String,
-    manifest: String,
-    source: String,
-) -> Result<TemplateMeta, AppError> {
-    state
-        .visuals()
-        .save_template_approved(&app, Some(&session_id), &template_id, &manifest, &source)
-        .await
-        .map_err(AppError::from)
-}
-
-/// Scaffold a new user template by forking an existing one under a new id.
-///
-/// Fork rather than shadow, so a shipped id keeps meaning exactly one thing.
-///
-/// Gated the same way [`visuals_template_save`] is: a fork also leaves code the
-/// app compiles at every launch, so it settles a `visual_template_persist`
-/// approval on `session_id` before writing anything.
-#[tauri::command]
-#[specta::specta]
-async fn visuals_template_create(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<CoreRuntime>>,
-    session_id: String,
-    template_id: String,
-    from_template_id: String,
-    title: Option<String>,
-) -> Result<TemplateMeta, AppError> {
-    state
-        .visuals()
-        .create_template(&template_id, &from_template_id, title.as_deref())
-        .map_err(AppError::from)
-}
-
-/// Structural verdict on one user template directory.
-///
-/// Never `Err` for a template that simply is not finished yet: "manifest is
-/// fine, no shell.tsx" is the normal mid-authoring state and belongs in the
-/// report, not in an error. The import allowlist is deliberately not checked
-/// here — `visuals/runtime/sourcedValidate.ts` owns it, the pane runs it, and
-/// the report says so in `sourceScan` rather than letting silence read as
-/// approval.
-#[tauri::command]
-#[specta::specta]
-fn visuals_template_validate(
-    state: State<'_, Arc<CoreRuntime>>,
-    template_id: String,
-) -> Result<UserTemplateValidation, AppError> {
-    Ok(state.visuals().validate_template(&template_id))
 }
 
 #[tauri::command]
@@ -3020,6 +3282,52 @@ async fn visuals_get(
     visual_id: String,
 ) -> Result<VisualRecord, AppError> {
     state.visuals().get(visual_id).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_engine(app: tauri::AppHandle, state: State<'_, Arc<CoreRuntime>>, visual_id: String, request: contract::specta::OpaqueJson) -> Result<contract::specta::OpaqueJson, AppError> {
+    visuals::engine::attach_event_host(app.clone());
+    if request.0["operation"]=="capture.pixels" {
+        return visuals_ipc::capture_visual_session(&app,&visual_id,&request.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from);
+    }
+    state.visuals().engine().request(visual_id, request.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_presentation_get(state: State<'_, Arc<CoreRuntime>>, visual_id: String) -> Result<Option<contract::specta::OpaqueJson>, AppError> {
+    state.visuals().state_store().presentation(visual_id).await.map(|value| value.map(contract::specta::OpaqueJson)).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_presentation_put(state: State<'_, Arc<CoreRuntime>>, visual_id: String, presentation: contract::specta::OpaqueJson) -> Result<contract::specta::OpaqueJson, AppError> {
+    state.visuals().state_store().put_presentation(visual_id, presentation.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_snapshots_list(state: State<'_, Arc<CoreRuntime>>, visual_id: String) -> Result<Vec<contract::specta::OpaqueJson>, AppError> {
+    state.visuals().state_store().snapshots(visual_id).await.map(|values| values.into_iter().map(contract::specta::OpaqueJson).collect()).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_snapshot_put(state: State<'_, Arc<CoreRuntime>>, visual_id: String, snapshot: contract::specta::OpaqueJson) -> Result<contract::specta::OpaqueJson, AppError> {
+    state.visuals().state_store().put_snapshot(visual_id, snapshot.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_recordings_list(state: State<'_, Arc<CoreRuntime>>, visual_id: String) -> Result<Vec<contract::specta::OpaqueJson>, AppError> {
+    state.visuals().state_store().recordings(visual_id).await.map(|values| values.into_iter().map(contract::specta::OpaqueJson).collect()).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_recording_put(state: State<'_, Arc<CoreRuntime>>, visual_id: String, recording: contract::specta::OpaqueJson) -> Result<contract::specta::OpaqueJson, AppError> {
+    state.visuals().state_store().put_recording(visual_id, recording.0).await.map(contract::specta::OpaqueJson).map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -3762,6 +4070,19 @@ async fn experiments_activate(
 
 #[tauri::command]
 #[specta::specta]
+async fn experiments_update(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ExperimentUpdateRequest,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_update(request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn experiments_finalize(
     state: State<'_, Arc<CoreRuntime>>,
     request: ExperimentFinalizeRequest,
@@ -3769,6 +4090,33 @@ async fn experiments_finalize(
     state
         .data()
         .experiment_finalize(request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn research_log_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    query: Option<String>,
+    experiment_id: Option<String>,
+) -> Result<Vec<ResearchJournalEntry>, AppError> {
+    state
+        .data()
+        .research_log_list(query, experiment_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn research_log_append(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ResearchJournalAppendRequest,
+) -> Result<ResearchJournalEntry, AppError> {
+    state
+        .data()
+        .research_log_append(request)
         .await
         .map_err(AppError::from)
 }
@@ -4080,6 +4428,7 @@ async fn account_begin_sign_in(
     app: tauri::AppHandle,
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
 ) -> Result<device_auth::SignInBegin, AppError> {
+    let _operation = manager.operation.lock().await;
     let origin = device_auth::workshop_origin();
     let begin = manager.begin(&origin).await.map_err(AppError::from)?;
     use tauri_plugin_opener::OpenerExt;
@@ -4177,9 +4526,10 @@ async fn account_poll_sign_in(
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
 ) -> Result<device_auth::SignInPoll, AppError> {
+    let _operation = manager.operation.lock().await;
     let origin = device_auth::workshop_origin();
     let result = manager
-        .poll(&origin, |key| synth_config::store_api_key(key))
+        .poll(&origin, |key, independent| synth_config::store_paired_api_key(key, &origin, independent))
         .await
         .map_err(AppError::from)?;
     if matches!(result, device_auth::SignInPoll::Active) {
@@ -4202,9 +4552,10 @@ async fn account_poll_sign_in(
 
 #[tauri::command]
 #[specta::specta]
-fn account_cancel_sign_in(
+async fn account_cancel_sign_in(
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
 ) -> Result<(), AppError> {
+    let _operation = manager.operation.lock().await;
     manager.cancel();
     Ok(())
 }
@@ -4280,6 +4631,12 @@ async fn account_open_billing(
         )
         .await
         .map_err(AppError::from)?;
+    let current = synth_config::resolve().map_err(AppError::from)?;
+    if current.backend_url != resolved.backend_url || current.api_key != resolved.api_key {
+        return Err(AppError::from(anyhow::anyhow!(
+            "Account changed while opening billing. Try again for the current account."
+        )));
+    }
     let url = account_cloud::validate_billing_url(
         &url,
         &resolved.backend_url,
@@ -4296,25 +4653,22 @@ async fn account_open_billing(
 #[tauri::command]
 #[specta::specta]
 async fn account_sign_out(
+    manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
     core: State<'_, Arc<CoreRuntime>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
-    manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
 ) -> Result<BackendSettings, AppError> {
-    // Capture the desktop-managed key before deletion so it can be revoked
-    // server-side. Local removal is authoritative and never waits on the
-    // network; revocation after it is best-effort.
-    let revocable_key = synth_config::desktop_managed_api_key().ok().flatten();
-    synth_config::remove_api_key().map_err(AppError::from)?;
-    if let Some(key) = revocable_key {
-        let origin = device_auth::workshop_origin();
-        if let Err(error) = manager.revoke_key(&origin, &key).await {
-            crate::platform::logging::report(
-                "lib",
-                "eprintln",
-                format!("synth-desktop: sign-out key revocation failed (key removed locally): {error:#}"),
-            );
+    let _operation = manager.operation.lock().await;
+    let resolved = synth_config::resolve().map_err(AppError::from)?;
+    if let Some(key) = resolved.api_key.as_deref() {
+        if let Some(issuer) = synth_config::paired_key_issuer(key).map_err(AppError::from)? {
+            manager.revoke(&issuer, key).await.map_err(AppError::from)?;
         }
     }
+    if synth_config::resolve().map_err(AppError::from)?.api_key != resolved.api_key {
+        return Err(AppError::from(anyhow::anyhow!("account changed during sign-out; retry")));
+    }
+    manager.cancel();
+    synth_config::remove_api_key().map_err(AppError::from)?;
     // Cloud facts belong to the signed-out session; local history and the
     // device ledger stay untouched. Optional analytics drop; the install id
     // and essential recovery events remain until retention expires.
@@ -4768,133 +5122,6 @@ async fn workspace_scope_approve_request(
     Ok(Some(scope))
 }
 
-/// Open the native folder picker and return the chosen path.
-///
-/// Shared by every project-source command so admission always originates from
-/// a selection the person at the keyboard made in a native dialog, never from
-/// a path the renderer or an agent supplied.
-async fn pick_project_folder(
-    app: &tauri::AppHandle,
-    title: &str,
-) -> Result<Option<String>, AppError> {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .set_title(title)
-        .pick_folder(move |path| {
-            let _ = sender.send(path.map(|value| value.to_string()));
-        });
-    receiver.await.map_err(AppError::from)
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn project_sources_get(
-    core: State<'_, Arc<CoreRuntime>>,
-) -> Result<ProjectSourceCatalog, AppError> {
-    project_sources::catalog(core.storage().database()).map_err(AppError::from)
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn project_sources_refresh(
-    core: State<'_, Arc<CoreRuntime>>,
-) -> Result<ProjectSourceCatalog, AppError> {
-    project_sources::refresh(core.storage().database())
-        .await
-        .map_err(AppError::from)?;
-    project_sources::catalog(core.storage().database()).map_err(AppError::from)
-}
-
-/// Add a project source the operator chose in Settings.
-///
-/// Runs the same validation as an approved agent request: canonicalize, refuse
-/// a root too broad to be one project, and require at least one declaration
-/// that parses. Settings is the only place a deliberately broad root such as a
-/// whole checkout directory can be added, and it is added by a person.
-#[tauri::command]
-#[specta::specta]
-async fn project_source_add(
-    app: tauri::AppHandle,
-    core: State<'_, Arc<CoreRuntime>>,
-    containers: bool,
-    recipes: bool,
-) -> Result<Option<ProjectSourceCatalog>, AppError> {
-    let Some(path) = pick_project_folder(&app, "Choose a project source folder").await? else {
-        return Ok(None);
-    };
-    project_sources::add_from_picker(core.storage().database(), &path, containers, recipes)
-        .await
-        .map(Some)
-        .map_err(AppError::from)
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn project_source_remove(
-    core: State<'_, Arc<CoreRuntime>>,
-    path: String,
-) -> Result<ProjectSourceCatalog, AppError> {
-    project_sources::remove(core.storage().database(), &path)
-        .await
-        .map_err(AppError::from)
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn project_source_requests_list(
-    core: State<'_, Arc<CoreRuntime>>,
-    session_id: Option<String>,
-) -> Result<Vec<ProjectSourceRequest>, AppError> {
-    project_sources::list_requests(core.storage().database(), session_id.as_deref())
-        .await
-        .map_err(AppError::from)
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn project_source_deny(
-    core: State<'_, Arc<CoreRuntime>>,
-    request_id: String,
-) -> Result<ProjectSourceRequest, AppError> {
-    project_sources::deny(core.storage().database(), &request_id)
-        .await
-        .map_err(AppError::from)
-}
-
-/// Approve one pending project-source request.
-///
-/// The picker selection is passed to the backend separately from the path the
-/// agent requested, and admission happens only if the two canonicalize to the
-/// same directory. Choosing the parent folder in the dialog does not widen the
-/// grant; it fails.
-#[tauri::command]
-#[specta::specta]
-async fn project_source_approve(
-    app: tauri::AppHandle,
-    core: State<'_, Arc<CoreRuntime>>,
-    codex: State<'_, Arc<CodexManager>>,
-    request_id: String,
-) -> Result<Option<ProjectSourceApproval>, AppError> {
-    let Some(path) =
-        pick_project_folder(&app, "Confirm the exact requested project folder").await?
-    else {
-        return Ok(None);
-    };
-    let approval = project_sources::approve(core.storage().database(), &request_id, &path)
-        .await
-        .map_err(AppError::from)?;
-    // Only an approval that also attached the folder changed the conversation's
-    // scope; fencing otherwise would interrupt a running turn for nothing.
-    if let Some(scope) = approval.scope.as_ref() {
-        codex
-            .fence_attachment(&scope.session_id)
-            .await
-            .map_err(AppError::from)?;
-    }
-    Ok(Some(approval))
-}
-
 /// Fills in the provider secrets and Laguna base URL that only the Rust side
 /// knows. Shared by the plain attach command and the atomic send command.
 async fn prepare_codex_start(
@@ -5110,6 +5337,22 @@ async fn codex_turn_send(
     state.send_turn(app, request).await
 }
 
+/// Side-effect-free hosted inference lifecycle read. Credential custody stays
+/// in the native broker; only Shoal's public status projection crosses IPC.
+#[tauri::command]
+#[specta::specta]
+async fn synth_cloud_inference_status(
+    broker: State<'_, Arc<credential_broker::CredentialBroker>>,
+    session_id: String,
+    model: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    broker
+        .hosted_inference_status(&session_id, &model)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn codex_session_start(
@@ -5215,26 +5458,8 @@ async fn codex_approval_resolve(
     request: CodexApprovalDecisionRequest,
 ) -> Result<(), AppError> {
     if approvals.is_pending(&request.approval_id).await {
-        let digest_bound = approvals
-            .pending_kind(&request.approval_id)
-            .await
-            .and_then(|kind| kind.approval_digest().map(str::to_owned));
-        if request.decision != "reject"
-            && digest_bound.is_some()
-            && request.approval_digest.is_none()
-        {
-            return Err(AppError::invalid_argument(
-                "paid-compute approval requires the active proposal digest",
-            ));
-        }
-        if let Some(digest) = request.approval_digest.as_deref() {
-            approvals
-                .validate_exact_digest(&request.approval_id, digest)
-                .await
-                .map_err(AppError::from)?;
-        }
         let decision = approvals
-            .decision_from_shell(&request.approval_id, &request.decision)
+            .decision_from_view(&request.approval_id, &request.decision, request.approval_digest.as_deref())
             .await
             .map_err(AppError::from)?;
         approvals
@@ -5242,17 +5467,6 @@ async fn codex_approval_resolve(
             .await
             .map_err(AppError::from)?;
         return Ok(());
-    }
-    if let Some(digest) = request.approval_digest.as_deref() {
-        let decision =
-            crate::session::approval::ApprovalDecision::from_shell_wire(&request.decision)
-                .map_err(AppError::from)?;
-        if approvals
-            .was_resolved_exact(&request.session_id, digest, &decision)
-            .await
-        {
-            return Ok(());
-        }
     }
     match state.resolve_approval(app, request).await {
         Ok(()) => Ok(()),
@@ -5262,60 +5476,9 @@ async fn codex_approval_resolve(
                 .into(),
             detail: format!("{error:?}"),
             failure: None,
-            structured: None,
         }),
         Err(error) => Err(AppError::from(error)),
     }
-}
-
-/// Every approval sheet currently open, with the clock each one is on.
-///
-/// The operator surface, and any accessibility client driving it, read this
-/// instead of inferring liveness from chat text: a sentence written when the
-/// gate opened is not evidence that the gate is still open.
-#[tauri::command]
-#[specta::specta]
-async fn approvals_pending(
-    approvals: State<'_, Arc<crate::session::approval::ApprovalBroker>>,
-) -> Result<Vec<crate::session::approval::PendingApprovalView>, AppError> {
-    Ok(approvals.pending_snapshot().await)
-}
-
-/// Approve the open sheet bound to exactly this specification digest.
-///
-/// Bound to the digest rather than to a per-request id, and idempotent: a
-/// second send for a digest that already settled reports the standing outcome
-/// instead of granting twice. `alreadySettled` distinguishes the two.
-#[tauri::command]
-#[specta::specta]
-async fn approvals_approve_digest(
-    app: tauri::AppHandle,
-    approvals: State<'_, Arc<crate::session::approval::ApprovalBroker>>,
-    request: ApproveDigestRequest,
-) -> Result<ApproveDigestOutcome, AppError> {
-    let (approval_id, already_settled) = approvals
-        .approve_digest(&app, &request.execution_spec_digest)
-        .await
-        .map_err(AppError::from)?;
-    Ok(ApproveDigestOutcome {
-        approval_id,
-        already_settled,
-        execution_spec_digest: request.execution_spec_digest,
-    })
-}
-
-#[derive(Debug, Clone, serde::Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct ApproveDigestRequest {
-    pub execution_spec_digest: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct ApproveDigestOutcome {
-    pub approval_id: String,
-    pub already_settled: bool,
-    pub execution_spec_digest: String,
 }
 
 #[tauri::command]
@@ -5449,6 +5612,83 @@ fn terminal_resize(
 
 #[tauri::command]
 #[specta::specta]
+async fn terminal_ghostty_mount(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<TerminalManager>>,
+    request: NativeTerminalMountRequest,
+) -> Result<bool, AppError> {
+    #[cfg(target_os = "macos")]
+    {
+        let manager = state.inner().clone();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        window
+            .with_webview(move |platform| {
+                let result = manager.mount_native(
+                    request.terminal_id.as_str(),
+                    platform.inner().cast(),
+                    &request.frame,
+                    &request.font_family,
+                    request.font_size,
+                );
+                let _ = sender.send(result);
+            })
+            .map_err(|error| AppError::untyped(format!("Cannot mount libghostty: {error}")))?;
+        return receiver
+            .await
+            .map_err(|_| AppError::untyped("libghostty mount was cancelled"))?
+            .map_err(AppError::from);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, state, request);
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+fn terminal_ghostty_set_frame(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+    frame: NativeTerminalFrame,
+) -> Result<(), AppError> {
+    state
+        .set_native_frame(&terminal_id, &frame)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn terminal_ghostty_set_visible(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+    visible: bool,
+) -> Result<(), AppError> {
+    state
+        .set_native_visible(&terminal_id, visible)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn terminal_ghostty_focus(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+) -> Result<(), AppError> {
+    state.focus_native(&terminal_id).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn terminal_ghostty_unmount(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+) -> Result<(), AppError> {
+    state.unmount_native(&terminal_id).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 fn terminal_close(
     state: State<'_, Arc<TerminalManager>>,
     terminal_id: String,
@@ -5460,10 +5700,97 @@ pub fn run() {
     if crate::visuals::mermaid::hidden_mode_requested() {
         std::process::exit(crate::visuals::mermaid::run_hidden_mode());
     }
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--workshop-data-root") {
+        let requested = args.get(index + 1).map(std::path::PathBuf::from);
+        let actual = crate::instance::data_root();
+        if !requested.as_ref().and_then(|path| path.canonicalize().ok())
+            .zip(actual.canonicalize().ok()).is_some_and(|(requested, actual)| requested == actual) {
+            eprintln!("Workshop runtime instance identity differs from the requested data root");
+            std::process::exit(crate::instance::EXIT_IDENTITY_REFUSED);
+        }
+    }
     crate::instance::install_boot_identity_and_lock();
+    let mut context = tauri::generate_context!();
+    if std::env::args().any(|arg| arg == "--workshop-runtime") {
+        for window in &mut context.config_mut().app.windows {
+            window.create = false;
+        }
+    }
     let specta = contract::specta::builder();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        fn offer_restart(webview: &tauri::Webview<tauri::Wry>, shown: &AtomicBool) {
+            if shown.swap(true, Ordering::SeqCst) { return; }
+            let app = webview.app_handle().clone();
+            // Attach the prompt to the surviving native window. An unparented
+            // macOS alert can leave the failed main window looking blank.
+            webview.app_handle().dialog()
+                .message("Workshop could not restore this window. Restart Workshop to recover. Restarting interrupts active work; unsaved edits may have been lost.")
+                .parent(&webview.window())
+                .title("Workshop view stopped")
+                .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom("Restart Workshop".into(), "Keep window open".into()))
+                .show(move |restart| { if restart { app.restart(); } });
+        }
+        let crashes = std::sync::Mutex::new(Vec::<std::time::Instant>::new());
+        let offered = Arc::new(AtomicBool::new(false));
+        builder.on_web_content_process_terminate(move |webview| {
+            if webview.label() != "main" { return; }
+            let now = std::time::Instant::now();
+            let attempt = {
+                let mut recent = crashes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                recent.retain(|at| now.duration_since(*at) < std::time::Duration::from_secs(60));
+                let attempt = recent.len();
+                if attempt < 3 { recent.push(now); }
+                attempt
+            };
+            if attempt >= 2 { offer_restart(webview, &offered); return; }
+            let webview = webview.clone();
+            let offered = offered.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let url = if tauri::is_dev() {
+                    webview.app_handle().config().build.dev_url.clone()
+                        .unwrap_or_else(|| "tauri://localhost".parse().expect("valid app URL"))
+                } else { "tauri://localhost".parse().expect("valid app URL") };
+                if webview.navigate(url).is_err() { offer_restart(&webview, &offered); return; }
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let usable = Arc::new(AtomicBool::new(false));
+                let answered = usable.clone();
+                let _ = webview.eval_with_callback("Boolean(document.getElementById('root')?.children.length)", move |value| {
+                    if value == "true" { answered.store(true, Ordering::SeqCst); }
+                });
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if !usable.load(Ordering::SeqCst) {
+                    // A terminated WKWebView can accept navigation while remaining blank.
+                    // Replace only the desktop view; the runtime and its stored work survive.
+                    let app = webview.app_handle().clone();
+                    if let Some(window) = app.get_webview_window("main") {
+                        if window.destroy().is_err() { offer_restart(&webview, &offered); return; }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    if let Err(error) = crate::platform::desktop_runtime::control(&app, "attach").await {
+                        crate::platform::logging::report("lib", "renderer_recovery", error.to_string());
+                        return;
+                    }
+                    if let Some(replacement) = app.get_webview_window("main") {
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        let restored = Arc::new(AtomicBool::new(false));
+                        let answered = restored.clone();
+                        let _ = replacement.eval_with_callback("Boolean(document.getElementById('root')?.children.length)", move |value| {
+                            if value == "true" { answered.store(true, Ordering::SeqCst); }
+                        });
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        if !restored.load(Ordering::SeqCst) { offer_restart(replacement.as_ref(), &offered); }
+                    }
+                }
+            });
+        })
+    };
+    builder
         // This must be the first plugin registered. All app state, IPC, and
         // SQLite ownership belongs to the original process.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -5485,10 +5812,12 @@ pub fn run() {
                     ),
                 }
             }
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::platform::desktop_runtime::control(&handle, "attach").await {
+                    crate::platform::logging::report("lib", "desktop_attach", error.to_string());
+                }
+            });
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -5497,11 +5826,11 @@ pub fn run() {
         // behind through the transparent native titlebar. Wait until CSS and the
         // document have loaded so the custom titlebar is present on first reveal.
         .on_page_load(|webview, payload| {
+            if webview.label() == "main" { crate::platform::desktop_runtime::page_ready(matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)); }
             if webview.label() == "main"
                 && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
             {
                 let window = webview.window();
-                let _ = window.maximize();
                 let _ = window.show();
                 // Diagnostics start here, not in setup: the index is a
                 // background convenience and must never sit in front of the
@@ -5559,11 +5888,9 @@ pub fn run() {
             // those builds left behind in Desktop's own Codex homes.
             match credential_broker::redact_managed_shell_snapshots(&codex::codex_root()) {
                 Ok(0) => {}
-                Ok(count) => crate::platform::logging::report(
-                    "lib",
-                    "eprintln",
-                    format!("redacted provider secrets from {count} Codex shell snapshot(s)"),
-                ),
+                Ok(count) => {
+                    crate::platform::logging::report("lib", "eprintln", format!("redacted provider secrets from {count} Codex shell snapshot(s)"))
+                }
                 Err(error) => {
                     return Err(std::io::Error::other(format!(
                         "could not scrub provider secrets from Codex shell snapshots, so a \
@@ -5584,6 +5911,7 @@ pub fn run() {
             );
             let laguna = Arc::new(LagunaManager::new());
             let optimizer_manager = core.optimizers().manager().clone();
+            let human_annotations = human_annotations::from_core(&core);
             let receipts = Arc::new(credential_broker::ReceiptStore::new());
             let broker = Arc::new(
                 credential_broker::CredentialBroker::start(receipts.clone()).map_err(|error| {
@@ -5591,11 +5919,7 @@ pub fn run() {
                 })?,
             );
             if let Err(error) = core.secrets().start_proxy() {
-                crate::platform::logging::report(
-                    "lib",
-                    "eprintln",
-                    format!("synth-desktop: provider proxy failed to start: {error:#}"),
-                );
+                crate::platform::logging::report("lib", "eprintln", format!("synth-desktop: provider proxy failed to start: {error:#}"));
             }
             crate::secrets::install_live(core.secrets().clone());
             let telemetry = Arc::new(crate::telemetry::ProductTelemetry::new(
@@ -5621,7 +5945,14 @@ pub fn run() {
                 broker.clone(),
                 approvals.clone(),
             ));
+            let acp = Arc::new(session::acp::Manager::new(core.clone(), app.handle().clone(), approvals.clone()));
+            acp.reconcile().map_err(|error| std::io::Error::other(format!("reconcile ACP agents: {error}")))?;
             let supervisor = Arc::new(services::ServiceSupervisor::new());
+            let browser = Arc::new(browser::operations::Manager::default());
+            supervisor.register(browser.clone());
+            app.manage(browser);
+            supervisor.register(acp.clone());
+            app.manage(acp);
             supervisor.register(laguna.clone());
             supervisor.register(optimizer_manager.clone());
             supervisor.register(Arc::new(optimizers::mlx_runtime::MlxRuntimeService::new()));
@@ -5642,6 +5973,7 @@ pub fn run() {
             app.manage(telemetry);
             app.manage(laguna.clone());
             app.manage(optimizer_manager.clone());
+            app.manage(human_annotations);
             app.manage(supervisor);
 
             // All committed CoreRuntime events reach Tauri through this single
@@ -5652,6 +5984,8 @@ pub fn run() {
             // when its window unloads, so they cannot fence a turn whose owner
             // died — this sweep can, with or without a window open.
             core.spawn_lease_watchdog();
+            annotations_ipc::spawn_reconciler(core.clone());
+            optimizers::annotation_stage::install_desktop_paid_approver(app.handle().clone());
 
             let mut status_updates = laguna.subscribe();
             let status_handle = app.handle().clone();
@@ -5678,57 +6012,18 @@ pub fn run() {
             let bootstrap_approvals = approvals.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = bootstrap_core.bootstrap(&bootstrap_handle).await {
-                    crate::platform::logging::report(
-                        "lib",
-                        "eprintln",
-                        format!("CoreRuntime bootstrap failed: {error}"),
-                    );
+                    crate::platform::logging::report("lib", "eprintln", format!("CoreRuntime bootstrap failed: {error}"));
                 }
                 if let Err(error) = bootstrap_approvals.expire_restored(&bootstrap_handle).await {
-                    crate::platform::logging::report(
-                        "lib",
-                        "eprintln",
-                        format!("approval restore failed: {error}"),
-                    );
+                    crate::platform::logging::report("lib", "eprintln", format!("approval restore failed: {error}"));
                 }
                 if let Err(error) = bootstrap_core.resume_intern_providers().await {
-                    crate::platform::logging::report(
-                        "lib",
-                        "eprintln",
-                        format!("Intern restart reconciliation failed: {error}"),
-                    );
+                    crate::platform::logging::report("lib", "eprintln", format!("Intern restart reconciliation failed: {error}"));
                 }
                 // Fallback arm: if the main window never finished loading, the
                 // renderer's own failure still has somewhere to be recorded.
                 bootstrap_core.diagnostics_service().start();
             });
-
-            // The main window normally becomes visible from `on_page_load` so
-            // the transparent macOS titlebar never flashes before the CSS is
-            // ready. A renderer can fail before emitting PageLoadEvent::Finished,
-            // though, which previously left a healthy backend running forever
-            // with no window or Dock-visible UI. Bound that wait and reveal the
-            // native window so the renderer failure is visible and recoverable.
-            let startup_window_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                if let Some(window) = startup_window_handle.get_webview_window("main") {
-                    if !window.is_visible().unwrap_or(false) {
-                        let _ = window.maximize();
-                        let _ = window.show();
-                    }
-                }
-            });
-
-            // User visual templates are ordinary files under the instance
-            // state root, so they change without the app being told: an author
-            // saves `shell.tsx` in their editor, or another tool writes one.
-            // Watching the root is what turns that into a remount — the
-            // renderer answers this event with `refreshRuntimeTemplates()`,
-            // which bumps the registry generation, which re-reads and
-            // recompiles the source. A template that becomes invalid renders
-            // its validator message in the pane rather than blanking it.
-            visuals::spawn_watcher(app.handle().clone());
 
             let ipc_core = core.clone();
             let ipc_app = app.handle().clone();
@@ -5741,11 +6036,7 @@ pub fn run() {
                             connection.url, connection.path
                         ));
                     }
-                    Err(error) => crate::platform::logging::report(
-                        "lib",
-                        "eprintln",
-                        format!("Visuals IPC failed to start: {error}"),
-                    ),
+                    Err(error) => crate::platform::logging::report("lib", "eprintln", format!("Visuals IPC failed to start: {error}")),
                 }
             });
 
@@ -5776,11 +6067,7 @@ pub fn run() {
                                 connection.path
                             ));
                         }
-                        Err(error) => crate::platform::logging::report(
-                            "lib",
-                            "eprintln",
-                            format!("Eval driver failed to start: {error}"),
-                        ),
+                        Err(error) => crate::platform::logging::report("lib", "eprintln", format!("Eval driver failed to start: {error}")),
                     }
                 });
             }
@@ -5788,22 +6075,20 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(specta.invoke_handler())
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Synth Desktop")
         .run(|app, event| {
-            #[cfg(feature = "eval-driver")]
-            if let RunEvent::ExitRequested { api, .. } = &event {
-                // Long-running QA evals own short-lived capability proxies.
-                // When explicitly requested by the launcher, keep the debug
-                // host alive even if macOS closes its last window or emits a
-                // normal application-exit request while a driver is attached.
-                // Release builds do not compile this branch.
-                if std::env::var("SYNTH_DESKTOP_EVAL_DRIVER_KEEPALIVE")
-                    .is_ok_and(|value| value == "1")
-                {
-                    api.prevent_exit();
-                    return;
+            #[cfg(target_os = "macos")]
+            if let RunEvent::Opened { urls } = &event {
+                for url in urls {
+                    desktop_links::open(app, url.as_str());
                 }
+            }
+            // A detached desktop is not a stopped runtime. Explicit exit(0)
+            // (Quit / runtime stop) still drains all managed services below.
+            if let RunEvent::ExitRequested { code: None, api, .. } = &event {
+                api.prevent_exit();
+                return;
             }
             // macOS may advance from Command-Q to the terminal `Exit` event
             // without giving every plugin observer an `ExitRequested` callback.

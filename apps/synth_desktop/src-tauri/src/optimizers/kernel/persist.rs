@@ -68,6 +68,13 @@ pub fn upsert_projection(conn: &Connection, state: &RunKernelState) -> Result<()
     .context("upsert optimizer algorithm projection")?;
     upsert_run_columns(conn, state)?;
     replace_work_items(conn, &state.run_id, state.projection.work_items())?;
+    // The read model is written in this same transaction: a reader that sees
+    // revision N in `optimizer_runs` sees revision N's rows, never a partial
+    // set. Checkpoints ride along so historical reads fold a short suffix.
+    super::read_model::sync_collection_rows(conn, state)
+        .with_context(|| format!("sync collection rows for {}", state.run_id))?;
+    super::read_model::maybe_checkpoint(conn, state, payload.len())
+        .with_context(|| format!("checkpoint projection for {}", state.run_id))?;
     super::outbox::enqueue(conn, &state.run_id, state.projection_revision)?;
     Ok(())
 }
@@ -94,6 +101,42 @@ fn replace_work_items(conn: &Connection, run_id: &str, items: &[WorkItem]) -> Re
         .with_context(|| format!("insert work item {}", item.work_item_id))?;
     }
     Ok(())
+}
+
+/// The cheapest possible freshness check: one indexed primary-key lookup of a
+/// single integer column.
+///
+/// This is what a conditional read and a live-revision probe should cost.
+/// Reaching for `load_state` instead means a four-table join plus a projection
+/// deserialize just to learn that nothing has changed — which is what the
+/// renderer's 750 ms poll was doing, per subscribed run, forever.
+pub fn load_projection_revision(conn: &Connection, run_id: &str) -> Result<Option<u64>> {
+    let revision: Option<Option<i64>> = conn
+        .query_row(
+            "SELECT projection_revision FROM optimizer_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("load optimizer projection revision")?;
+    Ok(revision.flatten().map(|value| value.max(0) as u64))
+}
+
+/// Whether the run has an admitted spec.
+///
+/// A projection cannot be rebuilt without one, and the distinction between
+/// "not yet projected" and "can never be projected" is the difference between
+/// a retryable wait and a permanent, reportable condition.
+pub fn spec_exists(conn: &Connection, run_id: &str) -> Result<bool> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM optimizer_run_specs WHERE optimizer_run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("probe optimizer run spec")?;
+    Ok(found.is_some())
 }
 
 pub fn load_projection_json(conn: &Connection, run_id: &str) -> Result<Option<String>> {
@@ -130,6 +173,7 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
                     r.terminal_failure_id,
                     s.spec_digest,
                     p.algorithm,
+                    p.reducer_version,
                     p.as_of_sequence,
                     p.projection_json
              FROM optimizer_runs r
@@ -158,8 +202,9 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
                     row.get::<_, Option<String>>(12)?,
                     row.get::<_, Option<String>>(13)?,
                     row.get::<_, String>(14)?,
-                    row.get::<_, i64>(15)?,
-                    row.get::<_, String>(16)?,
+                    row.get::<_, String>(15)?,
+                    row.get::<_, i64>(16)?,
+                    row.get::<_, String>(17)?,
                 ))
             },
         )
@@ -181,6 +226,7 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
         failure_ref,
         spec_digest,
         projection_algorithm,
+        projection_reducer_version,
         projection_sequence,
         projection_json,
     )) = row
@@ -251,7 +297,8 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
         u64::try_from(aggregate_sequence).context("optimizer aggregate sequence is negative")?;
     let mut frozen_revision =
         u64::try_from(projection_revision).context("optimizer projection revision is negative")?;
-    let rebuilt_terminal = if lifecycle.is_terminal() {
+    let needs_projection_upgrade = projection_reducer_version != algorithm.reducer_version();
+    let rebuilt_terminal = if lifecycle.is_terminal() && needs_projection_upgrade {
         let terminal_sequence = terminal_sequence.ok_or_else(|| {
             anyhow::anyhow!("optimizer run {run_id} is terminal without a manifest cursor")
         })?;
@@ -272,12 +319,19 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
             );
         }
         reject_active_terminal_work(run_id, rebuilt.projection.work_items())?;
+        // A reducer upgrade is paid once. Persist the upgraded bounded
+        // projection so every later visual open is an indexed row read rather
+        // than another full terminal-journal replay.
+        upsert_projection(conn, &rebuilt)?;
         phase = rebuilt.phase;
         projection = rebuilt.projection;
         frozen_sequence = rebuilt.aggregate_sequence;
         frozen_revision = rebuilt.projection_revision;
         rebuilt.terminal
     } else {
+        if lifecycle.is_terminal() {
+            reject_active_terminal_work(run_id, projection.work_items())?;
+        }
         None
     };
     let sealed_evidence = rebuilt_terminal
@@ -291,24 +345,47 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
                 "optimizer run {run_id} is terminal but status {legacy_status:?} has no terminal outcome"
             )
         })?;
-        let rebuilt = rebuilt_terminal.context("terminal replay lost its sealed outcome")?;
-        if rebuilt.kind != kind {
-            anyhow::bail!(
-                "optimizer run {run_id} stored terminal outcome {} disagrees with replayed {}",
-                kind.as_str(),
-                rebuilt.kind.as_str()
-            );
+        let terminal_sequence = terminal_sequence.ok_or_else(|| {
+            anyhow::anyhow!("optimizer run {run_id} is terminal without a manifest cursor")
+        })?;
+        let terminal_sequence =
+            u64::try_from(terminal_sequence).context("optimizer terminal sequence is negative")?;
+        if let Some(rebuilt) = rebuilt_terminal.as_ref() {
+            if rebuilt.kind != kind {
+                anyhow::bail!(
+                    "optimizer run {run_id} stored terminal outcome {} disagrees with replayed {}",
+                    kind.as_str(),
+                    rebuilt.kind.as_str()
+                );
+            }
         }
-        let reason = rebuilt.reason.or(reason);
+        let reason = rebuilt_terminal
+            .as_ref()
+            .and_then(|rebuilt| rebuilt.reason)
+            .or(reason);
         Some(SealedTerminal {
             kind,
             reason,
-            final_sequence: rebuilt.final_sequence,
+            final_sequence: rebuilt_terminal
+                .as_ref()
+                .map(|rebuilt| rebuilt.final_sequence)
+                .unwrap_or(terminal_sequence),
             evidence: sealed_evidence,
-            failure_ref: failure_ref.clone().or(rebuilt.failure_ref),
+            failure_ref: failure_ref.clone().or_else(|| {
+                rebuilt_terminal
+                    .as_ref()
+                    .and_then(|rebuilt| rebuilt.failure_ref.clone())
+            }),
             sealed_at: terminal_sealed_at
                 .or(finished_at)
-                .unwrap_or(rebuilt.sealed_at),
+                .or_else(|| {
+                    rebuilt_terminal
+                        .as_ref()
+                        .map(|rebuilt| rebuilt.sealed_at.clone())
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("optimizer run {run_id} terminal manifest is missing sealed_at")
+                })?,
         })
     } else {
         None

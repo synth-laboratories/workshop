@@ -5,10 +5,8 @@ import { publicError } from "../runtime/publicError";
 
 type PairState =
 	| { kind: "idle" }
-	| { kind: "pairing"; verificationUri: string; userCode: string | null }
+	| { kind: "pairing"; verificationUri: string; userCode?: string | null }
 	| { kind: "error"; message: string };
-
-const DEFAULT_POLL_INTERVAL_S = 4;
 
 function announceAccountChange(next: SynthBackendSettings) {
 	window.dispatchEvent(new CustomEvent("synth:account-changed", {
@@ -23,17 +21,26 @@ function announceAccountChange(next: SynthBackendSettings) {
  */
 export function AccountSignIn() {
 	const [settings, setSettings] = useState<SynthBackendSettings | null>(null);
+	const settingsGeneration = useRef(0);
 	const [status, setStatus] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
 	const [pair, setPair] = useState<PairState>({ kind: "idle" });
 	const pollTimer = useRef<number | null>(null);
+	const identityGeneration = useRef(0);
 
 	const load = () => {
-		void bridges.config?.get().then(setSettings).catch(() => undefined);
+		const generation = ++settingsGeneration.current;
+		void bridges.config?.get().then((next) => { if (generation === settingsGeneration.current) setSettings(next); }).catch(() => undefined);
 	};
 	useEffect(() => {
 		load();
-		const onChanged = () => load();
+		const onChanged = () => {
+            ++identityGeneration.current;
+            stopPolling();
+            setPair({ kind: "idle" });
+            setStatus(null);
+            load();
+        };
 		window.addEventListener("synth:account-changed", onChanged);
 		return () => window.removeEventListener("synth:account-changed", onChanged);
 	}, []);
@@ -44,51 +51,52 @@ export function AccountSignIn() {
 			pollTimer.current = null;
 		}
 	};
-	useEffect(() => stopPolling, []);
-
-	// The host paces polling: each pending result names the next delay
-	// (RFC 8628 interval / slow_down), so a rate-limited service slows the
-	// loop instead of erroring it.
-	const schedulePoll = (delayS: number) => {
-		stopPolling();
-		pollTimer.current = window.setTimeout(() => {
-			void bridges.account?.pollSignIn().then((result) => {
-				if (result.status === "active") {
-					stopPolling();
-					setPair({ kind: "idle" });
-					setStatus("Signed in · runtime reconnected");
-					void bridges.config?.get().then((next) => {
-						setSettings(next);
-						announceAccountChange(next);
-					});
-				} else if (result.status === "expired") {
-					stopPolling();
-					setPair({ kind: "error", message: result.reason });
-				} else {
-					schedulePoll(result.retryInS ?? DEFAULT_POLL_INTERVAL_S);
-				}
-			}).catch((error) => {
-				stopPolling();
-				setPair({ kind: "error", message: publicError(error) });
-			});
-		}, delayS * 1000);
-	};
+	useEffect(() => () => { ++identityGeneration.current; stopPolling(); }, []);
 
 	const beginSignIn = async () => {
 		if (!bridges.account) return;
+		const generation = ++identityGeneration.current;
+        setStatus(null);
 		try {
 			const begin = await bridges.account.beginSignIn();
-			setPair({
-				kind: "pairing",
-				verificationUri: begin.verificationUri,
-				userCode: begin.userCode ?? null
-			});
-			schedulePoll(begin.intervalS ?? DEFAULT_POLL_INTERVAL_S);
+            if (generation !== identityGeneration.current) return;
+			setPair({ kind: "pairing", verificationUri: begin.verificationUri, userCode: begin.userCode });
+			stopPolling();
+			const schedulePoll = (seconds: number) => {
+				pollTimer.current = window.setTimeout(poll, Math.max(1, Math.min(30, seconds)) * 1000);
+			};
+			const poll = () => {
+				void bridges.account?.pollSignIn().then((result) => {
+                    if (generation !== identityGeneration.current) return;
+					if (result.status === "active") {
+						stopPolling();
+						setPair({ kind: "idle" });
+						void bridges.config?.get().then((next) => {
+                            if (generation !== identityGeneration.current) return;
+							setSettings(next);
+							announceAccountChange(next);
+                            setStatus("Signed in · runtime reconnected");
+						});
+					} else if (result.status === "expired") {
+						stopPolling();
+						setPair({ kind: "error", message: result.reason });
+					} else {
+						schedulePoll(result.retryInS ?? begin.intervalS ?? 4);
+					}
+				}).catch((error) => {
+                    if (generation !== identityGeneration.current) return;
+					stopPolling();
+					setPair({ kind: "error", message: publicError(error) });
+				});
+			};
+			schedulePoll(begin.intervalS ?? 4);
 		} catch (error) {
+            if (generation !== identityGeneration.current) return;
 			setPair({ kind: "error", message: publicError(error) });
 		}
 	};
 	const cancelSignIn = () => {
+        ++identityGeneration.current;
 		stopPolling();
 		setPair({ kind: "idle" });
 		void bridges.account?.cancelSignIn();
@@ -96,8 +104,13 @@ export function AccountSignIn() {
 	const signOut = async () => {
 		if (!bridges.account) return;
 		setSaving(true);
+        const generation = ++identityGeneration.current;
+        stopPolling();
 		try {
+			++settingsGeneration.current;
 			const next = await bridges.account.signOut();
+            if (generation !== identityGeneration.current) return;
+			++settingsGeneration.current;
 			setSettings(next);
 			announceAccountChange(next);
 			setStatus("Signed out · cloud credentials removed");
@@ -114,12 +127,7 @@ export function AccountSignIn() {
 					<span role="status" className="finetune-meta" data-testid="sign-in-status">
 						Finish sign-in in your browser — this page updates automatically.
 					</span>
-					{pair.userCode ? (
-						<span className="finetune-meta backend-signin-code" data-testid="sign-in-user-code">
-							Approve only if the browser shows pairing code{" "}
-							<strong>{pair.userCode}</strong>.
-						</span>
-					) : null}
+					{pair.userCode ? <span data-testid="sign-in-user-code">Confirm this code in your browser: <strong>{pair.userCode}</strong></span> : null}
 					<div className="backend-signin-actions">
 						<button type="button" className="settings-secondary-btn" onClick={() => void beginSignIn()}>Reopen browser</button>
 						<button type="button" className="settings-secondary-btn" data-testid="sign-in-cancel" onClick={cancelSignIn}>Cancel</button>
@@ -161,6 +169,7 @@ export function BackendSettings() {
 		local: "http://127.0.0.1:8000"
 	};
 	const [settings, setSettings] = useState<SynthBackendSettings | null>(null);
+	const settingsGeneration = useRef(0);
 	const [profile, setProfile] = useState("prod");
 	const [backendUrl, setBackendUrl] = useState("");
 	const [envFile, setEnvFile] = useState("");
@@ -188,7 +197,8 @@ export function BackendSettings() {
 	};
 	useEffect(() => {
 		const load = () => {
-			void bridges.config?.get().then(apply).catch((error) => setStatus(publicError(error)));
+			const generation = ++settingsGeneration.current;
+			void bridges.config?.get().then((next) => { if (generation === settingsGeneration.current) apply(next); }).catch((error) => { if (generation === settingsGeneration.current) setStatus(publicError(error)); });
 		};
 		load();
 		// Sign-in and sign-out now happen in Devices & security; this panel must

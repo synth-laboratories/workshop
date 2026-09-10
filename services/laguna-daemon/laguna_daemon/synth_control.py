@@ -33,6 +33,7 @@ from .settings import SETTINGS_SCHEMA_VERSION, SettingsError, SettingsStore
 from .responses_api.backends.mlx import (
     _MIN_SYSTEM_MEMORY_BYTES,
     _available_memory_bytes,
+    _model_weight_bytes,
     _physical_memory_bytes,
     _required_available_memory_bytes,
     _required_system_memory_bytes,
@@ -309,7 +310,6 @@ class SynthControl:
         downloader: Downloader | None = None,
         system_memory_bytes: int | None = None,
         available_memory_bytes: int | None = None,
-        free_disk_bytes: int | None = None,
         settings: SettingsStore | None = None,
     ) -> None:
         self.config = config
@@ -325,9 +325,6 @@ class SynthControl:
             else _physical_memory_bytes()
         )
         self.available_memory_bytes = available_memory_bytes
-        # Injectable for deterministic contract tests. Production keeps using
-        # the filesystem that actually owns the configured model directory.
-        self.free_disk_bytes = free_disk_bytes
         self._state = "starting"
         self._state_since = time.time()
         self._load_lock = asyncio.Lock()
@@ -401,6 +398,35 @@ class SynthControl:
             or available >= _required_available_memory_bytes(path)
         )
         return capacity_ok and available_ok
+
+    def _memory_failure_details(self) -> dict[str, Any]:
+        path = self._model_path()
+        required_system = self._required_bytes()
+        required_available = (
+            _required_available_memory_bytes(path) if path is not None else None
+        )
+        system = self.system_memory_bytes
+        available = self._free_memory_bytes()
+        capacity_blocked = system is not None and system < required_system
+        weight_bytes = _model_weight_bytes(path) if path is not None else None
+        return {
+            "constraint": "system_capacity" if capacity_blocked else "available_memory",
+            "system_bytes": system,
+            "required_bytes": required_system,
+            "model_weight_bytes": weight_bytes,
+            "required_available_bytes": required_available,
+            "available_bytes": available,
+            "load_headroom_bytes": (
+                max(0, required_available - weight_bytes)
+                if required_available is not None and weight_bytes is not None
+                else None
+            ),
+            "shortfall_bytes": max(
+                0,
+                (required_system if capacity_blocked else required_available or 0)
+                - (system if capacity_blocked else available or 0),
+            ),
+        }
 
     # -- canonical state -------------------------------------------------------
 
@@ -631,11 +657,7 @@ class SynthControl:
                 409,
                 details={"model": canonical},
             )
-        free_disk = (
-            self.free_disk_bytes
-            if self.free_disk_bytes is not None
-            else shutil.disk_usage(self.config.models_dir).free
-        )
+        free_disk = shutil.disk_usage(self.config.models_dir).free
         if free_disk < REQUIRED_FREE_DISK_BYTES:
             raise ControlError(
                 "download_failed",
@@ -798,13 +820,7 @@ class SynthControl:
                     "insufficient_memory",
                     "This machine does not have enough unified memory to load the model.",
                     503,
-                    details={
-                        "required_bytes": self._required_bytes(),
-                        "required_available_bytes": _required_available_memory_bytes(
-                            model_path
-                        ),
-                        "available_bytes": self._free_memory_bytes(),
-                    },
+                    details=self._memory_failure_details(),
                 )
             self._set_state("loading", operation_id)
             try:
@@ -816,13 +832,7 @@ class SynthControl:
                         "insufficient_memory",
                         error.message,
                         503,
-                        details={
-                            "required_bytes": self._required_bytes(),
-                            "required_available_bytes": _required_available_memory_bytes(
-                                model_path
-                            ),
-                            "available_bytes": self._free_memory_bytes(),
-                        },
+                        details=self._memory_failure_details(),
                     ) from error
                 self._last_error = {"code": error.code, "message": error.message}
                 self._set_state("error", operation_id)

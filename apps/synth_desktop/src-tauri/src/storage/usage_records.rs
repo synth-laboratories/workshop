@@ -101,13 +101,13 @@ pub struct UsageBreakdown {
     pub requests: i64,
     #[specta(type = specta_typescript::Number)]
     pub input_tokens: i64,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub cached_input_tokens: Option<i64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub non_cached_input_tokens: Option<i64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub cache_write_tokens: Option<i64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub reasoning_tokens: Option<i64>,
     #[specta(type = specta_typescript::Number)]
     pub output_tokens: i64,

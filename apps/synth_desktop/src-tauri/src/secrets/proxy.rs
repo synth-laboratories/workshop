@@ -3,18 +3,14 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
-use futures_util::Stream;
-use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
-use hyper::body::{Frame, Incoming};
+use http_body_util::{combinators::BoxBody, BodyExt, Full};
+use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use serde_json::Value;
 use std::convert::Infallible;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
 /// Syntactic stand-in for SDKs that require `OPENAI_API_KEY`. Not a credential.
@@ -23,7 +19,9 @@ pub const API_KEY_SENTINEL: &str = "workshop-proxy";
 use super::audit::{self, SecretAuditEvent};
 use super::backend::SecretBackend;
 use super::capability::{self, CapabilityStore, MeasuredUsage};
-use super::providers::{self, inject_auth, parse_usage, request_effort, request_model, route_for};
+use super::providers::{
+    self, inject_auth, parse_sse_usage, parse_usage, request_effort, request_model, route_for,
+};
 use super::vault;
 use crate::ipc::constant_time_eq;
 use crate::storage::Database;
@@ -329,129 +327,6 @@ fn classify_transport_error(error: &reqwest::Error) -> (StatusCode, &'static str
     }
 }
 
-fn retry_after_hint_at(value: &str, now: DateTime<Utc>) -> Option<std::time::Duration> {
-    let value = value.trim();
-    if let Ok(seconds) = value.parse::<u64>() {
-        return Some(std::time::Duration::from_secs(seconds));
-    }
-    DateTime::parse_from_rfc2822(value)
-        .ok()
-        .and_then(|date| (date.with_timezone(&Utc) - now).to_std().ok())
-}
-
-/// The provider's own statement of when this route opens again.
-///
-/// OpenRouter answers a 429 with `X-RateLimit-Reset` — epoch milliseconds, or
-/// seconds on some routes — and standard `Retry-After` elsewhere. Reading the
-/// reset is what lets a capability pace itself to the route instead of to a
-/// constant guessed from one transcript. Header *values* only; nothing here
-/// carries a key, a prompt, or a response.
-fn provider_reset_hint_at(
-    headers: &reqwest::header::HeaderMap,
-    now: DateTime<Utc>,
-) -> Option<std::time::Duration> {
-    if let Some(hint) = headers
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| retry_after_hint_at(value, now))
-    {
-        return Some(hint);
-    }
-    for name in ["x-ratelimit-reset", "x-ratelimit-reset-requests"] {
-        let Some(raw) = headers
-            .get(name)
-            .and_then(|value| value.to_str().ok())
-            .map(str::trim)
-        else {
-            continue;
-        };
-        let Ok(number) = raw.parse::<i64>() else {
-            continue;
-        };
-        // A stamp large enough to be epoch time is a deadline; anything else
-        // is a duration the route is asking us to wait.
-        let millis = if number > 1_000_000_000_000 {
-            number - now.timestamp_millis()
-        } else if number > 1_000_000_000 {
-            number * 1_000 - now.timestamp_millis()
-        } else {
-            number.saturating_mul(1_000)
-        };
-        if millis > 0 {
-            return Some(std::time::Duration::from_millis(millis as u64));
-        }
-    }
-    None
-}
-
-fn rate_limit_retry_delay(
-    headers: &reqwest::header::HeaderMap,
-    retry_number: u32,
-) -> std::time::Duration {
-    let mut backoff = crate::limits::CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF;
-    for _ in 0..retry_number {
-        backoff = backoff.saturating_add(backoff);
-    }
-    provider_reset_hint_at(headers, Utc::now()).map_or(backoff, |hint| hint.max(backoff))
-}
-
-enum UpstreamSendError {
-    Request(reqwest::Error),
-    RequestNotReusable,
-    CapabilityUnavailable,
-}
-
-fn capability_is_available(capabilities: &capability::CapabilityStore, handle: &str) -> bool {
-    capabilities.lookup(handle).is_some_and(|live| {
-        live.status != "revoked" && Utc::now().timestamp_millis() < live.expires_at_ms
-    })
-}
-
-/// Retry only provider rate-limit responses. The caller paces and reserves the
-/// first attempt; later attempts are paced here but remain part of that same
-/// logical capability call. Re-checking the live capability before every
-/// attempt prevents a delayed retry from crossing revocation/expiry.
-async fn send_with_rate_limit_retry(
-    state: &ProxyState,
-    handle: &str,
-    outbound: &reqwest::RequestBuilder,
-) -> std::result::Result<reqwest::Response, UpstreamSendError> {
-    for retry_number in 0..=crate::limits::CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES {
-        if !capability_is_available(&state.capabilities, handle) {
-            return Err(UpstreamSendError::CapabilityUnavailable);
-        }
-        if retry_number > 0 {
-            state.capabilities.pace_request_start(handle).await;
-        }
-        if !capability_is_available(&state.capabilities, handle) {
-            return Err(UpstreamSendError::CapabilityUnavailable);
-        }
-        let request = outbound
-            .try_clone()
-            .ok_or(UpstreamSendError::RequestNotReusable)?;
-        let response = request.send().await.map_err(UpstreamSendError::Request)?;
-        if response.status() != StatusCode::TOO_MANY_REQUESTS {
-            // An admitted request is the only evidence that the pressure this
-            // capability was paced for has actually eased.
-            state.capabilities.observe_admitted(handle);
-            return Ok(response);
-        }
-        // Teach the pacer what the route just said, whether or not another
-        // attempt remains: the next logical call is paced by this too.
-        state.capabilities.observe_rate_limit(
-            handle,
-            provider_reset_hint_at(response.headers(), Utc::now()),
-        );
-        if retry_number == crate::limits::CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES {
-            return Ok(response);
-        }
-        let delay = rate_limit_retry_delay(response.headers(), retry_number);
-        drop(response);
-        tokio::time::sleep(delay).await;
-    }
-    unreachable!("rate-limit retry loop always returns")
-}
-
 /// Record a provider call that never produced billable usage. Without this the
 /// audit ledger holds a `capability.issue` row and nothing else, so a failed
 /// run is indistinguishable from a run that was never attempted. Carries the
@@ -518,171 +393,11 @@ fn sanitize_upstream_body(status: reqwest::StatusCode, bytes: Bytes) -> Bytes {
     )))
 }
 
-/// A Responses stream may split both lines and events across arbitrary HTTP
-/// chunks. Keep only the small SSE framing state needed to find the terminal
-/// usage object; response bytes themselves are never buffered or rewritten.
-#[derive(Default)]
-struct SseUsageScanner {
-    partial_line: Vec<u8>,
-    event_data: Vec<u8>,
-    last: Option<MeasuredUsage>,
-}
-
-impl SseUsageScanner {
-    fn observe(&mut self, chunk: &[u8]) {
-        for byte in chunk {
-            if *byte == b'\n' {
-                let line = std::mem::take(&mut self.partial_line);
-                self.take_line(&line);
-            } else {
-                self.partial_line.push(*byte);
-            }
-        }
+fn decode_json_response(content_type: &str, bytes: &[u8]) -> Option<Value> {
+    if content_type.contains("text/event-stream") {
+        return None;
     }
-
-    fn take_line(&mut self, line: &[u8]) {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if line.is_empty() {
-            self.complete_event();
-            return;
-        }
-        if let Some(data) = line.strip_prefix(b"data:") {
-            let data = data.strip_prefix(b" ").unwrap_or(data);
-            if !self.event_data.is_empty() {
-                self.event_data.push(b'\n');
-            }
-            self.event_data.extend_from_slice(data);
-        }
-    }
-
-    fn complete_event(&mut self) {
-        let data = std::mem::take(&mut self.event_data);
-        if data.is_empty() || data.as_slice() == b"[DONE]" {
-            return;
-        }
-        let Ok(value) = serde_json::from_slice::<Value>(&data) else {
-            return;
-        };
-        let payload = value
-            .get("usage")
-            .filter(|usage| usage.is_object())
-            .map(|_| &value)
-            .or_else(|| {
-                value
-                    .get("response")
-                    .filter(|response| response.get("usage").is_some_and(Value::is_object))
-            });
-        if let Some(payload) = payload {
-            self.last = Some(parse_usage(payload));
-        }
-    }
-
-    fn finish(mut self) -> Option<MeasuredUsage> {
-        let line = std::mem::take(&mut self.partial_line);
-        if !line.is_empty() {
-            self.take_line(&line);
-        }
-        self.complete_event();
-        self.last
-    }
-}
-
-type UpstreamBytes = Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send + Sync>>;
-
-/// Pass successful SSE bytes straight through while accounting for the
-/// terminal provider usage event. A transport error is surfaced as a generic
-/// body error and never exposes the upstream URL, capability, or credential.
-struct StreamingRelay {
-    inner: UpstreamBytes,
-    scanner: SseUsageScanner,
-    state: Arc<ProxyState>,
-    handle: String,
-    reserved: capability::LiveCapability,
-    operation: &'static str,
-    model: Option<String>,
-    upstream_status: u16,
-    settled: bool,
-}
-
-impl StreamingRelay {
-    fn settle(&mut self) {
-        if self.settled {
-            return;
-        }
-        self.settled = true;
-        let usage = std::mem::take(&mut self.scanner)
-            .finish()
-            .unwrap_or(MeasuredUsage {
-                calls: 1,
-                input_tokens: 0,
-                output_tokens: 0,
-                cost_usd: None,
-            });
-        if let Ok(live) = self.state.capabilities.debit_usage(&self.handle, &usage) {
-            let _ = self.state.db.with_conn(|conn| {
-                capability::persist_usage(conn, &live)?;
-                let mut event =
-                    SecretAuditEvent::new("run", &live.run_id, "provider.use", "allowed");
-                event.secret_id = Some(live.secret_id.clone());
-                event.provider = Some(live.provider.clone());
-                event.operation = Some(self.operation.into());
-                event.model = self.model.clone();
-                event.capability_id = Some(live.id.clone());
-                event.usage = Some(serde_json::json!({
-                    "calls": usage.calls,
-                    "input_tokens": usage.input_tokens,
-                    "output_tokens": usage.output_tokens,
-                    "cost_usd": usage.cost_usd,
-                }));
-                audit::append(conn, &event)
-            });
-        }
-    }
-}
-
-impl Stream for StreamingRelay {
-    type Item = std::result::Result<Frame<Bytes>, std::io::Error>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        match this.inner.as_mut().poll_next(cx) {
-            Poll::Ready(Some(Ok(bytes))) => {
-                this.scanner.observe(&bytes);
-                Poll::Ready(Some(Ok(Frame::data(bytes))))
-            }
-            Poll::Ready(Some(Err(error))) => {
-                let (_, code, _) = classify_transport_error(&error);
-                audit_provider_failure(
-                    &this.state,
-                    &this.reserved,
-                    this.operation,
-                    this.model.as_deref(),
-                    code,
-                    Some(this.upstream_status),
-                );
-                this.settled = true;
-                Poll::Ready(Some(Err(std::io::Error::other(
-                    "provider response stream ended early",
-                ))))
-            }
-            Poll::Ready(None) => {
-                this.settle();
-                Poll::Ready(None)
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl Drop for StreamingRelay {
-    fn drop(&mut self) {
-        // An abandoned or interrupted stream has not proved completion. The
-        // reserved call remains visible in the capability ledger, but token
-        // and cost usage are never invented from a partial response.
-        if !self.settled {
-            self.settled = true;
-        }
-    }
+    serde_json::from_slice(bytes).ok()
 }
 
 fn bearer(request: &Request<Incoming>) -> Option<String> {
@@ -774,6 +489,7 @@ fn is_forbidden_header(name: &str) -> bool {
             | "trailer"
             | "transfer-encoding"
             | "upgrade"
+            | "accept-encoding"
             | "content-length"
     ) || name.eq_ignore_ascii_case(RELAY_ORIGIN_HEADER)
 }
@@ -849,6 +565,23 @@ async fn handle(
             &error.to_string(),
         ));
     }
+    let reserved = match state.capabilities.reserve_call(&handle) {
+        Ok(live) => live,
+        Err(error) => {
+            let text = error.to_string();
+            let (status, code) = if text.contains("expired") {
+                (StatusCode::UNAUTHORIZED, "capability_expired")
+            } else if text.contains("revoked") {
+                (StatusCode::UNAUTHORIZED, "unauthorized")
+            } else if text.contains("exhausted") || text.contains("ceiling") {
+                (StatusCode::TOO_MANY_REQUESTS, "budget_exhausted")
+            } else {
+                (StatusCode::UNAUTHORIZED, "unauthorized")
+            };
+            return Ok(json_error(status, code, &text));
+        }
+    };
+
     let (parts, body) = request.into_parts();
     let collected = match body.collect().await {
         Ok(collected) => collected.to_bytes(),
@@ -870,9 +603,12 @@ async fn handle(
     let parsed: Value = serde_json::from_slice(&collected).unwrap_or(Value::Null);
     let model = request_model(&parsed).map(str::to_owned);
     let effort = request_effort(&parsed).map(str::to_owned);
-    if let Err(error) =
-        capability::authorize_request(&live, route.operation, model.as_deref(), effort.as_deref())
-    {
+    if let Err(error) = capability::authorize_request(
+        &reserved,
+        route.operation,
+        model.as_deref(),
+        effort.as_deref(),
+    ) {
         return Ok(json_error(
             StatusCode::FORBIDDEN,
             "policy_denied",
@@ -885,7 +621,7 @@ async fn handle(
             conn,
             state.backend.as_ref(),
             Some(state.env_sources.as_ref()),
-            &live.secret_id,
+            &reserved.secret_id,
         )
     }) {
         Ok(secret) => secret,
@@ -910,6 +646,9 @@ async fn handle(
         }
         outbound = outbound.header(name.as_str(), value.as_bytes());
     }
+    // Keep the exact response bytes inspectable for usage accounting. The
+    // downstream SDK must not be the only process that can decompress them.
+    outbound = outbound.header(reqwest::header::ACCEPT_ENCODING, "identity");
     outbound = match inject_auth(outbound, route, &secret) {
         Ok(builder) => builder,
         Err(error) => {
@@ -920,31 +659,9 @@ async fn handle(
             ))
         }
     };
-    // Do not charge a capability call while this request is merely queued
-    // behind the provider admission window. Codex may enqueue SDK retries
-    // immediately after a rate-limit event; pacing before reservation makes
-    // only the request that is actually ready to send consume the call cap.
-    state.capabilities.pace_request_start(&handle).await;
-    let reserved = match state.capabilities.reserve_call(&handle) {
-        Ok(live) => live,
-        Err(error) => {
-            let text = error.to_string();
-            let (status, code) = if text.contains("expired") {
-                (StatusCode::UNAUTHORIZED, "capability_expired")
-            } else if text.contains("revoked") {
-                (StatusCode::UNAUTHORIZED, "unauthorized")
-            } else if text.contains("exhausted") || text.contains("ceiling") {
-                (StatusCode::TOO_MANY_REQUESTS, "budget_exhausted")
-            } else {
-                (StatusCode::UNAUTHORIZED, "unauthorized")
-            };
-            return Ok(json_error(status, code, &text));
-        }
-    };
-
-    let upstream = match send_with_rate_limit_retry(&state, &handle, &outbound).await {
+    let upstream = match outbound.send().await {
         Ok(response) => response,
-        Err(UpstreamSendError::Request(error)) => {
+        Err(error) => {
             let (status, code, message) = classify_transport_error(&error);
             audit_provider_failure(
                 &state,
@@ -955,36 +672,6 @@ async fn handle(
                 None,
             );
             return Ok(json_error(status, code, message));
-        }
-        Err(UpstreamSendError::CapabilityUnavailable) => {
-            audit_provider_failure(
-                &state,
-                &reserved,
-                route.operation,
-                model.as_deref(),
-                "capability_unavailable",
-                None,
-            );
-            return Ok(json_error(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "capability is no longer valid",
-            ));
-        }
-        Err(UpstreamSendError::RequestNotReusable) => {
-            audit_provider_failure(
-                &state,
-                &reserved,
-                route.operation,
-                model.as_deref(),
-                "upstream_request_rejected",
-                None,
-            );
-            return Ok(json_error(
-                StatusCode::BAD_GATEWAY,
-                "upstream_request_rejected",
-                "the provider request could not be issued",
-            ));
         }
     };
     let status = upstream.status();
@@ -1000,33 +687,6 @@ async fn handle(
             continue;
         }
         builder = builder.header(name.as_str(), value.as_bytes());
-    }
-
-    if status.is_success()
-        && content_type
-            .to_ascii_lowercase()
-            .starts_with("text/event-stream")
-    {
-        let relay = StreamingRelay {
-            inner: Box::pin(upstream.bytes_stream()),
-            scanner: SseUsageScanner::default(),
-            state,
-            handle,
-            reserved,
-            operation: route.operation,
-            model,
-            upstream_status: status.as_u16(),
-            settled: false,
-        };
-        return Ok(builder
-            .body(StreamBody::new(relay).boxed())
-            .unwrap_or_else(|_| {
-                json_error(
-                    StatusCode::BAD_GATEWAY,
-                    "relay_failed",
-                    "could not relay the provider response",
-                )
-            }));
     }
 
     let bytes = match upstream.bytes().await {
@@ -1045,16 +705,26 @@ async fn handle(
         }
     };
     let bytes = sanitize_upstream_body(status, bytes);
-    let response_body = content_type
-        .contains("json")
-        .then(|| serde_json::from_slice::<Value>(&bytes).ok())
-        .flatten();
+    // OpenRouter's OpenAI-compatible endpoint can return a valid JSON body
+    // with a non-JSON content type. The workload can still decode that body,
+    // so accounting must inspect the bytes too or Workshop records the call
+    // while silently losing its tokens and generation id.
+    let response_body = decode_json_response(&content_type, &bytes);
+    let (sse_response_id, sse_usage) = if content_type.contains("text/event-stream") {
+        let (id, usage) = parse_sse_usage(&bytes);
+        (id, Some(usage))
+    } else {
+        (None, None)
+    };
     let provider_response_id = response_body
         .as_ref()
         .and_then(providers::response_id)
-        .map(str::to_owned);
+        .map(str::to_owned)
+        .or(sse_response_id);
     let mut usage = if let Some(body) = response_body.as_ref() {
         parse_usage(body)
+    } else if let Some(usage) = sse_usage {
+        usage
     } else {
         MeasuredUsage {
             calls: 1,
@@ -1096,6 +766,12 @@ async fn handle(
                     "calls": usage.calls,
                     "input_tokens": usage.input_tokens,
                     "output_tokens": usage.output_tokens,
+                    // A successful provider call always consumes input
+                    // tokens. Zero therefore means "the response carried no
+                    // usage object we could read", which is unknown, not
+                    // free. Say which one it is instead of letting a later
+                    // ledger present the gap as a measured zero.
+                    "tokens_complete": usage.input_tokens > 0 || usage.output_tokens > 0,
                     "cost_usd": usage.cost_usd,
                     "cost_complete": usage.cost_usd.is_some(),
                     "cost_reconciled": cost_reconciled,

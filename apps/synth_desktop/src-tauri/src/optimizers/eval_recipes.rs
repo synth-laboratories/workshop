@@ -42,7 +42,6 @@ use tokio::{
     time::sleep,
 };
 
-use super::eval_runtime::{fault as eval_fault, EvalRuntimeFault};
 use super::events::OptimizerEventDraft;
 use super::{
     models::{
@@ -62,13 +61,12 @@ pub const EVAL_GAMEBENCH_LLM_RECIPE: &str = "eval.gamebench.llm-policy.confirm.v
 pub const EVAL_MLX_LOCAL_RECIPE: &str = "eval.mlx.local-policy.smoke.v1";
 
 
-/// The product contract for the report-only Craftax smoke recipes is fixed per
+/// The product contract for the report-only Craftax smoke is two seeds per
 /// staged candidate. Older local runtime catalogs omitted `limits.trials`,
-/// even though the worker recipes themselves were fixed-cardinality. Keep the
+/// even though the worker recipe itself was fixed-cardinality. Keep the
 /// authority here until every supported runtime publishes the field itself;
 /// this is a compatibility projection, not an agent-selected limit.
 const CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE: u64 = 10;
-const CRAFTAX_LLM_SMOKE_TRIALS_PER_CANDIDATE: u64 = 2;
 
 /// The allowlist the MCP schema publishes. A recipe id outside it never
 /// reaches the worker.
@@ -129,43 +127,18 @@ fn selected_runtime_python() -> Option<PathBuf> {
 /// `SYNTH_PYTHON` fallback: an interpreter that happens to be on the operator's
 /// PATH is not the one this feature was packaged against.
 fn resolve_python() -> Result<PathBuf> {
-    resolve_python_checked().map_err(anyhow::Error::from)
-}
-
-/// The Eval interpreter, or a structured reason there is none.
-///
-/// Every branch that used to swallow its error now names it. The lazy
-/// provisioning attempt in particular was `let _ = provision_from_disk();`,
-/// which meant a runtime that was installed but had a broken import, a stale
-/// digest, or a half-extracted interpreter all arrived at the same closing
-/// `bail!` -- "the local Optimizers runtime is not installed" -- and sent the
-/// operator to reinstall something that was already there.
-fn resolve_python_checked() -> std::result::Result<PathBuf, EvalRuntimeFault> {
     // Developer/QA builds stage one reviewed Optimizers checkout. Eval and
-    // GEPA must execute that same runtime authority; falling through to the
-    // previously selected installed version makes the catalog and worker
-    // silently disagree (for example, 2 stale Craftax trials instead of the
-    // staged digest-pinned 10-trial contract).
-    match super::manager::optimizer_project_root() {
-        Ok(Some(project)) => {
-            return resolve_developer_python(&project).map_err(|error| {
-                EvalRuntimeFault::new(eval_fault::INTERPRETER_MISSING, error.to_string())
-            })
-        }
-        Ok(None) => {}
-        Err(error) => {
-            return Err(EvalRuntimeFault::new(
-                eval_fault::PLUGIN_NOT_INSTALLED,
-                error.to_string(),
-            ))
-        }
+    // GEPA must execute that same source authority. A packaged CUA snapshot
+    // intentionally excludes `.venv`, so resolve_developer_python may reuse
+    // the immutable selected interpreter; run_cli overlays the staged source
+    // on that interpreter to keep the catalog and worker in agreement.
+    if let Some(project) = super::manager::optimizer_project_root()? {
+        return resolve_developer_python(&project);
     }
-    // Keep the desktop-owned pin's reason. The layouts below are compatibility
-    // fallbacks; if none of them resolves, this is the honest answer.
-    let pinned = match super::eval_runtime::ready_python() {
-        Ok(python) => return Ok(python),
-        Err(fault) => fault,
-    };
+    let _ = super::eval_runtime::provision_from_disk();
+    if let Some(python) = super::eval_runtime::provisioned_python() {
+        return Ok(python);
+    }
     if let Ok(text) = fs::read_to_string(config_path()) {
         if let Some(configured) = text
             .lines()
@@ -177,14 +150,11 @@ fn resolve_python_checked() -> std::result::Result<PathBuf, EvalRuntimeFault> {
             if path.is_file() {
                 return Ok(path);
             }
-            return Err(EvalRuntimeFault::new(
-                eval_fault::INTERPRETER_MISSING,
-                format!(
-                    "{} sets python = {} but that interpreter does not exist",
-                    config_path().display(),
-                    path.display()
-                ),
-            ));
+            bail!(
+                "{} sets python = {} but that interpreter does not exist",
+                config_path().display(),
+                path.display()
+            );
         }
     }
     // The plugin installer stores immutable versioned runtimes and records
@@ -201,20 +171,12 @@ fn resolve_python_checked() -> std::result::Result<PathBuf, EvalRuntimeFault> {
     if owned.is_file() {
         return Ok(owned);
     }
-    // Only now is "not installed" the right thing to say, and only when that
-    // is what the pin actually reported.
-    if pinned.code == eval_fault::PLUGIN_NOT_INSTALLED {
-        return Err(EvalRuntimeFault::new(
-            eval_fault::PLUGIN_NOT_INSTALLED,
-            format!(
-                "the local Optimizers runtime is not installed; install it under {} \
-                 or set python = \"…\" in {}",
-                owned.display(),
-                config_path().display()
-            ),
-        ));
-    }
-    Err(pinned)
+    bail!(
+        "the local Optimizers runtime is not installed; install it under {} \
+         or set python = \"…\" in {}",
+        owned.display(),
+        config_path().display()
+    )
 }
 
 fn resolve_developer_python(project: &Path) -> Result<PathBuf> {
@@ -388,10 +350,19 @@ pub(crate) fn execution_capability_projection() -> Value {
     })
 }
 
+pub(super) fn checkpoint_evaluators() -> Vec<Value> {
+    let Ok(python) = resolve_python() else { return Vec::new(); };
+    let home = eval_home().to_string_lossy().into_owned();
+    run_cli(&python, &["recipes", "--home", &home, "--json"]).ok()
+        .and_then(|payload| payload.get("recipes").and_then(Value::as_array).cloned())
+        .unwrap_or_default().into_iter()
+        .filter(|recipe| recipe.get("policyKind").and_then(Value::as_str) == Some("tinker-sampler.v1"))
+        .collect()
+}
+
 pub fn recipe_catalog() -> Vec<Value> {
-    let python = match resolve_python_checked() {
-        Ok(python) => python,
-        Err(fault) => return offline_catalog(fault.code, &fault.message),
+    let Ok(python) = resolve_python() else {
+        return offline_catalog("the local Optimizers runtime is not installed");
     };
     let home = eval_home().to_string_lossy().into_owned();
     match run_cli(&python, &["recipes", "--home", &home, "--json"]) {
@@ -409,9 +380,7 @@ pub fn recipe_catalog() -> Vec<Value> {
             })
             .map(normalize_builtin_recipe_contract)
             .collect(),
-        // The runtime resolved and ran; a failure here is the CLI's, not a
-        // missing install, and must not be reported as one.
-        Err(error) => offline_catalog("eval_cli_failed", &error.to_string()),
+        Err(error) => offline_catalog(&error.to_string()),
     }
 }
 
@@ -419,20 +388,9 @@ fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
     let producer_ready = recipe.get("availability").and_then(Value::as_str) == Some("available");
     mark_unreproducible_target_unavailable(&mut recipe);
     project_eval_recipe_state(&mut recipe, producer_ready);
-    let Some((trials, authority)) = (match recipe.get("id").and_then(Value::as_str) {
-        Some(EVAL_CRAFTAX_SMOKE_RECIPE) => Some((
-            CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE,
-            "workshop.builtin.eval.craftax.code-policy.smoke.v1",
-        )),
-        Some(EVAL_CRAFTAX_LLM_RECIPE) => Some((
-            CRAFTAX_LLM_SMOKE_TRIALS_PER_CANDIDATE,
-            "workshop.builtin.eval.craftax.llm-policy.smoke.v1",
-        )),
-        _ => None,
-    }) else {
-        return recipe;
-    };
-    if recipe.pointer("/limits/trials").is_some() {
+    if recipe.get("id").and_then(Value::as_str) != Some(EVAL_CRAFTAX_SMOKE_RECIPE)
+        || recipe.pointer("/limits/trials").is_some()
+    {
         return recipe;
     }
     let Some(object) = recipe.as_object_mut() else {
@@ -442,8 +400,14 @@ fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
         .entry("limits")
         .or_insert_with(|| Value::Object(Map::new()));
     if let Some(limits) = limits.as_object_mut() {
-        limits.insert("trials".into(), json!(trials));
-        limits.insert("trialAuthority".into(), json!(authority));
+        limits.insert(
+            "trials".into(),
+            json!(CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE),
+        );
+        limits.insert(
+            "trialAuthority".into(),
+            json!("workshop.builtin.eval.craftax.code-policy.smoke.v1"),
+        );
     }
     recipe
 }
@@ -596,7 +560,7 @@ fn policy_from_eval_recipe(
     recipe: &Value,
     candidate_count: u64,
 ) -> Result<crate::secrets::SecretsUsePolicy> {
-    let mut models = recipe
+    let models = recipe
         .get("models")
         .and_then(Value::as_array)
         .map(|models| {
@@ -618,29 +582,14 @@ fn policy_from_eval_recipe(
             "paid eval recipe is missing a model allowlist",
         ));
     }
-    for model in models.clone() {
-        if let Some(unqualified) = model.strip_prefix("openai/") {
-            if !models.iter().any(|candidate| candidate == unqualified) {
-                models.push(unqualified.to_string());
-            }
-        }
-    }
     let (max_usd, max_trials) =
         paid_compute_bounds_for_candidate_count(recipe, candidate_count.max(1))?;
-    let mut reasoning_efforts = Vec::new();
-    if let Some(effort) = recipe
-        .pointer("/policy/reasoning_effort")
-        .or_else(|| recipe.pointer("/policy/effort"))
-        .and_then(Value::as_str)
-    {
-        reasoning_efforts.push(effort.to_string());
-    }
     Ok(super::admission::provider_use_policy_from_bounds(
-        vec!["chat.completions.create".into(), "responses.create".into()],
+        vec!["chat.completions.create".into()],
         models,
-        reasoning_efforts,
-        max_trials.saturating_mul(16).clamp(40, u32::MAX as u64) as u32,
-        (max_usd.max(0.01) * 1_000_000.0).round().max(0.0) as u64,
+        Vec::new(),
+        max_trials.saturating_mul(16).min(u32::MAX as u64) as u32,
+        (max_usd * 1_000_000.0).round().max(0.0) as u64,
         crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
         None,
         None,
@@ -796,15 +745,7 @@ fn require_digest_pinned_target_with_policy(
     Ok(())
 }
 
-/// The catalog when Eval cannot run, carrying *why*.
-///
-/// `availabilityCode` is the machine-readable half: `plugin_not_installed`,
-/// `eval_runtime_not_provisioned`, `eval_runtime_interpreter_missing`,
-/// `eval_runtime_import_failed`, `eval_runtime_digest_mismatch`, or
-/// `eval_cli_failed`. A recipe that is merely unpinned is marked unavailable
-/// by `mark_unreproducible_target_unavailable` with `target_not_digest_pinned`
-/// and never reaches this function -- that distinction is the point.
-fn offline_catalog(code: &str, reason: &str) -> Vec<Value> {
+fn offline_catalog(reason: &str) -> Vec<Value> {
     EVAL_RECIPE_IDS
         .iter()
         .map(|id| {
@@ -812,7 +753,6 @@ fn offline_catalog(code: &str, reason: &str) -> Vec<Value> {
                 "id": id,
                 "algorithmId": EVAL_ALGORITHM_ID,
                 "availability": "unavailable",
-                "availabilityCode": code,
                 "availabilityReason": reason,
                 "title": id,
                 "executionKind": "evaluation",
@@ -1106,6 +1046,7 @@ async fn run_worker(
     local_mlx_token: Option<String>,
     mut cancel: super::CancelObserver,
 ) -> Result<()> {
+    let _revoke_capabilities = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
     append_status(&service, &run_id, "optimizer.run.started", "running").await?;
     fs::create_dir_all(&run_dir).context("create eval run directory")?;

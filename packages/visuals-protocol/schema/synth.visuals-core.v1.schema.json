@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://usesynth.ai/schemas/synth.visuals-core.v1.schema.json",
+  "title": "Synth Visuals Core v1",
+  "description": "Portable contracts for evidence-backed, multiscale, human/agent-operable visual sessions.",
+  "$defs": {
+    "corpusRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "revision", "schema", "count"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 },
+        "schema": { "type": "string", "minLength": 1 },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "queryExpression": {
+      "oneOf": [
+        {"type":"object","additionalProperties":false,"required":["op","field","where"],"properties":{"op":{"const":"any"},"field":{"type":"string","minLength":1},"where":{"$ref":"#/$defs/queryExpression"}}},
+        {"type":"object","additionalProperties":false,"required":["op","field","sequenceField","before","after"],"properties":{"op":{"const":"sequence"},"field":{"type":"string","minLength":1},"sequenceField":{"type":"string","minLength":1},"before":{"$ref":"#/$defs/queryExpression"},"after":{"$ref":"#/$defs/queryExpression"},"maxGap":{"type":"number","minimum":0}}},
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "all" } } },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "expressions"],
+          "properties": {
+            "op": { "enum": ["and", "or"] },
+            "expressions": { "type": "array", "items": { "$ref": "#/$defs/queryExpression" } }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "expression"],
+          "properties": { "op": { "const": "not" }, "expression": { "$ref": "#/$defs/queryExpression" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "field"],
+          "properties": { "op": { "const": "exists" }, "field": { "type": "string", "minLength": 1 }, "exists": { "type": "boolean" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "field", "value"],
+          "properties": {
+            "op": { "enum": ["eq", "neq", "gt", "gte", "lt", "lte", "contains", "in"] },
+            "field": { "type": "string", "minLength": 1 },
+            "value": {
+              "oneOf": [
+                { "type": ["null", "boolean", "number", "string"] },
+                { "type": "array", "items": { "type": ["null", "boolean", "number", "string"] } }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "querySpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "where"],
+      "properties": {
+        "schemaVersion": { "const": "synth.visuals-core.v1" },
+        "where": { "$ref": "#/$defs/queryExpression" },
+        "orderBy": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "direction"],
+            "properties": { "field": { "type": "string" }, "direction": { "enum": ["asc", "desc"] } }
+          }
+        }
+      }
+    },
+    "semanticRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "id": { "type": "string", "minLength": 1 },
+        "parent": { "$ref": "#/$defs/semanticRef" }
+      }
+    },
+    "visualAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["query", "select", "drill_down", "back", "seek", "pan", "zoom", "snapshot", "annotate"] },
+        "target": { "$ref": "#/$defs/semanticRef" },
+        "payload": { "type": "object" },
+        "expectedStateVersion": { "type": "integer", "minimum": 0 },
+        "idempotencyKey": { "type": "string", "minLength": 1 }
+      }
+    },
+    "cohortRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "corpus", "query", "count", "denominator", "completeness", "exactness", "excluded"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "corpus": { "$ref": "#/$defs/corpusRef" },
+        "query": { "$ref": "#/$defs/querySpec" },
+        "count": { "type": "integer", "minimum": 0 },
+        "denominator": { "type": "integer", "minimum": 0 },
+        "parentCohortId": { "type": "string" },
+        "completeness": { "enum": ["complete", "partial", "unknown"] },
+        "exactness": { "enum": ["exact", "estimated", "heuristic", "model_produced"] },
+        "excluded": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "extensionPin": {
+      "type": "object", "additionalProperties": false, "required": ["id", "version"],
+      "properties": { "id": {"type":"string","minLength":1}, "version": {"type":"string","minLength":1}, "digest": {"type":"string"} }
+    },
+    "clockCursor": {
+      "type": "object", "additionalProperties": false, "required": ["domain", "value"],
+      "properties": { "domain": {"type":"string"}, "value": {"type":["number","string"]} }
+    },
+    "selectionSet": {
+      "type": "object", "additionalProperties": false, "required": ["members"],
+      "properties": { "primary": {"$ref":"#/$defs/semanticRef"}, "members": {"type":"array","items":{"$ref":"#/$defs/semanticRef"}} }
+    },
+    "evidenceNode": {
+      "type":"object", "additionalProperties": false,
+      "required":["id","kind","schema","authority","freshness","completeness","exactness"],
+      "properties": {
+        "id":{"type":"string"}, "kind":{"type":"string"}, "schema":{"type":"string"}, "schemaVersion":{"type":"string"}, "digest":{"type":"string"},
+        "cursorRange":{"type":"object"}, "authority":{"enum":["authoritative","derived","advisory","untrusted"]},
+        "freshness":{"enum":["current","stale","superseded","unknown"]}, "completeness":{"enum":["complete","partial","unknown"]},
+        "exactness":{"enum":["exact","estimated","heuristic","model_produced"]}, "diagnostics":{"type":"array","items":{"type":"object"}}
+      }
+    },
+    "evidenceGraph": {
+      "type":"object", "additionalProperties": false, "required":["nodes","edges"],
+      "properties":{"nodes":{"type":"array","items":{"$ref":"#/$defs/evidenceNode"}},"edges":{"type":"array","items":{"type":"object"}}}
+    },
+    "semanticScene": {
+      "type":"object", "additionalProperties": false,
+      "required":["visualId","revision","stateVersion","clocks","selection","landmarks","truth","diagnostics"],
+      "properties": {
+        "visualId":{"type":"string"}, "revision":{"type":"integer","minimum":1}, "stateVersion":{"type":"integer","minimum":0},
+        "clocks":{"type":"object","additionalProperties":{"$ref":"#/$defs/clockCursor"}}, "selection":{"$ref":"#/$defs/selectionSet"},
+        "landmarks":{"type":"array","items":{"type":"object"}}, "truth":{"type":"object"}, "diagnostics":{"type":"array","items":{"type":"string"}},
+        "availableActions":{"type":"array","items":{"type":"object"}}, "evidenceGraph":{"$ref":"#/$defs/evidenceGraph"}
+      }
+    },
+    "presentationState": {
+      "type":"object", "additionalProperties": false, "required":["schemaVersion","revision","stateVersion","value","digest","updatedAt"],
+      "properties":{"schemaVersion":{"type":"string"},"revision":{"type":"integer","minimum":1},"stateVersion":{"type":"integer","minimum":0},"value":{"type":"object"},"digest":{"type":"string"},"updatedAt":{"type":"string","format":"date-time"}}
+    },
+    "visualSnapshot": {
+      "type":"object", "additionalProperties": true,
+      "required":["id","visualId","revision","stateVersion","capturedAt","corpus","cohort","exploration","selection","semanticSceneDigest","presentationDigest","renditionRefs"],
+      "properties": {
+        "id":{"type":"string"},"visualId":{"type":"string"},"revision":{"type":"integer","minimum":1},"stateVersion":{"type":"integer","minimum":0},"capturedAt":{"type":"string","format":"date-time"},
+        "corpus":{"$ref":"#/$defs/corpusRef"},"cohort":{"$ref":"#/$defs/cohortRef"},"exploration":{"type":"object"},"selection":{"$ref":"#/$defs/selectionSet"},
+        "semanticSceneDigest":{"type":"string"},"presentationDigest":{"type":"string"},"renditionRefs":{"type":"array","items":{"type":"string"}},
+        "evidenceGraph":{"$ref":"#/$defs/evidenceGraph"},"renderer":{"$ref":"#/$defs/extensionPin"},"projector":{"$ref":"#/$defs/extensionPin"}
+      }
+    },
+    "visualRecording": {
+      "type":"object", "additionalProperties": false, "required":["id","visualId","startedAt","events","checkpoints"],
+      "properties": {
+        "id":{"type":"string"},"visualId":{"type":"string"},"startedAt":{"type":"string","format":"date-time"},"endedAt":{"type":"string","format":"date-time"},
+        "initialSnapshot":{"$ref":"#/$defs/visualSnapshot"},"events":{"type":"array","items":{"type":"object"}},"checkpoints":{"type":"array","items":{"$ref":"#/$defs/visualSnapshot"}},
+        "extensionPins":{"type":"array","items":{"$ref":"#/$defs/extensionPin"}},"redactions":{"type":"array","items":{"type":"object"}}
+      }
+    },
+    "visualDefinition": {
+      "type":"object", "additionalProperties": false, "required":["id","version","renderer","capabilities","inputSchemas"],
+      "properties": {
+        "id":{"type":"string"},"version":{"type":"string"},"renderer":{"type":"string"},"capabilities":{"type":"array","items":{"type":"string"}},
+        "inputSchemas":{"type":"array","items":{"type":"string"}},"inputs":{"type":"array","items":{"type":"object"}},"projection":{"type":"object"},
+        "time":{"type":"object"},"interaction":{"type":"object"},"observation":{"type":"object"},"presentationSchema":{"type":"string"}
+      }
+    }
+  }
+}

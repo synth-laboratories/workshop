@@ -128,8 +128,24 @@ pub fn request_effort(body: &Value) -> Option<&str> {
         .or_else(|| body.get("reasoning_effort").and_then(Value::as_str))
 }
 
+/// Locate the usage object on an OpenAI-compatible body.
+///
+/// Chat Completions puts it at the top level. The Responses API puts it there
+/// too on a non-streaming reply, but nests it under `response` on the
+/// streaming lifecycle events (`response.completed`) that Codex's
+/// `wire_api = "responses"` lane actually returns. Reading only the top level
+/// records the call and its generation id while silently losing every token.
+fn usage_object(body: &Value) -> Value {
+    for pointer in ["/usage", "/response/usage"] {
+        if let Some(usage) = body.pointer(pointer).filter(|value| value.is_object()) {
+            return usage.clone();
+        }
+    }
+    Value::Null
+}
+
 pub fn parse_usage(body: &Value) -> MeasuredUsage {
-    let usage = body.get("usage").cloned().unwrap_or(Value::Null);
+    let usage = usage_object(body);
     let int = |keys: &[&str]| {
         keys.iter()
             .find_map(|key| usage.get(*key).and_then(Value::as_u64))
@@ -147,6 +163,50 @@ pub fn parse_usage(body: &Value) -> MeasuredUsage {
         output_tokens: output,
         cost_usd,
     }
+}
+
+/// Recover response identity and inline usage from an OpenAI-compatible SSE
+/// response. The proxy buffers provider bodies before relaying them, so it can
+/// account for the final `stream_options.include_usage` chunk without changing
+/// a byte of the worker-visible stream.
+pub fn parse_sse_usage(bytes: &[u8]) -> (Option<String>, MeasuredUsage) {
+    let text = String::from_utf8_lossy(bytes);
+    let mut response_id = None;
+    let mut measured = MeasuredUsage {
+        calls: 1,
+        input_tokens: 0,
+        output_tokens: 0,
+        cost_usd: None,
+    };
+    for line in text.lines() {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let Ok(chunk) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        if response_id.is_none() {
+            response_id = response_id_for_owned(&chunk);
+        }
+        // Chat Completions reports usage on the final chunk; the Responses
+        // API reports it inside `response` on `response.completed`. Both are
+        // the same accounting record and neither may be dropped.
+        if usage_object(&chunk).is_object() {
+            let usage = parse_usage(&chunk);
+            measured.input_tokens = usage.input_tokens;
+            measured.output_tokens = usage.output_tokens;
+            measured.cost_usd = usage.cost_usd;
+        }
+    }
+    (response_id, measured)
+}
+
+fn response_id_for_owned(body: &Value) -> Option<String> {
+    response_id(body).map(str::to_owned)
 }
 
 /// Stable provider response identity retained for asynchronous accounting.

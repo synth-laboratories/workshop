@@ -60,19 +60,18 @@
 //! Browser preview, fixture replay and the two shipped shells run with no Rust
 //! underneath them and still have to draw something, so `visuals/runtime/`
 //! keeps a mirror of *identity, dedupe, the control predicate and the
-//! projection* — the parts a renderer cannot do without. It keeps no gap scan
-//! and no conflict ledger: those are evidence accounting, they are read by the
-//! readiness gate and by agents, and a second implementation of them is a
-//! second answer to a question that must have one.
+//! projection*, plus browser-only gap/conflict diagnostics. Native readiness
+//! uses the host receipt, not these renderer-reported diagnostics.
 //!
 //! The mirror is pinned to this module by a golden capture over every
-//! checked-in fixture — `visuals/fixtures/live_fold_golden.json`, regenerated
-//! by `visuals/tests/live_fold_golden_gen.mjs` — asserted from both sides. A
-//! mirror is honest exactly as long as something checks it.
+//! selected checked-in fixtures and edge cases in
+//! `visuals/fixtures/live_fold_golden.json`, asserted by golden_tests.rs and
+//! visuals/tests/live_fold_golden.test.mjs in batch and one-event pages.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
 
 // ===========================================================================
 // Cursor journals: replay, next, hole.
@@ -490,6 +489,8 @@ impl FoldLimits {
 /// What the fold decided about one delivered envelope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FoldVerdict {
+    /// Accounting reached its bound; this delivery is not proven distinct.
+    Untracked,
     /// A new, non-control envelope: evidence.
     Evidence,
     /// A new control envelope: bookkeeping, not evidence.
@@ -648,9 +649,13 @@ impl LiveFold {
 
         let kind = envelope_kind(event);
         let control = is_control_kind(event, &kind);
-        let counted = self.kinds.entry(kind.clone()).or_insert((0, control));
-        counted.0 += 1;
-        counted.1 = control;
+        if self.kinds.contains_key(&kind) || self.kinds.len() < self.limits.max_identities {
+            let counted = self.kinds.entry(kind.clone()).or_insert((0, control));
+            counted.0 += 1;
+            counted.1 = control;
+        } else {
+            self.truncated = true;
+        }
         if !control {
             self.delivered_non_control += 1;
         }
@@ -692,6 +697,7 @@ impl LiveFold {
 
         if self.identities.len() >= self.limits.max_identities {
             self.truncated = true;
+            return FoldStep { identity, scope, stream, kind, control, sequence, verdict: FoldVerdict::Untracked };
         } else {
             self.identities.insert(identity.clone(), digest);
         }
@@ -997,4 +1003,3 @@ pub fn project_live_eval(
     }
     Ok(projection)
 }
-

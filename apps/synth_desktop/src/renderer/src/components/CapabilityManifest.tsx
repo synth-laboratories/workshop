@@ -1,7 +1,7 @@
 import type { PluginStatus } from "../bridge/types";
 import {
 	capabilityRowTestId,
-	v08CapabilityRows
+	v09CapabilityRows
 } from "../runtime/capabilityManifest";
 import "./CapabilityManifest.css";
 
@@ -11,30 +11,32 @@ type Props = {
 };
 
 /**
- * Compact v0.8 capability table. About and Diagnostics both render this so
+ * Compact v0.9 capability table. About and Diagnostics both render this so
  * the two surfaces cannot drift.
  */
 export function CapabilityManifest({ pluginStatuses, lagunaPhase }: Props) {
-	const rows = v08CapabilityRows({ pluginStatuses, lagunaPhase });
+	const rows = v09CapabilityRows({ pluginStatuses, lagunaPhase });
 	return (
-		<table className="capability-manifest" data-testid="capability-manifest">
-			<caption className="capability-manifest-caption">v0.8 capabilities</caption>
-			<thead>
-				<tr>
-					<th scope="col">id</th>
-					<th scope="col">kind</th>
-					<th scope="col">this build</th>
-				</tr>
-			</thead>
-			<tbody>
-				{rows.map((row) => (
-					<tr key={row.id} data-testid={capabilityRowTestId(row.id)}>
-						<td>{row.id}</td>
-						<td>{row.kind}</td>
-						<td>{row.thisBuild}</td>
+		<div className="capability-manifest-frame" data-testid="capability-manifest">
+			<table className="capability-manifest">
+				<caption className="capability-manifest-caption">What this build can use</caption>
+				<thead>
+					<tr>
+						<th scope="col">Capability</th>
+						<th scope="col">Type</th>
+						<th scope="col">Availability</th>
 					</tr>
-				))}
-			</tbody>
-		</table>
+				</thead>
+				<tbody>
+					{rows.map((row) => (
+						<tr key={row.id} data-testid={capabilityRowTestId(row.id)}>
+							<td>{row.id}</td>
+							<td>{row.kind}</td>
+							<td>{row.thisBuild}</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+		</div>
 	);
 }

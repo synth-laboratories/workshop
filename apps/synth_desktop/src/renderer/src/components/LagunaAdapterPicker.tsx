@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { LagunaPolicy } from "../bridge/types";
-import { LOCAL_BASE_POLICY, policyLabel, policySpeed } from "../runtime/lagunaPolicies";
+import { LOCAL_BASE_POLICY, orderedLagunaPolicies, policyLabel, policySpeed } from "../runtime/lagunaPolicies";
+import { compactModelLabel } from "../runtime/modelPresentation";
 
 type Props = {
 	adapters: LagunaPolicy[];
@@ -20,7 +21,7 @@ export function LagunaAdapterPicker({
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
 	const selected = adapters.find((adapter) => adapter.modelId === selectedId);
-	const label = selected ? policyLabel(selected) : LOCAL_BASE_POLICY;
+	const label = selected ? policyLabel(selected) : policyLabel({ modelId: LOCAL_BASE_POLICY, isBase: true } as LagunaPolicy);
 
 	useEffect(() => {
 		if (!open) return;
@@ -64,13 +65,14 @@ export function LagunaAdapterPicker({
 				data-testid="laguna-adapter-picker"
 			>
 				<span className={variant === "landing" ? "model-pill-label" : "model-chip-label"}>{label}</span>
+				{variant === "composer" ? <span className="model-chip-short-label" aria-hidden>{compactModelLabel(label)}</span> : null}
 				<svg className="model-pill-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden>
 					<path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
 				</svg>
 			</button>
 			{open ? (
 				<div id="laguna-adapter-menu" className={menuClass} role="listbox" data-testid="laguna-adapter-menu">
-					{adapters.map((policy) => {
+					{orderedLagunaPolicies(adapters).map((policy) => {
 						const value = policy.isBase ? null : policy.modelId;
 						const selectedHere = value === selectedId;
 						const { rate, delta } = policySpeed(policy);

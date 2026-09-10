@@ -19,13 +19,6 @@ pub struct AppError {
     pub detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<crate::platform::failure::FailureView>,
-    /// The typed failure this error was classified from, kept so a loopback
-    /// boundary can re-raise it instead of flattening a machine code back to
-    /// prose. Never serialized: the renderer reads `code`, and `detail`
-    /// already carries the rendered payload.
-    #[serde(skip)]
-    #[specta(skip)]
-    pub structured: Option<StructuredFailure>,
 }
 
 pub const CODE_INTERNAL: &str = "internal";
@@ -37,7 +30,6 @@ pub const CODE_CONFLICT: &str = "conflict";
 pub const CODE_IO: &str = "io";
 pub const CODE_CANCELLED: &str = "cancelled";
 pub const CODE_DATABASE_LOCKED: &str = "database_locked";
-pub const CODE_APPROVAL_EXPIRED: &str = "approval_expired";
 
 impl AppError {
     pub fn coded(code: &'static str, message: impl Into<String>) -> Self {
@@ -47,7 +39,6 @@ impl AppError {
             message: message.clone(),
             detail: message,
             failure: None,
-            structured: None,
         }
     }
 
@@ -57,7 +48,6 @@ impl AppError {
             message: error.to_string(),
             detail: format!("{error:?}"),
             failure: None,
-            structured: None,
         }
     }
 
@@ -67,7 +57,6 @@ impl AppError {
             message: view.message.clone(),
             detail: view.diagnostic_reference.clone(),
             failure: Some(view),
-            structured: None,
         }
     }
 
@@ -112,18 +101,6 @@ impl AppError {
         Self::coded(CODE_CANCELLED, message)
     }
 
-    /// Re-raise across an `anyhow` boundary without losing the machine code.
-    ///
-    /// A loopback hop that rebuilds the error from `to_string()` turns
-    /// `approval_expired` into a sentence, and the agent on the far side can
-    /// then only guess at what happened.
-    pub fn into_anyhow(self) -> anyhow::Error {
-        match self.structured.clone() {
-            Some(failure) => anyhow::Error::new(failure),
-            None => anyhow::anyhow!(self.message.clone()),
-        }
-    }
-
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
         self
@@ -150,10 +127,6 @@ impl From<anyhow::Error> for AppError {
             return Self::coded(CODE_DATABASE_LOCKED, error.to_string())
                 .with_detail(format!("{error:?}"));
         }
-        if error_is::<ApprovalExpired>(&error) {
-            return Self::coded(CODE_APPROVAL_EXPIRED, error.to_string())
-                .with_detail(format!("{error:?}"));
-        }
         if error_is::<StructuredFailure>(&error) {
             if let Some(failure) = error
                 .chain()
@@ -164,7 +137,6 @@ impl From<anyhow::Error> for AppError {
                     message: failure.message.clone(),
                     detail: failure.to_json().to_string(),
                     failure: None,
-                    structured: Some(failure.clone()),
                 };
             }
         }
@@ -177,7 +149,6 @@ impl From<anyhow::Error> for AppError {
                 message: failure.message.clone(),
                 detail: serde_json::to_string(failure).unwrap_or_else(|_| failure.to_string()),
                 failure: None,
-                structured: None,
             };
         }
         Self::internal(error)
@@ -263,23 +234,6 @@ impl fmt::Display for DatabaseLocked {
 }
 
 impl std::error::Error for DatabaseLocked {}
-
-#[derive(Debug)]
-pub struct ApprovalExpired {
-    pub approval_id: String,
-}
-
-impl fmt::Display for ApprovalExpired {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "approval_expired: paid-compute approval {} expired before settlement",
-            self.approval_id
-        )
-    }
-}
-
-impl std::error::Error for ApprovalExpired {}
 
 /// A failure that carries a stable machine code and a remediation across a
 /// loopback IPC boundary.

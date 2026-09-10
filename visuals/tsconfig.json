@@ -1,18 +1,33 @@
 {
+  "//": [
+    "Type-checks the visual templates.",
+    "",
+    "apps/synth_desktop/tsconfig.json includes only src/renderer/**, and the",
+    "template shells are reached at runtime through the visual registry rather",
+    "than through a static renderer import. Forty-three files under visuals/",
+    "were pulled in transitively; the rest -- including every trace-workbench",
+    "shell -- were checked by nothing. That is how `tsc --noEmit` passed on a",
+    "file Vite could not parse at all.",
+    "",
+    "Kept as its own project rather than widened into the app's include so the",
+    "app gate stays green while the pre-existing strict-mode errors in these",
+    "files are worked down."
+  ],
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true,
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,
-    "skipLibCheck": true,
-    "noEmit": true,
-    "declaration": true,
-    "esModuleInterop": true,
-    "isolatedModules": true,
-    "resolveJsonModule": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+    "noFallthroughCasesInSwitch": true,
+    "types": ["node", "vite/client"]
   },
-  "include": ["./**/*.ts", "./**/*.tsx"],
-  "exclude": ["node_modules", "instances"]
+  "include": ["families/**/*.ts", "families/**/*.tsx", "chrome/**/*.ts", "chrome/**/*.tsx", "runtime/**/*.ts"],
+  "exclude": ["node_modules", "**/dist/**", "tests/**"]
 }

@@ -106,12 +106,11 @@ pub fn from_admission(error: &AdmissionError) -> AdmissionFailure {
                 detail: error.message.clone(),
             }
         }
-        ContainerSelectionAmbiguous
-        | ContainerUnhealthy
-        | ContainerProtocolUnsupported
-        | ContainerRuntimeStale => AdmissionFailure::ExecutionSpecInvalid {
-            detail: error.message.clone(),
-        },
+        ContainerSelectionAmbiguous | ContainerUnhealthy | ContainerProtocolUnsupported => {
+            AdmissionFailure::ExecutionSpecInvalid {
+                detail: error.message.clone(),
+            }
+        }
     }
 }
 
@@ -169,22 +168,6 @@ pub fn kind_from_admission(error: &AdmissionError) -> FailureKind {
                 observed: error.context["advertisedProtocol"]
                     .as_str()
                     .map(str::to_owned),
-            },
-        ),
-        ContainerRuntimeStale => FailureKind::Container(
-            crate::platform::failure::ContainerFailure::SourceRevisionMismatch {
-                container_id: error.context["containerId"]
-                    .as_str()
-                    .unwrap_or("unknown")
-                    .into(),
-                registered: error.context["declaredSourceRevision"]
-                    .as_str()
-                    .unwrap_or("unknown")
-                    .into(),
-                observed: error.context["loadedRuntimeRevision"]
-                    .as_str()
-                    .unwrap_or("unknown")
-                    .into(),
             },
         ),
         _ => FailureKind::Admission(from_admission(error)),

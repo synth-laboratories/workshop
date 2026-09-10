@@ -1,0 +1,128 @@
+{
+  "schemaVersion": "synth.annotation-workbench.v1",
+  "campaign": {
+    "id": "acmp_craftax_glm53",
+    "status": "partially_sealed",
+    "label": "post_rollout",
+    "domain": "craftax",
+    "title": "Craftax · GLM failure analysis"
+  },
+  "coverage": {
+    "jobs": 50,
+    "sealed": 47,
+    "abstained": 3,
+    "failed": 0,
+    "rejected": 0,
+    "cacheHits": 0
+  },
+  "validation": {
+    "selectorsResolved": 382,
+    "unresolvedSelectors": 0,
+    "validationFailures": 0
+  },
+  "cost": { "usd": 2.84, "calls": 50, "tokens": 18400000 },
+  "traces": [
+    { "id": "trace_glm_780000", "digest": "sha256:craftax-glm-780000", "title": "seed 780000" },
+    { "id": "trace_glm_780001", "digest": "sha256:craftax-glm-780001", "title": "seed 780001" }
+  ],
+  "evidenceHead": {
+    "bundleId": "evb_craftax_glm_head",
+    "digest": "sha256:craftax-glm-evidence-head",
+    "annotationCount": 74
+  },
+  "rubric": {
+    "available": false,
+    "reason": "verifier_result_missing",
+    "digest": null,
+    "criteria": []
+  },
+  "findings": [
+    {
+      "id": "ann_rec_1",
+      "annotatorId": "craftax.recovery_facts",
+      "type": "recovery",
+      "label": "recovery.failure_not_detected",
+      "severity": "high",
+      "status": "applied",
+      "target": { "kind": "span", "id": "span_42", "selector": "span:span_42" },
+      "summary": "Died at health 1–2 without acknowledging no_sapling / needs_pickaxe."
+    },
+    {
+      "id": "ann_plan_1",
+      "annotatorId": "craftax.plan_action_fidelity",
+      "type": "plan",
+      "label": "plan.missing",
+      "severity": "medium",
+      "status": "applied",
+      "target": { "kind": "message", "id": "msg_18", "selector": "message:msg_18" },
+      "summary": "Actions emitted with no retained plan for the step."
+    },
+    {
+      "id": "ann_rec_2",
+      "annotatorId": "craftax.recovery_facts",
+      "type": "recovery",
+      "label": "recovery.surface_only",
+      "severity": "medium",
+      "status": "applied",
+      "target": { "kind": "span", "id": "span_88", "selector": "span:span_88" },
+      "summary": "Named the failure then repeated the same do×15 plan."
+    },
+    {
+      "id": "ann_ms_1",
+      "annotatorId": "craftax.milestone_progress",
+      "type": "milestone",
+      "label": "milestone.engine_verified",
+      "severity": "info",
+      "status": "applied",
+      "target": { "kind": "event", "id": "evt_collect_wood", "selector": "event:evt_collect_wood" },
+      "summary": "Engine verified COLLECT_WOOD. Annotation does not grant the achievement."
+    },
+    {
+      "id": "ann_prev_1",
+      "annotatorId": "craftax.recovery_facts",
+      "type": "recovery",
+      "label": "recovery.recurrence_prevented",
+      "severity": "low",
+      "status": "applied",
+      "target": { "kind": "span", "id": "span_12", "selector": "span:span_12" },
+      "summary": "Changed strategy after the first blocked mine attempt."
+    }
+  ],
+  "taxonomy": [
+    { "label": "recovery.failure_not_detected", "count": 27 },
+    { "label": "milestone.engine_verified", "count": 22 },
+    { "label": "plan.missing", "count": 9 },
+    { "label": "recovery.surface_only", "count": 9 },
+    { "label": "recovery.recurrence_prevented", "count": 7 }
+  ],
+  "milestones": [
+    { "id": "collect_wood", "label": "Collect wood", "state": "verified", "engineVerified": true },
+    { "id": "place_table", "label": "Place table", "state": "partial", "engineVerified": false },
+    { "id": "make_wood_pickaxe", "label": "Make wood pickaxe", "state": "blocked", "engineVerified": false },
+    { "id": "descend", "label": "Descend", "state": "unsupported", "engineVerified": false }
+  ],
+  "spans": [
+    { "id": "span_12", "sequence": 12, "title": "First mine attempt", "kind": "span" },
+    { "id": "span_42", "sequence": 42, "title": "Death at health 1", "kind": "span" },
+    { "id": "msg_18", "sequence": 18, "title": "do × 15 with no plan", "kind": "message" },
+    { "id": "span_88", "sequence": 88, "title": "Repeated blocked mine", "kind": "span" },
+    { "id": "evt_collect_wood", "sequence": 7, "title": "COLLECT_WOOD", "kind": "event" }
+  ],
+  "jobs": [
+    { "id": "ajob_belief", "annotatorId": "craftax.belief_facts", "state": "sealed" },
+    { "id": "ajob_plan", "annotatorId": "craftax.plan_action_fidelity", "state": "sealed" },
+    { "id": "ajob_rec", "annotatorId": "craftax.recovery_facts", "state": "sealed" },
+    { "id": "ajob_ms", "annotatorId": "craftax.milestone_progress", "state": "sealed" },
+    { "id": "ajob_verify", "annotatorId": "craftax.rubric_verifier", "state": "abstained", "reason": "verifier_result_missing" }
+  ],
+  "audit": {
+    "abstentions": [
+      { "jobId": "ajob_verify", "reason": "verifier_result_missing" },
+      { "jobId": "ajob_belief_r2", "reason": "target_scope_mismatch" },
+      { "jobId": "ajob_recovery_long", "reason": "tool_budget_exceeded" }
+    ],
+    "rejected": [],
+    "unresolvedSelectors": [],
+    "consensus": []
+  }
+}

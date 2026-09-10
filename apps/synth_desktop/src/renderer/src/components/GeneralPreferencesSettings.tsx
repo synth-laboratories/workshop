@@ -16,8 +16,7 @@ import {
 } from "../preferences";
 import { SettingsCard, SettingsRow } from "./SettingsCard";
 import { bridges } from "../runtime/desktopBridge";
-import type { ProductTelemetryEvent, ProductTelemetryPolicy, ReleaseTierReport } from "../bridge";
-import { BUILD_TIER } from "../flags/tier";
+import type { ProductTelemetryEvent, ProductTelemetryPolicy } from "../bridge";
 import { PaidComputePermissionSettings } from "./PaidComputePermissionSettings";
 
 type Props = {
@@ -58,13 +57,15 @@ function SegmentedControl<T extends string>({
 	options,
 	value,
 	onChange,
-	testIdPrefix
+	testIdPrefix,
+	disabled = false
 }: {
 	ariaLabel: string;
 	options: ReadonlyArray<{ id: T; label: string; description?: string }>;
 	value: T;
 	onChange: (id: T) => void;
 	testIdPrefix: string;
+	disabled?: boolean;
 }) {
 	return (
 		<div className="seg-control" role="radiogroup" aria-label={ariaLabel}>
@@ -72,6 +73,7 @@ function SegmentedControl<T extends string>({
 				<button
 					key={option.id}
 					type="button"
+					disabled={disabled}
 					role="radio"
 					aria-checked={value === option.id}
 					className={value === option.id ? "active" : ""}
@@ -90,6 +92,7 @@ function consentSummary(policy: ProductTelemetryPolicy | null): string {
 	if (!policy) return "Loading…";
 	switch (policy.consent.state) {
 		case "granted":
+			if (!policy.syncAllowed) return "Sharing paused — consent is required for the current policy.";
 			return `Sharing allowed ${new Date(policy.consent.at).toLocaleDateString()} · ${policy.consent.version}`;
 		case "declined":
 			return `Sharing declined ${new Date(policy.consent.at).toLocaleDateString()} · ${policy.consent.version}`;
@@ -102,12 +105,18 @@ function PrivacyTelemetrySettings() {
 	const [policy, setPolicy] = useState<ProductTelemetryPolicy | null>(null);
 	const [events, setEvents] = useState<ProductTelemetryEvent[] | null>(null);
 	const [flushNote, setFlushNote] = useState<string | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const [saving, setSaving] = useState(false);
 	useEffect(() => {
-		void bridges.telemetry?.getPolicy().then(setPolicy).catch(() => undefined);
+		void bridges.telemetry?.getPolicy().then(setPolicy).catch(() => setError("Could not load privacy settings."));
 	}, []);
-	const optionalEnabled = policy?.optionalEnabled !== false;
+	const optionalEnabled = policy?.syncAllowed === true;
 	const openEvents = () => {
-		void bridges.telemetry?.recent(50).then(setEvents).catch(() => setEvents([]));
+		setError(null);
+		void bridges.telemetry?.recent(50).then(setEvents).catch(() => {
+			setEvents(null);
+			setError("Could not load collected events. Try again.");
+		});
 	};
 	return (
 		<SettingsCard
@@ -117,18 +126,22 @@ function PrivacyTelemetrySettings() {
 		>
 			<SettingsRow
 				label="Share usage stats"
-				description="Anonymous counts and outcomes — download, first launch, signup, and activation funnel. Allowing also syncs them to Synth; turning off deletes what is queued. Hosted usage remains server-authoritative either way."
+				description="Usage counts and outcomes — download, first launch, signup, and activation funnel. Allowing syncs them to Synth and may associate them with your signed-in account; turning off deletes what is queued. Hosted usage remains server-authoritative either way."
 			>
 				<SegmentedControl
 					ariaLabel="Share usage stats"
 					options={[{ id: "on", label: "On" }, { id: "off", label: "Off" }]}
 					value={optionalEnabled ? "on" : "off"}
+					disabled={!policy || saving}
 					testIdPrefix="telemetry-optional"
 					onChange={(value) => {
+						setSaving(true);
+						setError(null);
 						void bridges.telemetry
 							?.setOptOut(value === "off")
 							.then(setPolicy)
-							.catch(() => undefined);
+							.catch(() => setError("Could not save your privacy choice. Try again."))
+							.finally(() => setSaving(false));
 					}}
 				/>
 			</SettingsRow>
@@ -165,6 +178,7 @@ function PrivacyTelemetrySettings() {
 				) : null}
 				{flushNote ? <span className="settings-item-subhead">{flushNote}</span> : null}
 			</div>
+			{error ? <p role="alert">{error}</p> : null}
 			{events !== null ? (
 				<div className="telemetry-event-list" data-testid="telemetry-event-list">
 					{events.length === 0 ? (
@@ -178,39 +192,6 @@ function PrivacyTelemetrySettings() {
 						))
 					)}
 				</div>
-			) : null}
-		</SettingsCard>
-	);
-}
-
-function BuildEnvelopeSettings() {
-	const [report, setReport] = useState<ReleaseTierReport | null>(null);
-	useEffect(() => {
-		void bridges.releaseTier?.get().then(setReport).catch(() => undefined);
-	}, []);
-	const absent = report?.features.filter((feature) => !feature.present) ?? [];
-	return (
-		<SettingsCard
-			title="Build"
-			description="The maturity envelope this Workshop build was compiled with. Features above the envelope are not in the binary; runtime settings can only narrow it, never widen it."
-			testId="settings-build-tier"
-		>
-			<p className="settings-item-subhead" data-testid="build-tier-status">
-				{report
-					? `${report.tier} envelope · ${report.contractVersion}`
-					: `${BUILD_TIER} bundle · resolving host envelope…`}
-				{/* Statically eliminated from stable/core bundles: the pre-release
-				    badge itself is a beta-tier feature (prerelease_build_badge). */}
-				{__TIER_HAS_BETA__ ? (
-					<span className="tier-badge" data-testid="build-tier-badge">
-						pre-release · {BUILD_TIER}
-					</span>
-				) : null}
-			</p>
-			{absent.length > 0 ? (
-				<p className="settings-item-subhead" data-testid="build-tier-excluded">
-					Not in this build: {absent.map((feature) => feature.name).join(", ")}
-				</p>
 			) : null}
 		</SettingsCard>
 	);
@@ -356,7 +337,6 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 
 			<PrivacyTelemetrySettings />
 
-			<BuildEnvelopeSettings />
 			<PaidComputePermissionSettings />
 
 			<SettingsCard

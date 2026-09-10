@@ -66,7 +66,58 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_61,
     MIGRATION_62,
     MIGRATION_63,
+    MIGRATION_64,
+    MIGRATION_65,
+    MIGRATION_66,
+    MIGRATION_67,
+    MIGRATION_68,
+    MIGRATION_69,
+    MIGRATION_70,
+    MIGRATION_71,
+    MIGRATION_72,
+    MIGRATION_73,
+    MIGRATION_74,
+    MIGRATION_75,
+    MIGRATION_76,
+    MIGRATION_77,
+    MIGRATION_78,
 ];
+
+const MIGRATION_70: &str = r#"
+CREATE TABLE agent_attachments (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    backend_id TEXT NOT NULL,
+    backend_session_id TEXT,
+    workspace TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    parent_session_id TEXT REFERENCES sessions(id),
+    depth INTEGER NOT NULL CHECK(depth BETWEEN 0 AND 3),
+    process_id INTEGER,
+    process_start TEXT,
+    capabilities_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX agent_attachments_parent ON agent_attachments(parent_session_id);
+"#;
+
+// The first public connection grants one local instance workspace. Its identity
+// survives runtime restarts and is independent of all hosted conversations.
+const MIGRATION_69: &str = r#"
+CREATE TABLE workshop_workspaces (
+    id TEXT PRIMARY KEY NOT NULL,
+    local_instance INTEGER NOT NULL UNIQUE CHECK (local_instance = 1)
+);
+INSERT INTO workshop_workspaces(id, local_instance)
+VALUES ('workspace_' || lower(hex(randomblob(16))), 1);
+ALTER TABLE visuals ADD COLUMN workspace_id TEXT REFERENCES workshop_workspaces(id);
+CREATE INDEX visuals_workspace_id ON visuals(workspace_id);
+CREATE TRIGGER visuals_workspace_owner_insert BEFORE INSERT ON visuals
+WHEN NEW.workspace_id IS NOT NULL AND NEW.session_id IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'visual cannot have both workspace and chat owners'); END;
+CREATE TRIGGER visuals_workspace_owner_update BEFORE UPDATE OF workspace_id, session_id ON visuals
+WHEN (NEW.workspace_id IS NOT NULL AND NEW.session_id IS NOT NULL)
+  OR (OLD.workspace_id IS NOT NULL AND NEW.workspace_id IS NOT OLD.workspace_id)
+BEGIN SELECT RAISE(ABORT, 'workspace visual ownership is immutable'); END;
+"#;
 
 /// Apply every migration the database has not reached yet.
 pub fn apply_migrations(conn: &Connection) -> Result<i64> {
@@ -102,6 +153,11 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
     heal_missing_tables(conn)?;
     heal_missing_columns(conn)?;
     heal_experiment_graph_shape(conn)?;
+    // Builds briefly shipped these migrations under versions 64-66. Such a
+    // database already has a maximum version above this lineage's contiguous
+    // registry, so the ordinary loop cannot replay the data backfill. The
+    // statement is idempotent and keeps those installations readable.
+    conn.execute_batch(MIGRATION_60)?;
     Ok(version)
 }
 
@@ -192,12 +248,14 @@ CREATE TABLE IF NOT EXISTS optimizer_evidence_amendments (
 "#;
 
 const REQUIRED_TABLES: &[(&str, &str)] = &[
+    ("project_source_requests", MIGRATION_78),
+    ("optimizer_snapshots", MIGRATION_77),
     ("optimizer_terminal_manifests", MIGRATION_23),
     ("secret_refs", MIGRATION_25),
     ("credential_locators", CREDENTIAL_LOCATORS_TABLE_DDL),
     ("product_telemetry_events", MIGRATION_26),
-    ("local_lora_checkpoints", MIGRATION_29),
-    ("hosted_lora_overlays", MIGRATION_30),
+    ("local_lora_checkpoints", MIGRATION_28),
+    ("hosted_lora_overlays", MIGRATION_29),
     ("optimizer_run_ownership", MIGRATION_33),
     ("optimizer_run_media", MIGRATION_41),
     ("optimizer_frames", MIGRATION_42),
@@ -221,16 +279,120 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("optimizer_effective_contracts", MIGRATION_56),
     ("optimizer_run_artifacts", MIGRATION_56),
     ("optimizer_projection_outbox", PROJECTION_OUTBOX_CREATE_ONLY),
-    ("container_sources", MIGRATION_59),
-    ("optimizer_recipe_sources", MIGRATION_60),
-    ("project_source_requests", MIGRATION_61),
+    (
+        "optimizer_run_collection_rows",
+        OPTIMIZER_READ_MODEL_CREATE_ONLY,
+    ),
+    (
+        "optimizer_projection_checkpoints",
+        OPTIMIZER_READ_MODEL_CREATE_ONLY,
+    ),
     (
         "paid_compute_conversation_budgets",
         PAID_COMPUTE_BUDGET_CREATE_ONLY,
     ),
     ("paid_compute_reservations", PAID_COMPUTE_BUDGET_CREATE_ONLY),
-    ("optimizer_snapshots", MIGRATION_63),
+    ("annotation_reservations", MIGRATION_62),
+    ("annotation_broker_secrets", MIGRATION_62),
+    ("annotation_campaigns", MIGRATION_63),
+    ("annotation_jobs", MIGRATION_63),
+    ("annotation_evidence_heads", MIGRATION_63),
+    ("annotation_findings", MIGRATION_63),
+    ("rubric_results", MIGRATION_63),
+    ("annotation_reviews", MIGRATION_63),
+    (
+        "annotation_provisional_findings",
+        LIVE_ANNOTATION_CREATE_ONLY,
+    ),
+    (
+        "optimizer_run_collection_rows",
+        OPTIMIZER_READ_MODEL_CREATE_ONLY,
+    ),
+    (
+        "optimizer_projection_checkpoints",
+        OPTIMIZER_READ_MODEL_CREATE_ONLY,
+    ),
+    ("research_journal_entries", MIGRATION_66),
+    ("human_annotation_tasks", MIGRATION_67),
+    ("human_annotation_sessions", MIGRATION_67),
+    ("human_annotation_results", MIGRATION_67),
+    ("human_annotation_events", MIGRATION_67),
 ];
+
+/// Lane C: provisional findings relayed from a rollout's live annotation
+/// stream, folded per rollout with their supersede/retract history and
+/// reconciled against the verified journal after the seal. Their own table and
+/// status vocabulary: never joined with sealed `annotation_findings`.
+/// Create-only so installations that already carry versions 64-66 from the
+/// briefly-shipped lineage still gain the table through `heal_missing_tables`.
+const LIVE_ANNOTATION_CREATE_ONLY: &str = r#"
+CREATE TABLE IF NOT EXISTS annotation_provisional_findings (
+    run_id TEXT NOT NULL,
+    rollout_id TEXT NOT NULL,
+    trial_id TEXT,
+    sequence INTEGER NOT NULL,
+    finding_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('provisional','superseded','retracted')),
+    step INTEGER,
+    confidence REAL,
+    protocol_revision_id TEXT,
+    cited_sequences_json TEXT NOT NULL DEFAULT '[]',
+    supersedes TEXT,
+    superseded_by TEXT,
+    retracted_reason TEXT,
+    basis TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    occurred_at TEXT,
+    reconciliation TEXT NOT NULL CHECK (reconciliation IN ('resolved','corroborated','unresolved','unsealed')),
+    reconciled_trace_digest TEXT,
+    reconciled_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, rollout_id, finding_id)
+);
+CREATE INDEX IF NOT EXISTS annotation_provisional_findings_run ON annotation_provisional_findings(run_id, rollout_id, sequence);
+CREATE INDEX IF NOT EXISTS annotation_provisional_findings_label ON annotation_provisional_findings(run_id, kind, label);
+"#;
+const MIGRATION_64: &str = LIVE_ANNOTATION_CREATE_ONLY;
+/// Shared optimizer read model: materialized collection rows and reducer
+/// checkpoints. CREATE-only for the same reason as the kernel tables above.
+pub const OPTIMIZER_READ_MODEL_CREATE_ONLY: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_run_collection_rows (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    collection TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    sequence INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT,
+    parent_id TEXT,
+    score REAL,
+    cost_usd REAL,
+    status TEXT,
+    details_version TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, collection, item_id)
+);
+CREATE INDEX IF NOT EXISTS optimizer_run_collection_rows_ordinal
+ON optimizer_run_collection_rows(optimizer_run_id, collection, ordinal);
+CREATE INDEX IF NOT EXISTS optimizer_run_collection_rows_parent
+ON optimizer_run_collection_rows(optimizer_run_id, collection, parent_id, ordinal);
+CREATE INDEX IF NOT EXISTS optimizer_run_collection_rows_revision
+ON optimizer_run_collection_rows(optimizer_run_id, collection, revision);
+
+CREATE TABLE IF NOT EXISTS optimizer_projection_checkpoints (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    as_of_sequence INTEGER NOT NULL,
+    reducer_version TEXT NOT NULL,
+    projection_revision INTEGER NOT NULL,
+    state_json TEXT NOT NULL,
+    byte_len INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, as_of_sequence)
+);
+"#;
 
 const PROJECTION_OUTBOX_CREATE_ONLY: &str = r#"
 CREATE TABLE IF NOT EXISTS optimizer_projection_outbox (
@@ -308,6 +470,17 @@ fn heal_missing_columns(conn: &Connection) -> Result<()> {
              REFERENCES experiment_groups(id);",
         )
         .context("heal missing sessions.active_experiment_id")?;
+    }
+    let experiment_tags_present: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('experiment_groups') WHERE name='tags_json')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !experiment_tags_present {
+        conn.execute_batch(
+            "ALTER TABLE experiment_groups ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';",
+        )
+        .context("heal missing experiment_groups.tags_json")?;
     }
     for (table, column) in [
         ("containers", "current_failure_id"),
@@ -3586,73 +3759,581 @@ CREATE INDEX IF NOT EXISTS optimizer_events_ingested
 ON optimizer_events(optimizer_run_id, ingested_at, sequence_number);
 "#;
 
-/// Durable source identity for the desktop-level container catalog. A source
-/// path may move or disappear after discovery; ensures always refresh it from
-/// configured roots before executing, while this record preserves provenance
-/// for registrations and evidence.
-const MIGRATION_59: &str = r#"
-CREATE TABLE IF NOT EXISTS container_sources (
-    id TEXT PRIMARY KEY,
-    canonical_path TEXT NOT NULL UNIQUE,
-    manifest_path TEXT NOT NULL,
-    manifest_hash TEXT NOT NULL,
-    git_revision TEXT,
-    discovered_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS container_sources_updated_at ON container_sources(updated_at DESC);
-"#;
+/// Conversation-scoped paid-compute auto-approval projection. Sealed at
+/// session start; reservations and settled spend survive Workshop restart.
+const MIGRATION_59: &str = PAID_COMPUTE_BUDGET_CREATE_ONLY;
 
-/// Durable provenance for the desktop-level optimizer recipe catalog. Recipe
-/// sources are configured independently of chat/session workspaces and are
-/// re-read before every run, so this record is evidence rather than authority
-/// to execute a stale local declaration.
+
+/// Backfill admitted specs for runs that predate kernel admission.
+///
+/// `persist_kernel_projection` refuses to rebuild a projection without a spec
+/// digest, and `run_view_v2` needs a projection. A local run created before
+/// admission existed therefore has neither, cannot acquire either, and fails
+/// every read forever — the visual replays its whole journal, throws, rolls
+/// back, and retries. On a developer machine carrying runs from before the
+/// cutover that is most of the library.
+///
+/// MIGRATION_46 already did exactly this for `legacy_campaign_migration`
+/// rows. This extends the same treatment to the other pre-admission sources,
+/// which were simply not present when that migration was written.
+///
+/// The synthesized spec is deliberately marked as reconstructed rather than
+/// admitted: the digest is namespaced `legacy-local:`, and the authorization
+/// records `not_required` with a reason. Provenance stays honest about the
+/// difference between a run that was admitted under contract and a run that
+/// was adopted afterwards, so a later audit can tell them apart.
 const MIGRATION_60: &str = r#"
-CREATE TABLE IF NOT EXISTS optimizer_recipe_sources (
-    canonical_path TEXT PRIMARY KEY,
-    source_hash TEXT NOT NULL,
-    discovered_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS optimizer_recipe_sources_updated_at ON optimizer_recipe_sources(updated_at DESC);
+INSERT OR IGNORE INTO optimizer_run_specs(
+    optimizer_run_id, spec_json, spec_digest, authorization_json, admitted_at
+)
+SELECT
+    run.id,
+    json_object(
+        'schemaVersion', 'legacy_local_run_spec.v1',
+        'optimizerRunId', run.id,
+        'algorithmId', run.algorithm_id,
+        'source', run.source,
+        'reconstructed', json('true')
+    ),
+    'legacy-local:' || run.id,
+    '{"state":"not_required","reason":"pre_admission_local_run_migration"}',
+    run.created_at
+FROM optimizer_runs run
+LEFT JOIN optimizer_run_specs spec ON spec.optimizer_run_id = run.id
+WHERE spec.optimizer_run_id IS NULL
+  AND run.algorithm_id IN ('eval','gepa','go-ex','sft','cispo');
 "#;
 
-/// Pending agent requests to admit a folder as a project source.
+/// Durable proof that a specific visual revision rendered from complete local
+/// evidence.
 ///
-/// Deliberately its own table rather than a flag on `workspace_grant_requests`:
-/// a workspace attachment lets a conversation read and write files, while a
-/// project source additionally lets Workshop discover and later execute the
-/// container commands declared beneath it. Folding the two together would make
-/// one approval silently answer both questions.
+/// The invariant this exists for: *once Workshop has successfully rendered a
+/// revision, that revision stays viewable after restart and while the producer
+/// is unavailable.* The evidence itself needs no new home — the kernel
+/// projection is already durable in SQLite and, since reads stopped taking the
+/// write lock, is readable in about a millisecond with no producer involved.
+/// Copying it into a second table would create a second authority for product
+/// truth that can drift from the projection, which is exactly what the kernel
+/// invariants forbid.
 ///
-/// A row here is a *request*. It carries no authority: admission happens only
-/// when `config.toml` records the canonical path after the user re-confirms it
-/// in the native picker.
+/// What was missing was the *claim*, not the data. "This rendered" lived as
+/// untyped JSON on the mutable `optimizer_runs.summary_json` blob, with no
+/// revision, no template version, and no digest — so nothing could tell that a
+/// reopened visual was being served evidence older than, or different from,
+/// what it had already shown. This table makes that claim typed and checkable:
+///
+///   · identity   — visual, revision, run, and template it was rendered from;
+///   · freshness  — the projection revision it was rendered at, so a lower one
+///                  is a detectable regression rather than a silent downgrade;
+///   · integrity  — a digest of the rendered projection, so the same revision
+///                  carrying different content is detectable;
+///   · extent     — the journal tail it had replayed through.
+///
+/// One row per (visual, revision): a re-render of the same revision replaces
+/// it, and `projection_revision` never moves backwards.
 const MIGRATION_61: &str = r#"
+CREATE TABLE IF NOT EXISTS visual_render_receipts (
+    visual_id TEXT NOT NULL,
+    visual_revision INTEGER NOT NULL,
+    optimizer_run_id TEXT NOT NULL,
+    template_id TEXT NOT NULL,
+    template_version TEXT NOT NULL,
+    projection_revision INTEGER NOT NULL,
+    data_digest TEXT NOT NULL,
+    tail_cursor INTEGER NOT NULL,
+    rendered_at TEXT NOT NULL,
+    PRIMARY KEY (visual_id, visual_revision)
+);
+
+CREATE INDEX IF NOT EXISTS visual_render_receipts_run
+ON visual_render_receipts(optimizer_run_id);
+"#;
+
+/// Paid Trace V5 annotation: one single-use, bound, expiring reservation per
+/// paid job, settled through the conversation budget; plus the per-launch HMAC
+/// secret a container verifies reservation tokens with.
+const MIGRATION_62: &str = r#"
+CREATE TABLE IF NOT EXISTS annotation_reservations (
+    reservation_id TEXT PRIMARY KEY,
+    approval_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    container_id TEXT NOT NULL,
+    binding_digest TEXT NOT NULL,
+    trace_digest TEXT NOT NULL,
+    annotator_id TEXT NOT NULL,
+    reserved_usd_micros INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('issued', 'forwarded', 'settled', 'released', 'expired')),
+    settled_usd_micros INTEGER,
+    job_id TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS annotation_reservations_session ON annotation_reservations(session_id, status);
+CREATE INDEX IF NOT EXISTS annotation_reservations_job ON annotation_reservations(container_id, job_id);
+CREATE TABLE IF NOT EXISTS annotation_broker_secrets (
+    container_id TEXT PRIMARY KEY,
+    secret TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"#;
+
+/// Local Workshop projections of container-authoritative Trace V5 annotation
+/// artifacts. The visual family `analysis.annotation_workbench.v1` reads these
+/// bounded summaries; full evidence bundles stay in the owning container.
+const MIGRATION_63: &str = r#"
+CREATE TABLE IF NOT EXISTS annotation_campaigns (
+    campaign_id TEXT PRIMARY KEY,
+    container_id TEXT,
+    eval_run_id TEXT,
+    session_id TEXT,
+    label TEXT,
+    domain TEXT,
+    status TEXT NOT NULL CHECK (status IN (
+        'not_requested','preparing','approval_required','submitted',
+        'running','sealed','partially_sealed','abstained','failed','cancelled'
+    )),
+    traces_json TEXT NOT NULL DEFAULT '[]',
+    annotators_json TEXT NOT NULL DEFAULT '[]',
+    coverage_json TEXT NOT NULL DEFAULT '{}',
+    cost_json TEXT NOT NULL DEFAULT '{}',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS annotation_campaigns_eval ON annotation_campaigns(eval_run_id);
+CREATE INDEX IF NOT EXISTS annotation_campaigns_session ON annotation_campaigns(session_id, status);
+
+CREATE TABLE IF NOT EXISTS annotation_jobs (
+    job_id TEXT PRIMARY KEY,
+    campaign_id TEXT REFERENCES annotation_campaigns(campaign_id) ON DELETE CASCADE,
+    container_id TEXT,
+    trace_id TEXT,
+    trace_digest TEXT NOT NULL,
+    annotator_id TEXT NOT NULL,
+    annotator_digest TEXT,
+    repeat_index INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL,
+    reservation_id TEXT,
+    evidence_head_digest TEXT,
+    verifier_result_digest TEXT,
+    applied_count INTEGER,
+    abstained_count INTEGER,
+    rejected_count INTEGER,
+    cost_usd_micros INTEGER,
+    failure_reason TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS annotation_jobs_campaign ON annotation_jobs(campaign_id, state);
+CREATE INDEX IF NOT EXISTS annotation_jobs_trace ON annotation_jobs(trace_digest, annotator_id);
+
+CREATE TABLE IF NOT EXISTS annotation_evidence_heads (
+    digest TEXT PRIMARY KEY,
+    bundle_id TEXT,
+    trace_digest TEXT NOT NULL,
+    campaign_id TEXT,
+    annotation_count INTEGER NOT NULL DEFAULT 0,
+    verifier_result_count INTEGER NOT NULL DEFAULT 0,
+    summary_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS annotation_evidence_heads_trace ON annotation_evidence_heads(trace_digest);
+CREATE INDEX IF NOT EXISTS annotation_evidence_heads_campaign ON annotation_evidence_heads(campaign_id);
+
+CREATE TABLE IF NOT EXISTS annotation_findings (
+    finding_id TEXT PRIMARY KEY,
+    evidence_head_digest TEXT NOT NULL REFERENCES annotation_evidence_heads(digest) ON DELETE CASCADE,
+    job_id TEXT,
+    annotator_id TEXT NOT NULL,
+    annotation_type TEXT,
+    taxonomy_label TEXT,
+    severity TEXT,
+    status TEXT NOT NULL CHECK (status IN ('applied','abstained','rejected')),
+    target_selector TEXT,
+    target_selector_json TEXT NOT NULL DEFAULT '{}',
+    evidence_selectors_json TEXT NOT NULL DEFAULT '[]',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS annotation_findings_head ON annotation_findings(evidence_head_digest, taxonomy_label);
+CREATE INDEX IF NOT EXISTS annotation_findings_target ON annotation_findings(target_selector);
+
+CREATE TABLE IF NOT EXISTS rubric_results (
+    digest TEXT PRIMARY KEY,
+    verifier_result_id TEXT,
+    evidence_head_digest TEXT,
+    rubric_id TEXT,
+    rubric_digest TEXT,
+    available INTEGER NOT NULL DEFAULT 0,
+    unavailable_reason TEXT,
+    summary_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS rubric_results_head ON rubric_results(evidence_head_digest);
+
+CREATE TABLE IF NOT EXISTS annotation_reviews (
+    review_id TEXT PRIMARY KEY,
+    finding_id TEXT,
+    evidence_head_digest TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    reviewer TEXT,
+    rationale TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS annotation_reviews_head ON annotation_reviews(evidence_head_digest);
+"#;
+
+/// Human-readable experiment organization. Tags are metadata on the durable
+/// experiment identity—not graph nodes or visuals—so every UI and MCP reader
+/// observes one authoritative set.
+const MIGRATION_65: &str = r#"
+ALTER TABLE experiment_groups ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';
+"#;
+
+/// Standalone research notebook. Reports may snapshot entries later, but do
+/// not own the working record. Corrections append a superseding entry.
+const MIGRATION_66: &str = r#"
+CREATE TABLE research_journal_entries (
+    entry_id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL UNIQUE,
+    occurred_at TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    author TEXT NOT NULL,
+    actor_kind TEXT NOT NULL CHECK(actor_kind IN ('human','agent')),
+    entry_kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    links_json TEXT NOT NULL DEFAULT '[]',
+    experiment_id TEXT REFERENCES experiment_groups(id),
+    supersedes_entry_id TEXT REFERENCES research_journal_entries(entry_id),
+    source_digest TEXT
+);
+CREATE INDEX research_journal_entries_experiment ON research_journal_entries(experiment_id, sequence);
+CREATE INDEX research_journal_entries_kind ON research_journal_entries(entry_kind, sequence);
+"#;
+
+/// Human review is a separate authority from machine annotation jobs. Tasks are
+/// immutable assignments, sessions are optimistic-concurrency drafts, and
+/// submitted results are append-only sealed revisions. Media bytes live in CAS;
+/// these rows retain their identity, digest, and relationship to the judgment.
+const MIGRATION_67: &str = r#"
+CREATE TABLE IF NOT EXISTS human_annotation_campaigns (
+    campaign_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    name TEXT NOT NULL,
+    benchmark_family TEXT,
+    dataset_split TEXT,
+    policy_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL,
+    closed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_tasks (
+    task_id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    campaign_id TEXT REFERENCES human_annotation_campaigns(campaign_id),
+    schema_version TEXT NOT NULL,
+    task_digest TEXT NOT NULL UNIQUE,
+    subject_kind TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    subject_revision INTEGER,
+    subject_digest TEXT NOT NULL,
+    rubric_id TEXT NOT NULL,
+    rubric_digest TEXT NOT NULL,
+    task_json TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    cancelled_at TEXT,
+    cancellation_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_sessions (
+    session_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES human_annotation_tasks(task_id),
+    reviewer_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    draft_revision INTEGER NOT NULL DEFAULT 0,
+    draft_json TEXT NOT NULL DEFAULT '{}',
+    presentation_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    submitted_at TEXT,
+    UNIQUE(task_id, reviewer_id)
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_quiz_keys (
+    task_id TEXT NOT NULL REFERENCES human_annotation_tasks(task_id),
+    question_id TEXT NOT NULL,
+    key_digest TEXT NOT NULL,
+    key_json TEXT NOT NULL,
+    grader_version TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, question_id)
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_answers (
+    answer_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES human_annotation_sessions(session_id),
+    result_id TEXT REFERENCES human_annotation_results(result_id),
+    question_id TEXT NOT NULL,
+    question_revision INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    answer_json TEXT NOT NULL,
+    presented_at TEXT,
+    answered_at TEXT,
+    supersedes_id TEXT REFERENCES human_annotation_answers(answer_id),
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_comments (
+    comment_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES human_annotation_sessions(session_id),
+    result_id TEXT REFERENCES human_annotation_results(result_id),
+    evidence_digest TEXT NOT NULL,
+    selector_json TEXT NOT NULL,
+    body_text TEXT,
+    corrected_transcript TEXT,
+    audio_attachment_id TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    supersedes_id TEXT REFERENCES human_annotation_comments(comment_id),
+    tombstoned INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_attachments (
+    attachment_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES human_annotation_sessions(session_id),
+    kind TEXT NOT NULL,
+    state TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    cas_digest TEXT,
+    byte_size INTEGER,
+    duration_ms INTEGER,
+    machine_transcript TEXT,
+    transcript_digest TEXT,
+    transcript_model TEXT,
+    transcript_language TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_audio_chunks (
+    attachment_id TEXT NOT NULL REFERENCES human_annotation_attachments(attachment_id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    bytes BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (attachment_id, chunk_index)
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_results (
+    result_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES human_annotation_tasks(task_id),
+    session_id TEXT NOT NULL REFERENCES human_annotation_sessions(session_id),
+    result_revision INTEGER NOT NULL,
+    result_digest TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    supersedes_id TEXT REFERENCES human_annotation_results(result_id),
+    created_at TEXT NOT NULL,
+    UNIQUE(session_id, result_revision)
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_result_seals (
+    result_id TEXT PRIMARY KEY REFERENCES human_annotation_results(result_id),
+    schema_version TEXT NOT NULL,
+    seal_digest TEXT NOT NULL UNIQUE,
+    manifest_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS human_annotation_events (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    task_id TEXT NOT NULL,
+    session_id TEXT,
+    kind TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS human_annotation_campaign_state ON human_annotation_campaigns(state, created_at);
+CREATE INDEX IF NOT EXISTS human_annotation_task_state ON human_annotation_tasks(state, created_at);
+CREATE INDEX IF NOT EXISTS human_annotation_task_campaign ON human_annotation_tasks(campaign_id, state);
+CREATE INDEX IF NOT EXISTS human_annotation_session_reviewer ON human_annotation_sessions(reviewer_id, task_id);
+CREATE INDEX IF NOT EXISTS human_annotation_result_task ON human_annotation_results(task_id, created_at);
+CREATE INDEX IF NOT EXISTS human_annotation_answer_session_question ON human_annotation_answers(session_id, question_id);
+CREATE INDEX IF NOT EXISTS human_annotation_comment_evidence ON human_annotation_comments(evidence_digest, session_id);
+CREATE INDEX IF NOT EXISTS human_annotation_event_task ON human_annotation_events(task_id, sequence);
+"#;
+
+/// Campaign decisions are immutable records over already-sealed human results.
+/// They remain separate from reviewer results so adjudication cannot rewrite
+/// either the source judgments or their seals.
+const MIGRATION_68: &str = r#"
+CREATE TABLE IF NOT EXISTS human_annotation_adjudications (
+    adjudication_id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL REFERENCES human_annotation_campaigns(campaign_id),
+    schema_version TEXT NOT NULL,
+    source_result_ids_json TEXT NOT NULL,
+    decision_json TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    adjudicator_id TEXT NOT NULL,
+    decision_digest TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS human_annotation_adjudication_campaign
+    ON human_annotation_adjudications(campaign_id, created_at);
+"#;
+
+const MIGRATION_71: &str = r#"
+CREATE TABLE desktop_state (key TEXT PRIMARY KEY, value TEXT, revision INTEGER NOT NULL CHECK(revision > 0));
+"#;
+
+/// Durable, engine-owned visual interaction state. Domain data stays in its
+/// authoritative stores; these rows preserve how a human or agent explored
+/// and presented one exact visual revision.
+const MIGRATION_72: &str = r#"
+CREATE TABLE visual_presentation_states (
+    visual_id TEXT PRIMARY KEY REFERENCES visuals(id) ON DELETE CASCADE,
+    visual_revision INTEGER NOT NULL,
+    state_version INTEGER NOT NULL CHECK(state_version >= 0),
+    schema_version TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (visual_id, visual_revision)
+        REFERENCES visual_revisions(visual_id, revision)
+);
+
+CREATE TABLE visual_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    visual_id TEXT NOT NULL REFERENCES visuals(id) ON DELETE CASCADE,
+    visual_revision INTEGER NOT NULL,
+    state_version INTEGER NOT NULL CHECK(state_version >= 0),
+    snapshot_json TEXT NOT NULL,
+    semantic_scene_digest TEXT NOT NULL,
+    presentation_digest TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    FOREIGN KEY (visual_id, visual_revision)
+        REFERENCES visual_revisions(visual_id, revision)
+);
+CREATE INDEX visual_snapshots_visual_time
+ON visual_snapshots(visual_id, captured_at);
+
+CREATE TABLE visual_recordings (
+    recording_id TEXT PRIMARY KEY,
+    visual_id TEXT NOT NULL REFERENCES visuals(id) ON DELETE CASCADE,
+    recording_json TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT
+);
+CREATE INDEX visual_recordings_visual_time
+ON visual_recordings(visual_id, started_at);
+
+CREATE TABLE visual_recording_events (
+    recording_id TEXT NOT NULL REFERENCES visual_recordings(recording_id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL CHECK(sequence > 0),
+    state_version INTEGER NOT NULL CHECK(state_version >= 0),
+    event_json TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    PRIMARY KEY(recording_id, sequence)
+);
+"#;
+
+const MIGRATION_73: &str = r#"
+CREATE TABLE visual_engine_sessions (
+ visual_id TEXT NOT NULL, revision INTEGER NOT NULL, view_key TEXT NOT NULL,
+ state_json TEXT NOT NULL, state_version INTEGER NOT NULL DEFAULT 0,
+ published_at TEXT, active_recording TEXT,
+ PRIMARY KEY(visual_id,revision,view_key),
+ FOREIGN KEY(visual_id,revision) REFERENCES visual_revisions(visual_id,revision)
+);
+CREATE TABLE visual_engine_receipts (
+ visual_id TEXT NOT NULL, revision INTEGER NOT NULL, view_key TEXT NOT NULL,
+ command_key TEXT NOT NULL, request_json TEXT NOT NULL, receipt_json TEXT NOT NULL,
+ PRIMARY KEY(visual_id,revision,view_key,command_key)
+);
+CREATE TABLE visual_engine_checkpoints (
+ id TEXT PRIMARY KEY, visual_id TEXT NOT NULL, revision INTEGER NOT NULL,
+ view_key TEXT NOT NULL, checkpoint_json TEXT NOT NULL, created_at TEXT NOT NULL,
+ FOREIGN KEY(visual_id,revision) REFERENCES visual_revisions(visual_id,revision)
+);
+CREATE INDEX visual_engine_checkpoint_lookup ON visual_engine_checkpoints(visual_id,revision,view_key,created_at);
+CREATE TABLE visual_engine_recordings (
+ id TEXT PRIMARY KEY, visual_id TEXT NOT NULL, revision INTEGER NOT NULL,
+ view_key TEXT NOT NULL, initial_json TEXT NOT NULL, created_at TEXT NOT NULL, ended_at TEXT,
+ FOREIGN KEY(visual_id,revision) REFERENCES visual_revisions(visual_id,revision)
+);
+CREATE INDEX visual_engine_recording_lookup ON visual_engine_recordings(visual_id,revision,view_key,created_at);
+CREATE TABLE visual_engine_events (
+ recording_id TEXT NOT NULL REFERENCES visual_engine_recordings(id), sequence INTEGER NOT NULL,
+ event_json TEXT NOT NULL, PRIMARY KEY(recording_id,sequence)
+);
+"#;
+
+const MIGRATION_74: &str = r#"
+CREATE TABLE visual_corpora (
+ visual_id TEXT NOT NULL, visual_revision INTEGER NOT NULL, corpus_id TEXT NOT NULL,
+ corpus_revision TEXT NOT NULL, schema_id TEXT NOT NULL, expected_count INTEGER NOT NULL,
+ sealed INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(visual_id,visual_revision,corpus_id,corpus_revision),
+ FOREIGN KEY(visual_id,visual_revision) REFERENCES visual_revisions(visual_id,revision)
+);
+CREATE TABLE visual_corpus_rows (
+ visual_id TEXT NOT NULL, visual_revision INTEGER NOT NULL, corpus_id TEXT NOT NULL, corpus_revision TEXT NOT NULL,
+ row_id TEXT NOT NULL, position INTEGER NOT NULL, row_json TEXT NOT NULL,
+ PRIMARY KEY(visual_id,visual_revision,corpus_id,corpus_revision,row_id),
+ UNIQUE(visual_id,visual_revision,corpus_id,corpus_revision,position),
+ FOREIGN KEY(visual_id,visual_revision,corpus_id,corpus_revision) REFERENCES visual_corpora(visual_id,visual_revision,corpus_id,corpus_revision)
+);
+CREATE INDEX visual_corpus_order ON visual_corpus_rows(visual_id,visual_revision,corpus_id,corpus_revision,position);
+"#;
+
+const MIGRATION_75: &str = r#"
+CREATE TABLE visual_corpus_details (
+ visual_id TEXT NOT NULL, visual_revision INTEGER NOT NULL, corpus_id TEXT NOT NULL,
+ corpus_revision TEXT NOT NULL, row_id TEXT NOT NULL, details_json TEXT NOT NULL,
+ PRIMARY KEY(visual_id,visual_revision,corpus_id,corpus_revision,row_id),
+ FOREIGN KEY(visual_id,visual_revision,corpus_id,corpus_revision,row_id)
+ REFERENCES visual_corpus_rows(visual_id,visual_revision,corpus_id,corpus_revision,row_id)
+);
+"#;
+
+const MIGRATION_78: &str = r#"
 CREATE TABLE IF NOT EXISTS project_source_requests (
     id TEXT PRIMARY KEY,
     session_id TEXT,
     requested_path TEXT NOT NULL,
     canonical_path TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    containers INTEGER NOT NULL,
-    recipes INTEGER NOT NULL,
-    attach_to_conversation INTEGER NOT NULL,
+    reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 2048),
+    containers INTEGER NOT NULL CHECK(containers IN (0,1)),
+    recipes INTEGER NOT NULL CHECK(recipes IN (0,1)),
+    attach_to_conversation INTEGER NOT NULL CHECK(attach_to_conversation IN (0,1)),
     status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','expired')),
     created_at TEXT NOT NULL,
-    resolved_at TEXT
+    resolved_at TEXT,
+    CHECK(containers=1 OR recipes=1),
+    CHECK(attach_to_conversation=0 OR session_id IS NOT NULL)
 );
-CREATE INDEX IF NOT EXISTS project_source_requests_status ON project_source_requests(status, created_at DESC);
-CREATE INDEX IF NOT EXISTS project_source_requests_session ON project_source_requests(session_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS project_source_requests_pending
+ON project_source_requests(session_id,canonical_path) WHERE status='pending' AND session_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS project_source_requests_pending_global
+ON project_source_requests(canonical_path) WHERE status='pending' AND session_id IS NULL;
+CREATE INDEX IF NOT EXISTS project_source_requests_session
+ON project_source_requests(session_id,created_at DESC,id DESC);
 "#;
 
-/// Conversation-scoped paid-compute auto-approval projection. Sealed at
-/// session start; reservations and settled spend survive Workshop restart.
-const MIGRATION_62: &str = PAID_COMPUTE_BUDGET_CREATE_ONLY;
-
-/// Immutable, content-addressed optimizer evidence imported across Workshop
-/// instance boundaries.
-const MIGRATION_63: &str = r#"
+const MIGRATION_77: &str = r#"
 CREATE TABLE IF NOT EXISTS optimizer_snapshots (
     snapshot_id TEXT PRIMARY KEY,
     schema_version TEXT NOT NULL,
@@ -3670,3 +4351,11 @@ CREATE INDEX IF NOT EXISTS optimizer_snapshots_source_run
 ON optimizer_snapshots(source_instance_id, source_run_id, captured_at DESC);
 "#;
 
+const MIGRATION_76: &str = r#"
+CREATE TABLE visual_evidence_cuts (
+ visual_id TEXT NOT NULL, visual_revision INTEGER NOT NULL, digest TEXT NOT NULL,
+ value_json TEXT NOT NULL, captured_at TEXT NOT NULL,
+ PRIMARY KEY(visual_id,visual_revision,digest),
+ FOREIGN KEY(visual_id,visual_revision) REFERENCES visual_revisions(visual_id,revision)
+);
+"#;

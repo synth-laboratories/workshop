@@ -6,6 +6,15 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 
 /** Commands */
 export const commands = {
+	desktopStateGet: () => typedError<Snapshot, string>(__TAURI_INVOKE("desktop_state_get")),
+	desktopStateCommit: (input: Write) => typedError<Entry, string>(__TAURI_INVOKE("desktop_state_commit", { input })),
+	agentBackendsList: () => typedError<Backend[], string>(__TAURI_INVOKE("agent_backends_list")),
+	agentSessionsList: () => typedError<unknown, string>(__TAURI_INVOKE("agent_sessions_list")),
+	agentSessionStart: (request: StartRequest) => typedError<unknown, string>(__TAURI_INVOKE("agent_session_start", { request })),
+	agentSessionSend: (sessionId: string, text: string) => typedError<unknown, string>(__TAURI_INVOKE("agent_session_send", { sessionId, text })),
+	agentSessionCancel: (sessionId: string) => typedError<unknown, string>(__TAURI_INVOKE("agent_session_cancel", { sessionId })),
+	agentSessionClose: (sessionId: string) => typedError<unknown, string>(__TAURI_INVOKE("agent_session_close", { sessionId })),
+	agentSessionResume: (sessionId: string) => typedError<unknown, string>(__TAURI_INVOKE("agent_session_resume", { sessionId })),
 	/**  Instance diagnostics command included in the generated desktop boundary. */
 	desktopInstanceDiagnostics: () => __TAURI_INVOKE<InstanceDiagnostics>("desktop_instance_diagnostics"),
 	desktopInstancesList: () => typedError<RegisteredInstance[], string>(__TAURI_INVOKE("desktop_instances_list")),
@@ -33,11 +42,20 @@ export const commands = {
 	dataContainersProbe: (containerId: string) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_probe", { containerId })),
 	dataContainersReconcile: (containerId: string, sessionId: string) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_reconcile", { containerId, sessionId })),
 	dataContainersRestart: (containerId: string, sessionId: string) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_restart", { containerId, sessionId })),
+	dataTraceResearchRequest: (operation: string, argumentsJson: string) => typedError<string, AppError_Serialize>(__TAURI_INVOKE("data_trace_research_request", { operation, argumentsJson })),
 	dataTracesList: () => typedError<TraceRecord[], AppError_Serialize>(__TAURI_INVOKE("data_traces_list")),
 	dataTracesGet: (traceId: string) => typedError<TraceRecord, AppError_Serialize>(__TAURI_INVOKE("data_traces_get", { traceId })),
 	dataTraceMaterialize: (containerId: string, rolloutId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("data_trace_materialize", { containerId, rolloutId })),
 	dataTracesIngest: (request: TraceBundleIngestRequest) => typedError<TraceBundleIngestResult, AppError_Serialize>(__TAURI_INVOKE("data_traces_ingest", { request })),
 	dataTraceProjectionResolve: (traceDigest: string, projectionKind: string) => typedError<ResolvedTraceProjection, AppError_Serialize>(__TAURI_INVOKE("data_trace_projection_resolve", { traceDigest, projectionKind })),
+	/**
+	 *  Read a bounded local annotation projection without exposing the authenticated
+	 *  loopback Visuals IPC token to the renderer.
+	 */
+	analysisProjectionGet: (kind: string, digest: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("analysis_projection_get", { kind, digest })),
+	analysisFindingsList: (traceDigest: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("analysis_findings_list", { traceDigest })),
+	analysisCampaignsList: (evalRunId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("analysis_campaigns_list", { evalRunId })),
+	analysisReviewRecord: (findingId: string, evidenceHeadDigest: string, decision: string, rationale: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("analysis_review_record", { findingId, evidenceHeadDigest, decision, rationale })),
 	dataUsageList: (limit: number | null) => typedError<UsageEntry[], AppError_Serialize>(__TAURI_INVOKE("data_usage_list", { limit })),
 	modelPerformanceSummary: () => typedError<ModelPerformanceSummary[], AppError_Serialize>(__TAURI_INVOKE("model_performance_summary")),
 	modelPerformanceTurnSamples: (sessionId: string) => typedError<ModelPerformanceTurnSample[], AppError_Serialize>(__TAURI_INVOKE("model_performance_turn_samples", { sessionId })),
@@ -60,24 +78,132 @@ export const commands = {
 	updateOpenDownload: () => typedError<null, AppError_Serialize>(__TAURI_INVOKE("update_open_download")),
 	dataCounts: () => typedError<DataCounts, AppError_Serialize>(__TAURI_INVOKE("data_counts")),
 	optimizersAlgorithmsList: () => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("optimizers_algorithms_list")),
-	optimizersRecipesList: () => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("optimizers_recipes_list")),
+	optimizersRecipesList: (sessionRef: string | null) => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("optimizers_recipes_list", { sessionRef })),
 	optimizersRecipeStart: (request: OptimizerRecipeRunRequest) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_recipe_start", { request })),
 	/**
-	 *  Freeze inline policy source into one immutable candidate set. Its id is the
-	 *  only policy input `optimizers_recipe_start` accepts for an `eval.*` recipe.
+	 *  Freeze policy files from the session's workspace into one immutable
+	 *  candidate set. Its id is the only policy input `optimizers_recipe_start`
+	 *  accepts for an `eval.*` recipe.
 	 */
-	optimizersStageEvalCandidates: (request: EvalStageCandidatesRequest_Deserialize) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("optimizers_stage_eval_candidates", { request })),
+	optimizersStageEvalCandidates: (request: EvalStageCandidatesRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("optimizers_stage_eval_candidates", { request })),
 	optimizersList: (query: {
 	status: string | null,
 	algorithmId: string | null,
 	source: string | null,
 	search: string | null,
 	sessionRef: string | null,
-	limit: number,
-	offset: number,
+	limit: number | null,
+	offset: number | null,
 } | null) => typedError<OptimizerRunRecord[], AppError_Serialize>(__TAURI_INVOKE("optimizers_list", { query })),
 	optimizersGet: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_get", { optimizerRunId })),
+	optimizersRunView: (optimizerRunId: string, ifNewerThan: number | null) => typedError<OptimizerRunViewEnvelope_Serialize, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_view", { optimizerRunId, ifNewerThan })),
 	optimizersRunViewV2: (optimizerRunId: string) => typedError<OptimizerRunViewV2, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_view_v2", { optimizerRunId })),
+	/**
+	 *  Read the parts of an evidence window the caller does not already hold.
+	 *
+	 *  `held` is the coverage returned by the previous call, sent back verbatim.
+	 *  The answer is the complement, so re-opening Replay after a restart transfers
+	 *  only what is genuinely missing rather than the whole journal again.
+	 */
+	optimizersEvidencePage: (optimizerRunId: string, window: EvidenceRange, held: EvidenceRange[] | null, limit: number | null) => typedError<EvidencePage_Serialize, AppError_Serialize>(__TAURI_INVOKE("optimizers_evidence_page", { optimizerRunId, window, held, limit })),
+	/**
+	 *  The bounded run summary: what every live card, dialog, and visual mounts
+	 *  from. Conditional on `if_newer_than` like `optimizers_run_view`.
+	 */
+	optimizersRunSummary: (optimizerRunId: string, ifNewerThan: number | null) => typedError<OptimizerRunSummaryEnvelope_Serialize, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_summary", { optimizerRunId, ifNewerThan })),
+	/**
+	 *  One keyset page of a durable run collection. Every page has an explicit,
+	 *  clamped limit; there is no "all rows" form.
+	 */
+	optimizersRunCollection: (optimizerRunId: string, collection: RunCollection, query: {
+	/**  Opaque keyset cursor from the previous page's `next_cursor`. */
+	cursor?: string | null,
+	/**
+	 *  Rows requested. Clamped to [`COLLECTION_PAGE_MAX_ROWS`]; absent means
+	 *  [`COLLECTION_PAGE_DEFAULT_ROWS`].
+	 */
+	limit?: number | null,
+	filter?: RunCollectionFilter | null,
+	/**  Newest ordinals first. Default is append order. */
+	descending?: boolean,
+} | null) => typedError<RunCollectionPage_Serialize, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_collection", { optimizerRunId, collection, query })),
+	optimizersRunCollectionItem: (optimizerRunId: string, collection: RunCollection, itemId: string) => typedError<{
+	schemaVersion: string,
+	runId: string,
+	algorithm: AlgorithmKind,
+	collection: RunCollection,
+	itemId: string,
+	/**
+	 *  Position in the collection's append order. Keyset cursor; stable
+	 *  across concurrent appends because appends only ever add higher ones.
+	 */
+	ordinal: number,
+	/**
+	 *  Aggregate sequence the projection had reached when this row was
+	 *  written or last changed.
+	 */
+	sequence: number,
+	/**  Projection revision that wrote or last changed this row. */
+	revision: number,
+	kind: string,
+	label?: string | null,
+	parentId?: string | null,
+	score?: number | null,
+	costUsd?: number | null,
+	status?: string | null,
+	detailsVersion: string,
+	/**
+	 *  True only on a collection page when this row's detail alone exceeds
+	 *  the page byte budget. The common envelope remains visible; callers
+	 *  fetch the full detail through `run_collection_item` on selection.
+	 */
+	detailsDeferred?: boolean,
+	detailsBytes: number,
+	details: unknown,
+} | null, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_collection_item", { optimizerRunId, collection, itemId })),
+	/**
+	 *  The projection as it stood at `sequence`, folded backend-side from the
+	 *  nearest reducer checkpoint. The historical scrubber reads this instead of
+	 *  reducing the journal in the renderer.
+	 */
+	optimizersProjectionAt: (optimizerRunId: string, sequence: number) => typedError<HistoricalProjection, AppError_Serialize>(__TAURI_INVOKE("optimizers_projection_at", { optimizerRunId, sequence })),
+	/**
+	 *  One coherent read for a visual's first paint: the durable projection, the
+	 *  run record the templates still read compatibility fields from, and the
+	 *  journal tail an evidence reader pages against.
+	 *
+	 *  `if_newer_than` makes it conditional. A caller holding projection revision
+	 *  *n* passes it and is told `unchanged` instead of being handed the same
+	 *  bytes again — which is what turns a background freshness check into one
+	 *  indexed column read rather than a full projection load and IPC round trip.
+	 *  The render receipt for one visual revision, if it has ever rendered.
+	 *
+	 *  Read on reopen so a visual can tell "the projection has moved on" (normal)
+	 *  from "the projection is now older than, or different from, what I already
+	 *  showed" (a regression that must be reported rather than rendered).
+	 */
+	optimizersVisualRenderReceipt: (visualId: string, visualRevision: number | null) => typedError<{
+	visualId: string,
+	visualRevision: number,
+	optimizerRunId: string,
+	templateId: string,
+	/**
+	 *  The template digest the render was produced by. A template change
+	 *  invalidates the comparison rather than failing it: different code
+	 *  legitimately renders the same projection differently.
+	 */
+	templateVersion: string,
+	/**  The durable projection revision this render was produced from. */
+	projectionRevision: number,
+	/**
+	 *  Digest of the projection content, so the same revision carrying
+	 *  different bytes is detectable.
+	 */
+	dataDigest: string,
+	/**  How far the journal had been replayed when the render completed. */
+	tailCursor: number,
+	renderedAt: string,
+} | null, AppError_Serialize>(__TAURI_INVOKE("optimizers_visual_render_receipt", { visualId, visualRevision })),
 	optimizersCreate: (request: OptimizerCreateRequest) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_create", { request })),
 	optimizersRefresh: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_refresh", { optimizerRunId })),
 	optimizersEventsAfter: (optimizerRunId: string, afterSeq: number | null, limit: number | null) => typedError<OptimizerEventEnvelope[], AppError_Serialize>(__TAURI_INVOKE("optimizers_events_after", { optimizerRunId, afterSeq, limit })),
@@ -109,8 +235,8 @@ export const commands = {
 	optimizerAlgorithm: string | null,
 	status: string | null,
 	tags: string[] | null,
-	limit: number,
-	offset: number,
+	limit: number | null,
+	offset: number | null,
 } | null) => typedError<SavedLoraCheckpointPage, AppError_Serialize>(__TAURI_INVOKE("optimizers_saved_loras_search", { query })),
 	optimizersRunCheckpointsList: (optimizerRunId: string) => typedError<SavedLoraRunPage, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_checkpoints_list", { optimizerRunId })),
 	optimizersRunOutputs: (optimizerRunId: string) => typedError<OptimizerRunOutputs, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_outputs", { optimizerRunId })),
@@ -122,6 +248,7 @@ export const commands = {
 	optimizersSavedLoraPatch: (checkpointId: string, patch: SavedLoraPatchRequest) => typedError<SavedLoraCheckpoint, AppError_Serialize>(__TAURI_INVOKE("optimizers_saved_lora_patch", { checkpointId, patch })),
 	optimizersSavedLoraPublish: (checkpointId: string) => typedError<SavedLoraCheckpoint, AppError_Serialize>(__TAURI_INVOKE("optimizers_saved_lora_publish", { checkpointId })),
 	optimizersTrainingReconcile: (optimizerRunId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("optimizers_training_reconcile", { optimizerRunId })),
+	optimizersContainerExperimentAction: (optimizerRunId: string, action: string, checkpointId: string | null) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("optimizers_container_experiment_action", { optimizerRunId, action, checkpointId })),
 	pluginsStatus: (pluginId: string | null) => typedError<PluginStatus, AppError_Serialize>(__TAURI_INVOKE("plugins_status", { pluginId })),
 	pluginsList: () => typedError<PluginStatus[], AppError_Serialize>(__TAURI_INVOKE("plugins_list")),
 	/**
@@ -135,6 +262,10 @@ export const commands = {
 	 */
 	pluginsManage: (operation: string, pluginId: string, version: string | null, sessionId: string | null) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("plugins_manage", { operation, pluginId, version, sessionId })),
 	pluginsSetReleaseChannel: (pluginId: string, channel: string) => typedError<PluginStatus, AppError_Serialize>(__TAURI_INVOKE("plugins_set_release_channel", { pluginId, channel })),
+	/**  Persist the optional analysis scope. This never launches paid work. */
+	jesterkyAnalysisSettings: (settings: {
+	annotationScope: AnnotationScope,
+} | null) => typedError<AnalysisSettings, AppError_Serialize>(__TAURI_INVOKE("jesterky_analysis_settings", { settings })),
 	computerUseStatus: (sessionId: string | null) => typedError<ComputerUseSnapshot, AppError_Serialize>(__TAURI_INVOKE("computer_use_status", { sessionId })),
 	/**
 	 *  Install the helper that ships inside this app bundle.
@@ -200,53 +331,22 @@ export const commands = {
 	optimizerSidecarUninstall: (version: string) => typedError<OptimizerSidecarStatus, AppError_Serialize>(__TAURI_INVOKE("optimizer_sidecar_uninstall", { version })),
 	visualsTemplatesList: (genre: string | null) => typedError<TemplateMeta[], AppError_Serialize>(__TAURI_INVOKE("visuals_templates_list", { genre })),
 	visualsTemplatesGet: (templateId: string) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_templates_get", { templateId })),
-	visualsTemplateShellSource: (templateId: string) => typedError<string, AppError_Serialize>(__TAURI_INVOKE("visuals_template_shell_source", { templateId })),
-	/**
-	 *  Persist authored TSX as a reusable template under the instance state root.
-	 *
-	 *  `manifest` is `template.json`'s text, not a typed struct: the manifest
-	 *  schema belongs to the template package, and a typed argument would silently
-	 *  drop every key the host does not happen to know about.
-	 *
-	 *  **This writes code the app compiles at every launch**, which is a different
-	 *  act from rendering in the pane, so it is gated: the write is described to a
-	 *  person as a `visual_template_persist` approval and only happens if they
-	 *  allow it. That is why this is `async` and why it takes both the app handle
-	 *  (the broker lives in its state) and the `session_id` the card is raised on —
-	 *  the synchronous `save_template` on the registry now always refuses, because
-	 *  a synchronous entry point cannot wait for a human.
-	 */
-	visualsTemplateSave: (sessionId: string, templateId: string, manifest: string, source: string) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_template_save", { sessionId, templateId, manifest, source })),
-	/**
-	 *  Scaffold a new user template by forking an existing one under a new id.
-	 *
-	 *  Fork rather than shadow, so a shipped id keeps meaning exactly one thing.
-	 *
-	 *  Gated the same way [`visuals_template_save`] is: a fork also leaves code the
-	 *  app compiles at every launch, so it settles a `visual_template_persist`
-	 *  approval on `session_id` before writing anything.
-	 */
-	visualsTemplateCreate: (sessionId: string, templateId: string, fromTemplateId: string, title: string | null) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_template_create", { sessionId, templateId, fromTemplateId, title })),
-	/**
-	 *  Structural verdict on one user template directory.
-	 *
-	 *  Never `Err` for a template that simply is not finished yet: "manifest is
-	 *  fine, no shell.tsx" is the normal mid-authoring state and belongs in the
-	 *  report, not in an error. The import allowlist is deliberately not checked
-	 *  here — `visuals/runtime/sourcedValidate.ts` owns it, the pane runs it, and
-	 *  the report says so in `sourceScan` rather than letting silence read as
-	 *  approval.
-	 */
-	visualsTemplateValidate: (templateId: string) => typedError<UserTemplateValidation, AppError_Serialize>(__TAURI_INVOKE("visuals_template_validate", { templateId })),
 	visualsList: (query: {
 	status: string | null,
 	sessionId: string | null,
 	templateId: string | null,
 	search: string | null,
-	limit: number,
-	offset: number,
-} | null) => typedError<VisualRecord[], AppError_Serialize>(__TAURI_INVOKE("visuals_list", { query })),
-	visualsGet: (visualId: string) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_get", { visualId })),
+	limit: number | null,
+	offset: number | null,
+} | null) => typedError<VisualRecord_Serialize[], AppError_Serialize>(__TAURI_INVOKE("visuals_list", { query })),
+	visualsGet: (visualId: string) => typedError<VisualRecord_Serialize, AppError_Serialize>(__TAURI_INVOKE("visuals_get", { visualId })),
+	visualsEngine: (visualId: string, request: unknown) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visuals_engine", { visualId, request })),
+	visualsPresentationGet: (visualId: string) => typedError<unknown | null, AppError_Serialize>(__TAURI_INVOKE("visuals_presentation_get", { visualId })),
+	visualsPresentationPut: (visualId: string, presentation: unknown) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visuals_presentation_put", { visualId, presentation })),
+	visualsSnapshotsList: (visualId: string) => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("visuals_snapshots_list", { visualId })),
+	visualsSnapshotPut: (visualId: string, snapshot: unknown) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visuals_snapshot_put", { visualId, snapshot })),
+	visualsRecordingsList: (visualId: string) => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("visuals_recordings_list", { visualId })),
+	visualsRecordingPut: (visualId: string, recording: unknown) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visuals_recording_put", { visualId, recording })),
 	visualsObservationReport: (observation: RenderedVisualObservation) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("visuals_observation_report", { observation })),
 	visualsRevisions: (visualId: string) => typedError<VisualRevision[], AppError_Serialize>(__TAURI_INVOKE("visuals_revisions", { visualId })),
 	visualsAnnotationsList: (visualId: string) => typedError<VisualAnnotation[], AppError_Serialize>(__TAURI_INVOKE("visuals_annotations_list", { visualId })),
@@ -258,7 +358,7 @@ export const commands = {
 	receiptDigest: string,
 	collectionId: string | null,
 	publicationId: string | null,
-	publicationRevision: number,
+	publicationRevision: number | null,
 	state: string,
 	committedUrl: string | null,
 	error: string | null,
@@ -266,20 +366,43 @@ export const commands = {
 } | null, AppError_Serialize>(__TAURI_INVOKE("visuals_upload_status", { receiptDigest })),
 	visualsShareSeal: (receiptDigest: string) => typedError<VisualUpload, AppError_Serialize>(__TAURI_INVOKE("visuals_share_seal", { receiptDigest })),
 	visualsOpenShared: (committedUrl: string) => typedError<VisualSealBundle, AppError_Serialize>(__TAURI_INVOKE("visuals_open_shared", { committedUrl })),
-	visualsCreate: (request: VisualCreateRequest) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_create", { request })),
-	visualsUpdate: (visualId: string, request: VisualUpdateRequest) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_update", { visualId, request })),
-	visualsSave: (visualId: string, tsx: string | null) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_save", { visualId, tsx })),
-	visualsFork: (visualId: string, title: string | null, sessionId: string | null) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_fork", { visualId, title, sessionId })),
-	visualsArchive: (visualId: string) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_archive", { visualId })),
-	visualsShow: (visualId: string, sessionId: string | null) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_show", { visualId, sessionId })),
+	visualsCreate: (request: VisualCreateRequest) => typedError<VisualRecord_Serialize, AppError_Serialize>(__TAURI_INVOKE("visuals_create", { request })),
+	visualsUpdate: (visualId: string, request: VisualUpdateRequest) => typedError<VisualRecord_Serialize, AppError_Serialize>(__TAURI_INVOKE("visuals_update", { visualId, request })),
+	visualsSave: (visualId: string, tsx: string | null) => typedError<VisualRecord_Serialize, AppError_Serialize>(__TAURI_INVOKE("visuals_save", { visualId, tsx })),
+	visualsFork: (visualId: string, title: string | null, sessionId: string | null) => typedError<VisualRecord_Serialize, AppError_Serialize>(__TAURI_INVOKE("visuals_fork", { visualId, title, sessionId })),
+	visualsArchive: (visualId: string) => typedError<VisualRecord_Serialize, AppError_Serialize>(__TAURI_INVOKE("visuals_archive", { visualId })),
+	visualsShow: (visualId: string, sessionId: string | null) => typedError<VisualRecord_Serialize, AppError_Serialize>(__TAURI_INVOKE("visuals_show", { visualId, sessionId })),
 	visualsContent: (visualId: string) => typedError<VisualAsset, AppError_Serialize>(__TAURI_INVOKE("visuals_content", { visualId })),
 	visualsRenditions: (visualId: string) => typedError<VisualRendition[], AppError_Serialize>(__TAURI_INVOKE("visuals_renditions", { visualId })),
 	visualsRendition: (visualId: string, format: string | null, theme: string | null, sizeClass: string | null) => typedError<VisualAsset, AppError_Serialize>(__TAURI_INVOKE("visuals_rendition", { visualId, format, theme, sizeClass })),
-	visualsRender: (visualId: string) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_render", { visualId })),
+	visualsRender: (visualId: string) => typedError<VisualRecord_Serialize, AppError_Serialize>(__TAURI_INVOKE("visuals_render", { visualId })),
+	humanAnnotationCreate: (request: HumanAnnotationCreateRequest) => typedError<HumanAnnotationTaskRef, AppError_Serialize>(__TAURI_INVOKE("human_annotation_create", { request })),
+	humanAnnotationPreview: (request: HumanAnnotationPreviewRequest) => typedError<HumanAnnotationTaskPreview, AppError_Serialize>(__TAURI_INVOKE("human_annotation_preview", { request })),
+	humanAnnotationSessionOpen: (sessionId: string) => typedError<HumanAnnotationSessionView, AppError_Serialize>(__TAURI_INVOKE("human_annotation_session_open", { sessionId })),
+	humanAnnotationShow: (sessionId: string) => typedError<HumanAnnotationSessionView, AppError_Serialize>(__TAURI_INVOKE("human_annotation_show", { sessionId })),
+	humanAnnotationAnswerSet: (request: HumanAnnotationAnswerRequest) => typedError<HumanAnnotationMutationReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_answer_set", { request })),
+	humanAnnotationAnswerClear: (sessionId: string, expectedRevision: number, questionId: string) => typedError<HumanAnnotationMutationReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_answer_clear", { sessionId, expectedRevision, questionId })),
+	humanAnnotationCommentCreate: (request: HumanAnnotationCommentRequest) => typedError<HumanAnnotationMutationReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_comment_create", { request })),
+	humanAnnotationAudioBegin: (request: HumanAnnotationAudioBeginRequest) => typedError<HumanAnnotationAudioReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_audio_begin", { request })),
+	humanAnnotationAudioAppend: (request: HumanAnnotationAudioChunkRequest) => typedError<HumanAnnotationAudioReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_audio_append", { request })),
+	humanAnnotationAudioFinish: (request: HumanAnnotationAudioFinishRequest) => typedError<HumanAnnotationAudioReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_audio_finish", { request })),
+	humanAnnotationAudioRead: (sessionId: string, attachmentId: string) => typedError<HumanAnnotationAudioData, AppError_Serialize>(__TAURI_INVOKE("human_annotation_audio_read", { sessionId, attachmentId })),
+	humanAnnotationAudioTranscribe: (request: HumanAnnotationAudioTranscribeRequest) => typedError<HumanAnnotationMutationReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_audio_transcribe", { request })),
+	humanAnnotationTranscriptCorrect: (request: HumanAnnotationTranscriptRequest) => typedError<HumanAnnotationMutationReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_transcript_correct", { request })),
+	humanAnnotationSubmit: (request: HumanAnnotationSubmitRequest) => typedError<HumanAnnotationResultReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_submit", { request })),
+	humanAnnotationList: (query: HumanAnnotationListQuery) => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("human_annotation_list", { query })),
+	humanAnnotationStatus: (id: string) => typedError<HumanAnnotationStatus, AppError_Serialize>(__TAURI_INVOKE("human_annotation_status", { id })),
+	humanAnnotationCancel: (request: HumanAnnotationCancelRequest) => typedError<HumanAnnotationStatus, AppError_Serialize>(__TAURI_INVOKE("human_annotation_cancel", { request })),
+	humanAnnotationExport: (request: HumanAnnotationExportRequest) => typedError<HumanAnnotationExportReceipt, AppError_Serialize>(__TAURI_INVOKE("human_annotation_export", { request })),
+	humanAnnotationCampaignCreate: (request: HumanAnnotationCampaignCreateRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("human_annotation_campaign_create", { request })),
+	humanAnnotationCampaignStatus: (campaignId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("human_annotation_campaign_status", { campaignId })),
+	humanAnnotationCampaignClose: (request: HumanAnnotationCampaignActionRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("human_annotation_campaign_close", { request })),
+	humanAnnotationCampaignAdjudicate: (request: HumanAnnotationCampaignAdjudicateRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("human_annotation_campaign_adjudicate", { request })),
+	humanAnnotationSupersede: (request: HumanAnnotationSupersedeRequest) => typedError<HumanAnnotationTaskRef, AppError_Serialize>(__TAURI_INVOKE("human_annotation_supersede", { request })),
 	reportsList: (query: {
 	status: string | null,
 	search: string | null,
-	limit: number,
+	limit: number | null,
 	includeArchived?: boolean,
 } | null) => typedError<ReportRecord[], AppError_Serialize>(__TAURI_INVOKE("reports_list", { query })),
 	reportsGet: (reportId: string) => typedError<ReportRecord, AppError_Serialize>(__TAURI_INVOKE("reports_get", { reportId })),
@@ -309,6 +432,7 @@ export const commands = {
 	status: string,
 	task: string | null,
 	model: string | null,
+	tags?: string[],
 	bestResult: unknown | null,
 	members: ExperimentMember[],
 	nodes: ExperimentNode[],
@@ -320,14 +444,17 @@ export const commands = {
 	experimentsCreateChild: (request: ExperimentChildCreateRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_create_child", { request })),
 	experimentsRelate: (request: ExperimentRelateRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_relate", { request })),
 	experimentsActivate: (sessionId: string, experimentId: string) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_activate", { sessionId, experimentId })),
+	experimentsUpdate: (request: ExperimentUpdateRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_update", { request })),
 	experimentsFinalize: (request: ExperimentFinalizeRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_finalize", { request })),
+	researchLogList: (query: string | null, experimentId: string | null) => typedError<ResearchJournalEntry[], AppError_Serialize>(__TAURI_INVOKE("research_log_list", { query, experimentId })),
+	researchLogAppend: (request: ResearchJournalAppendRequest) => typedError<ResearchJournalEntry, AppError_Serialize>(__TAURI_INVOKE("research_log_append", { request })),
 	reportsLogList: (reportId: string) => typedError<ResearchLogEntry[], AppError_Serialize>(__TAURI_INVOKE("reports_log_list", { reportId })),
 	reportsLogAppend: (reportId: string, request: ResearchLogAppend) => typedError<ResearchLogEntry, AppError_Serialize>(__TAURI_INVOKE("reports_log_append", { reportId, request })),
 	reportsUploadStatus: (receiptDigest: string) => typedError<{
 	receiptDigest: string,
 	collectionId: string | null,
 	publicationId: string | null,
-	publicationRevision: number,
+	publicationRevision: number | null,
 	state: string,
 	committedUrl: string | null,
 	error: string | null,
@@ -471,30 +598,6 @@ export const commands = {
 	contextCookbooksSetEnabled: (workspace: string, enabled: boolean) => typedError<ContextSnapshot, AppError_Serialize>(__TAURI_INVOKE("context_cookbooks_set_enabled", { workspace, enabled })),
 	contextCookbooksUninstall: (workspace: string) => typedError<ContextSnapshot, AppError_Serialize>(__TAURI_INVOKE("context_cookbooks_uninstall", { workspace })),
 	workspaceChooseDirectory: () => typedError<string | null, AppError_Serialize>(__TAURI_INVOKE("workspace_choose_directory")),
-	/**
-	 *  Read one workspace document for display.
-	 *
-	 *  Refuses with `document_outside_workspace` for a path outside every session
-	 *  root, and with `document_unavailable` plus the named reason for a path that
-	 *  is in scope but cannot be typeset. Neither is an empty string.
-	 */
-	workspaceReadFile: (sessionId: string, path: string) => typedError<WorkspaceDocument, AppError_Serialize>(__TAURI_INVOKE("workspace_read_file", { sessionId, path })),
-	/**
-	 *  List one workspace directory — the breadcrumb's and the file picker's data.
-	 *
-	 *  Rows that cannot be opened are listed with the reason rather than filtered
-	 *  out, so a folder of binaries reads as a folder of binaries and not as empty.
-	 */
-	workspaceListDir: (sessionId: string, path: string) => typedError<WorkspaceDirectory, AppError_Serialize>(__TAURI_INVOKE("workspace_list_dir", { sessionId, path })),
-	/**
-	 *  Open one workspace document in the right panel.
-	 *
-	 *  The same rail a visual takes: resolve or create the deterministic pane
-	 *  record, emit the durable `visual.show` event, and let the panel's existing
-	 *  listener open it. The renderer does not open the pane itself, so a document
-	 *  the agent shows and a document the reader clicks arrive by one path.
-	 */
-	documentShow: (sessionId: string, path: string) => typedError<DocumentShown, AppError_Serialize>(__TAURI_INVOKE("document_show", { sessionId, path })),
 	codexSessionStart: (request: CodexSessionStartRequest) => typedError<CodexSessionInfo, AppError_Serialize>(__TAURI_INVOKE("codex_session_start", { request })),
 	codexTurnStart: (request: CodexTurnStartRequest) => typedError<CodexSessionInfo, AppError_Serialize>(__TAURI_INVOKE("codex_turn_start", { request })),
 	/**
@@ -503,6 +606,11 @@ export const commands = {
 	 *  which stranded the UI in `Working` with a live `Stop`.
 	 */
 	codexTurnSend: (request: CodexTurnSendRequest) => typedError<CodexSessionInfo, CodexTurnFailure>(__TAURI_INVOKE("codex_turn_send", { request })),
+	/**
+	 *  Side-effect-free hosted inference lifecycle read. Credential custody stays
+	 *  in the native broker; only Shoal's public status projection crosses IPC.
+	 */
+	synthCloudInferenceStatus: (sessionId: string, model: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("synth_cloud_inference_status", { sessionId, model })),
 	codexTurnInterrupt: (request: CodexSessionRequest) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("codex_turn_interrupt", { request })),
 	codexThreadCompact: (request: CodexSessionStartRequest) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("codex_thread_compact", { request })),
 	codexThreadRead: (request: CodexThreadReadRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("codex_thread_read", { request })),
@@ -517,6 +625,11 @@ export const commands = {
 	terminalSnapshot: (terminalId: string, afterSequence: number | null) => typedError<TerminalEvent[], AppError_Serialize>(__TAURI_INVOKE("terminal_snapshot", { terminalId, afterSequence })),
 	terminalWrite: (terminalId: string, data: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_write", { terminalId, data })),
 	terminalResize: (terminalId: string, cols: number, rows: number) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_resize", { terminalId, cols, rows })),
+	terminalGhosttyMount: (request: NativeTerminalMountRequest) => typedError<boolean, AppError_Serialize>(__TAURI_INVOKE("terminal_ghostty_mount", { request })),
+	terminalGhosttySetFrame: (terminalId: string, frame: NativeTerminalFrame) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_ghostty_set_frame", { terminalId, frame })),
+	terminalGhosttySetVisible: (terminalId: string, visible: boolean) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_ghostty_set_visible", { terminalId, visible })),
+	terminalGhosttyFocus: (terminalId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_ghostty_focus", { terminalId })),
+	terminalGhosttyUnmount: (terminalId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_ghostty_unmount", { terminalId })),
 	terminalClose: (terminalId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_close", { terminalId })),
 	secretsWorkspaceRootsList: () => typedError<WorkspaceRootSummary[], AppError_Serialize>(__TAURI_INVOKE("secrets_workspace_roots_list")),
 	secretsBindingsList: () => typedError<CredentialBindingSummary[], AppError_Serialize>(__TAURI_INVOKE("secrets_bindings_list")),
@@ -551,26 +664,6 @@ export const commands = {
 	secretsDenyEnvImport: (requestId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("secrets_deny_env_import", { requestId })),
 	productTelemetryGetPolicy: () => typedError<TelemetryPolicy, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_get_policy")),
 	productTelemetrySetOptOut: (optOut: boolean) => typedError<TelemetryPolicy, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_set_opt_out", { optOut })),
-	/**
-	 *  The first-run consent answer. `granted` enables optional analytics and
-	 *  sync; `declined` disables optional analytics and deletes queued events.
-	 */
-	productTelemetrySetConsent: (granted: boolean) => typedError<TelemetryPolicy, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_set_consent", { granted })),
-	/**
-	 *  Transparency view: the most recent locally stored events, exactly as they
-	 *  would sync. Display-safe by construction — the gate refused anything else.
-	 */
-	productTelemetryRecent: (limit: number) => typedError<TelemetryEventRecord[], AppError_Serialize>(__TAURI_INVOKE("product_telemetry_recent", { limit })),
-	/**
-	 *  Manual flush for Settings and QA. Reports the number of events shipped;
-	 *  without current consent it ships nothing and reports zero.
-	 */
-	productTelemetryFlushNow: () => typedError<number, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_flush_now")),
-	/**
-	 *  Display-safe build envelope for the renderer: the compiled tier and the
-	 *  per-feature included/enabled resolution.
-	 */
-	releaseTierGet: () => __TAURI_INVOKE<ReleaseTierReport>("release_tier_get"),
 	failuresQuery: (request: FailureQuery) => typedError<FailureQueryResult, AppError_Serialize>(__TAURI_INVOKE("failures_query", { request })),
 	failuresGet: (failureId: string) => typedError<{
 	schemaVersion: string,
@@ -590,47 +683,74 @@ export const commands = {
 	logsQuery: (request: LogQuery) => typedError<LogQueryResult, AppError_Serialize>(__TAURI_INVOKE("logs_query", { request })),
 	failureExportBundle: (failureId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("failure_export_bundle", { failureId })),
 	observabilityStatus: () => __TAURI_INVOKE<ObservabilityStatus>("observability_status"),
+	/**
+	 *  The first-run consent answer. `granted` enables optional analytics and
+	 *  sync; `declined` disables optional analytics and deletes queued events.
+	 */
+	productTelemetrySetConsent: (granted: boolean) => typedError<TelemetryPolicy, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_set_consent", { granted })),
+	/**
+	 *  Transparency view: the most recent locally stored events, exactly as they
+	 *  would sync. Display-safe by construction — the gate refused anything else.
+	 */
+	productTelemetryRecent: (limit: number) => typedError<TelemetryEventRecord[], AppError_Serialize>(__TAURI_INVOKE("product_telemetry_recent", { limit })),
+	/**
+	 *  Manual flush for Settings and QA. Reports the number of events shipped;
+	 *  without current consent it ships nothing and reports zero.
+	 */
+	productTelemetryFlushNow: () => typedError<number, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_flush_now")),
+	/**
+	 *  Read one workspace document for display.
+	 *
+	 *  Refuses with `document_outside_workspace` for a path outside every session
+	 *  root, and with `document_unavailable` plus the named reason for a path that
+	 *  is in scope but cannot be typeset. Neither is an empty string.
+	 */
+	workspaceReadFile: (sessionId: string, path: string) => typedError<WorkspaceDocument, AppError_Serialize>(__TAURI_INVOKE("workspace_read_file", { sessionId, path })),
+	/**
+	 *  List one workspace directory — the breadcrumb's and the file picker's data.
+	 *
+	 *  Rows that cannot be opened are listed with the reason rather than filtered
+	 *  out, so a folder of binaries reads as a folder of binaries and not as empty.
+	 */
+	workspaceListDir: (sessionId: string, path: string) => typedError<WorkspaceDirectory, AppError_Serialize>(__TAURI_INVOKE("workspace_list_dir", { sessionId, path })),
+	/**
+	 *  Open one workspace document in the right panel.
+	 *
+	 *  The same rail a visual takes: resolve or create the deterministic pane
+	 *  record, emit the durable `visual.show` event, and let the panel's existing
+	 *  listener open it. The renderer does not open the pane itself, so a document
+	 *  the agent shows and a document the reader clicks arrive by one path.
+	 */
+	documentShow: (sessionId: string, path: string) => typedError<DocumentShown_Serialize, AppError_Serialize>(__TAURI_INVOKE("document_show", { sessionId, path })),
+	visualsTemplateShellSource: (templateId: string) => typedError<string, AppError_Serialize>(__TAURI_INVOKE("visuals_template_shell_source", { templateId })),
+	visualsTemplateSave: (sessionId: string, templateId: string, manifest: string, source: string) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_template_save", { sessionId, templateId, manifest, source })),
+	visualsTemplateCreate: (sessionId: string, templateId: string, fromTemplateId: string, title: string | null) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_template_create", { sessionId, templateId, fromTemplateId, title })),
+	visualsTemplateValidate: (templateId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visuals_template_validate", { templateId })),
+	approvalsPending: () => typedError<PendingApprovalView[], AppError_Serialize>(__TAURI_INVOKE("approvals_pending")),
+	/**
+	 *  Human-only compatibility operation. Only a unique currently pending sheet
+	 *  may settle. As on the previous implementation, a replay fails closed; the
+	 *  legacy alreadySettled field is false, not a promise of durable idempotence.
+	 */
+	approvalsApproveDigest: (request: ApproveDigestRequest) => typedError<ApproveDigestOutcome, AppError_Serialize>(__TAURI_INVOKE("approvals_approve_digest", { request })),
 	projectSourcesGet: () => typedError<ProjectSourceCatalog, AppError_Serialize>(__TAURI_INVOKE("project_sources_get")),
 	projectSourcesRefresh: () => typedError<ProjectSourceCatalog, AppError_Serialize>(__TAURI_INVOKE("project_sources_refresh")),
-	/**
-	 *  Add a project source the operator chose in Settings.
-	 *
-	 *  Runs the same validation as an approved agent request: canonicalize, refuse
-	 *  a root too broad to be one project, and require at least one declaration
-	 *  that parses. Settings is the only place a deliberately broad root such as a
-	 *  whole checkout directory can be added, and it is added by a person.
-	 */
 	projectSourceAdd: (containers: boolean, recipes: boolean) => typedError<{
 	configPath: string,
 	sources: ProjectSourceRow[],
-	/**
-	 *  Roots in effect that are *not* persisted -- environment overrides,
-	 *  remembered provenance, the development fallback. Shown so the user can
-	 *  see why discovery behaves as it does without reading the launcher.
-	 */
 	implicitRoots: ProjectSourceRow[],
 } | null, AppError_Serialize>(__TAURI_INVOKE("project_source_add", { containers, recipes })),
 	projectSourceRemove: (path: string) => typedError<ProjectSourceCatalog, AppError_Serialize>(__TAURI_INVOKE("project_source_remove", { path })),
+	projectSourceRequest: (request: ProjectSourceRequestInput) => typedError<ProjectSourceRequest, AppError_Serialize>(__TAURI_INVOKE("project_source_request", { request })),
 	projectSourceRequestsList: (sessionId: string | null) => typedError<ProjectSourceRequest[], AppError_Serialize>(__TAURI_INVOKE("project_source_requests_list", { sessionId })),
-	/**
-	 *  Approve one pending project-source request.
-	 *
-	 *  The picker selection is passed to the backend separately from the path the
-	 *  agent requested, and admission happens only if the two canonicalize to the
-	 *  same directory. Choosing the parent folder in the dialog does not widen the
-	 *  grant; it fails.
-	 */
+	projectSourceDeny: (requestId: string) => typedError<ProjectSourceRequest, AppError_Serialize>(__TAURI_INVOKE("project_source_deny", { requestId })),
 	projectSourceApprove: (requestId: string) => typedError<{
 	request: ProjectSourceRequest,
 	source: ProjectSourceRow,
 	catalog: ProjectSourceCatalog,
-	/**
-	 *  Present only when the request asked to attach the folder to its
-	 *  conversation and that attachment succeeded.
-	 */
 	scope: ConversationWorkspaceScope | null,
+	attachmentError: string | null,
 } | null, AppError_Serialize>(__TAURI_INVOKE("project_source_approve", { requestId })),
-	projectSourceDeny: (requestId: string) => typedError<ProjectSourceRequest, AppError_Serialize>(__TAURI_INVOKE("project_source_deny", { requestId })),
 };
 
 /* Types */
@@ -661,11 +781,20 @@ export type AccountPlan = {
 	 *  must then omit allowance figures instead of showing zeros.
 	 */
 	metered: boolean,
+	effectivePriceUsd?: number | null,
+	billingInterval?: string | null,
+	grantKind?: string | null,
+	entitlementState?: string | null,
+	entitlementStartsAt?: string | null,
+	entitlementExpiresAt?: string | null,
+	campaignId?: string | null,
+	claimState?: string | null,
 	monthlyAllowanceUsd?: number | null,
 	usedUsd: number | null,
 	remainingUsd?: number | null,
 	resetsAt?: string | null,
 	renewsAt?: string | null,
+	cancelAtPeriodEnd?: boolean,
 	/**  `cloud` or `dev_seed`; the UI labels the stand-in explicitly. */
 	source: string,
 };
@@ -729,6 +858,13 @@ export type AlgorithmKind = "eval" | "gepa" |
  */
 "go-ex" | "sft" | "cispo";
 
+export type AnalysisSettings = {
+	annotationScope: AnnotationScope,
+};
+
+/**  Saved independently of the removable runtime; changing scope never starts work. */
+export type AnnotationScope = "selected_rollouts" | "selected_evidence";
+
 /**  Informative error payload serialized across the Tauri boundary. */
 export type AppError = AppError_Serialize | AppError_Deserialize;
 
@@ -755,14 +891,24 @@ export type AppEvent = {
 	sequence: number,
 	eventId: string,
 	sessionId?: string | null,
-	sessionSequence?: number,
+	sessionSequence?: number | null,
 	runId?: string | null,
 	source: EventSource,
 	kind: string,
 	payload: unknown,
-	remoteSequence?: number,
+	remoteSequence?: number | null,
 	commandId?: string | null,
 	createdAt: string,
+};
+
+export type ApproveDigestOutcome = {
+	approvalId: string,
+	alreadySettled: boolean,
+	executionSpecDigest: string,
+};
+
+export type ApproveDigestRequest = {
+	executionSpecDigest: string,
 };
 
 export type ArtifactMutationReceipt = {
@@ -779,6 +925,18 @@ export type AttachmentSource = "user_picker" | "recent_folder" | "agent_request"
 export type AuthAction = "connect" | "wait" | "none" | "reauthenticate" | "retry";
 
 export type AuthState = "disconnected" | "authenticating" | "ready" | "expiring" | "expired" | "refresh_failed";
+
+export type AuthoringAffordance = "temporalControls" | "traceInspector" | "realEvidence";
+
+export type Backend = {
+	id: string,
+	command: string,
+	args?: string[],
+	workspace: string,
+	envFile: string | null,
+	maxSessions: number,
+	maxTurnSeconds: number,
+};
 
 export type BackendSettings = {
 	configPath: string,
@@ -837,6 +995,16 @@ export type BrowserRuntimeStatus = {
 	profileRoot: string,
 	allowedOrigins: string[],
 	defaultLocalOrigins: string[],
+	/**
+	 *  Which runtime readiness actually measured, and which the next managed
+	 *  session will start. `path` means no assembled runtime was found.
+	 */
+	runtimeSource: string,
+	runtimeRoot: string | null,
+	nodeSource: string,
+	nodePath: string,
+	playwrightVersion: string | null,
+	chromiumPath: string | null,
 };
 
 /**
@@ -884,16 +1052,48 @@ export type CheckpointInferRequest = {
 };
 
 export type CispoProjection = {
+	experiment?: unknown,
+	checkpointDetails?: unknown,
 	workItems: WorkItem[],
 	phase: RunPhase | null,
 	usage: UsageCompleteness,
 	warmStartId: string | null,
 	clipIdentity: string | null,
 	meanAdvantage: number | null,
+	advantageStd?: number | null,
+	rewardVariance?: number | null,
+	/**
+	 *  Number of distinct rollout groups whose rewards were non-uniform.
+	 *  This is a run-level learning-signal count, not a sample count.
+	 */
+	learningSignalGroups?: number,
+	/**
+	 *  Uniform groups are locally uninformative, but do not imply the whole
+	 *  run lacked a learning signal.
+	 */
+	zeroAdvantageGroups?: number,
+	/**
+	 *  Distinct rollout groups observed by the reducer. This compact scalar
+	 *  survives the bounded first-paint wire view after detailed work items
+	 *  are removed and is therefore the canonical UI count.
+	 */
+	rolloutGroupCount?: number,
+	groupSize?: number | null,
+	optimizerSteps?: number,
+	clippedTokenFraction?: number | null,
+	importanceRatioMean?: number | null,
+	klProxy?: number | null,
 	checkpoints: string[],
+	selectedCheckpointId?: string | null,
 	childEvalRunIds: string[],
 	noLearningSignal: boolean,
 	policyCheckpointId: string | null,
+	/**  Checkpoint evaluation scorecards; see `SftProjection::evaluations`. */
+	evaluations?: TrainingEvaluationSummary[],
+	/**  Bounded reward/advantage/loss curve keyed by training step. */
+	metrics?: MetricSeries,
+	/**  Clip configuration as reported by the producer. Compact facts only. */
+	clipConfig?: unknown,
 };
 
 export type CispoResult = {
@@ -979,7 +1179,7 @@ export type CodexSessionStartRequest = {
 	serviceTier: string | null,
 	threadId: string | null,
 	multiAgentVersion: MultiAgentVersion | null,
-	autoCompactTokenLimit?: number,
+	autoCompactTokenLimit?: number | null,
 	/**
 	 *  Rust-populated exact roots for this conversation. Renderer input is
 	 *  discarded by `prepare_codex_start` before launch.
@@ -1032,6 +1232,8 @@ export type CodexTurnSendRequest = {
 	start: CodexSessionStartRequest,
 	prompt: string,
 	effort: string | null,
+	/**  Same ownership as [`CodexTurnStartRequest::ui_context`]. */
+	uiContext?: string | null,
 	/**
 	 *  When the destination model differs from the live attachment, compact the
 	 *  thread on the *source* model before rebind. Renderer sets this from the
@@ -1053,6 +1255,8 @@ export type CodexTurnStartRequest = {
 	sessionId: string,
 	prompt: string,
 	effort: string | null,
+	/**  Ephemeral renderer state sent to the model but not journalled as user text. */
+	uiContext?: string | null,
 	/**
 	 *  Renderer optimistic bubble id. When present, the journalled
 	 *  `message.created` reuses it so the host event collapses onto the
@@ -1168,6 +1372,17 @@ export type CoreDiagnostics = {
 	runCount: number,
 	visualCount: number,
 	migrationComplete: boolean,
+	/**
+	 *  Transaction lock-acquisition wait, split by intent.
+	 *
+	 *  The interval between asking for a transaction and getting one — not
+	 *  query, deserialize, or IPC time. It is the number that made a busy
+	 *  producer look like a dead one from the renderer, and until now nothing
+	 *  measured it. Reads should sit near zero: in WAL mode a deferred read
+	 *  takes a snapshot rather than queueing, so a rising read wait means a
+	 *  read path is still opening `Immediate` somewhere.
+	 */
+	lockWait: LockWaitDiagnostics,
 };
 
 /**
@@ -1300,8 +1515,29 @@ export type DocumentKind =
  *  Two calls would let the pane render a viewer whose document then refuses,
  *  and the reader would watch an empty pane appear before the reason arrived.
  */
-export type DocumentShown = {
-	visual: VisualRecord,
+export type DocumentShown = DocumentShown_Serialize | DocumentShown_Deserialize;
+
+/**
+ *  What the pane receives when a document is opened: the durable pane record
+ *  and the first read, in one round trip.
+ *
+ *  Two calls would let the pane render a viewer whose document then refuses,
+ *  and the reader would watch an empty pane appear before the reason arrived.
+ */
+export type DocumentShown_Deserialize = {
+	visual: VisualRecord_Deserialize,
+	document: WorkspaceDocument,
+};
+
+/**
+ *  What the pane receives when a document is opened: the durable pane record
+ *  and the first read, in one round trip.
+ *
+ *  Two calls would let the pane render a viewer whose document then refuses,
+ *  and the reader would watch an empty pane appear before the reason arrived.
+ */
+export type DocumentShown_Serialize = {
+	visual: VisualRecord_Serialize,
 	document: WorkspaceDocument,
 };
 
@@ -1336,19 +1572,16 @@ export type EffectiveVisualAttachment = {
  */
 export type EffectiveVisualState = "declared" | "family_matched" | "fallback" | "empty";
 
-export type Enforcement =
-/**  A cargo feature compiles the host code out of excluded tiers. */
-"compiled" |
-/**  A Vite define statically eliminates the renderer code in excluded tiers. */
-"bundled" |
-/**  Maturity classification only; pre-envelope code, not yet gated. */
-"declared";
-
 export type EntityCount = {
 	found: number,
 	imported: number,
 	existing: number,
 	skipped: number,
+};
+
+export type Entry = {
+	value: string | null,
+	revision: number,
 };
 
 export type EnvImportRequest = {
@@ -1391,34 +1624,16 @@ export type EvalAggregate = {
 	evidenceRefCount: number,
 };
 
-/**  One policy whose source is supplied directly to the host as bounded data. */
-export type EvalCandidateSource = EvalCandidateSource_Serialize | EvalCandidateSource_Deserialize;
-
-/**  One policy whose source is supplied directly to the host as bounded data. */
-export type EvalCandidateSource_Deserialize = {
+/**
+ *  One staged policy. `path` is relative to the session's workspace: absolute
+ *  paths and parent traversal are refused rather than sanitized.
+ */
+export type EvalCandidateSource = {
 	label: string,
-	content: string,
+	path: string,
 	entrypoint?: string | null,
 	kind?: string | null,
 	baseline?: boolean | null,
-	/**  Retained only to turn old clients into an actionable migration error. */
-	path?: string | null,
-} & {
-	fileName?: string | null,
-} | {
-	file_name?: string | null,
-};
-
-/**  One policy whose source is supplied directly to the host as bounded data. */
-export type EvalCandidateSource_Serialize = {
-	label: string,
-	content: string,
-	fileName: string | null,
-	entrypoint: string | null,
-	kind: string | null,
-	baseline: boolean | null,
-	/**  Retained only to turn old clients into an actionable migration error. */
-	path: string | null,
 };
 
 export type EvalProjection = {
@@ -1444,6 +1659,15 @@ export type EvalProjection = {
 	 *  projections replay forward instead of becoming unreadable.
 	 */
 	evidenceLedger?: RolloutEvidenceEntry[],
+	trials?: EvalTrialSummary[],
+	scorecards?: EvalScorecardSummary[],
+	/**
+	 *  Immutable plan/setup and sealed seed ledger are compact configuration
+	 *  facts, not growing trial collections.
+	 */
+	setup?: unknown,
+	seedLedger?: unknown,
+	selection?: unknown,
 };
 
 export type EvalResult = {
@@ -1460,26 +1684,117 @@ export type EvalRunView = {
 	result: EvalResult | null,
 };
 
+/**  Candidate/stage scorecard emitted by the evaluator. */
+export type EvalScorecardSummary = {
+	id: string,
+	candidateId: string,
+	label?: string | null,
+	stage?: string | null,
+	isBaseline: boolean,
+	score?: number | null,
+	costUsd?: number | null,
+	status?: string | null,
+	details: unknown,
+	sequence: number,
+};
+
 export type EvalSelection = "promotion_not_applicable" | "inconclusive";
 
-export type EvalStageCandidatesRequest = EvalStageCandidatesRequest_Serialize | EvalStageCandidatesRequest_Deserialize;
-
-export type EvalStageCandidatesRequest_Deserialize = {
-	candidates: EvalCandidateSource_Deserialize[],
-} & {
-	/**  Retained only to turn old clients into an actionable migration error. */
-	sessionRef?: string | null,
+export type EvalStageCandidatesRequest = {
+	sessionRef: string,
+	candidates: EvalCandidateSource[],
 };
 
-export type EvalStageCandidatesRequest_Serialize = {
-	candidates: EvalCandidateSource_Serialize[],
-	/**  Retained only to turn old clients into an actionable migration error. */
-	sessionRef: string | null,
+/**
+ *  Durable measured result for one Eval trial. Long trace bodies remain
+ *  referenced; this row is sufficient for score/result browsers after a
+ *  restart without replaying the event journal.
+ */
+export type EvalTrialSummary = {
+	id: string,
+	candidateId?: string | null,
+	stage?: string | null,
+	seed?: number | null,
+	scenario?: string | null,
+	status: string,
+	benchmarkStatus?: string | null,
+	valid?: boolean | null,
+	reward?: number | null,
+	metrics?: unknown,
+	/**  Immutable experiment axes supplied by the evaluator; never inferred from labels. */
+	researchContext?: unknown,
+	missingGates?: string[],
+	missingArtifacts?: string[],
+	evidenceDir?: string | null,
+	refs?: EvidenceRef[],
+	sequence: number,
 };
 
-export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
+export type EventSource = "local" | "remote" | "intern" | "codex" | "acp" | "system" | "mlx" | "visual" | "report";
 
 export type EvidenceCompleteness = "absent" | "partial" | "complete" | "unusable";
+
+/**  One answer to "everything in this window except what I already hold". */
+export type EvidencePage = EvidencePage_Serialize | EvidencePage_Deserialize;
+
+/**  One answer to "everything in this window except what I already hold". */
+export type EvidencePage_Deserialize = {
+	events: OptimizerEventEnvelope[],
+	/**
+	 *  The span this page actually covers. `None` when the window was already
+	 *  fully held, which is the "nothing to send" answer.
+	 */
+	range?: EvidenceRange | null,
+	/**
+	 *  Held spans plus this page, normalized. The caller stores it verbatim
+	 *  and sends it back on the next request; it never has to reconstruct
+	 *  what it has from what it displayed.
+	 */
+	coverage: EvidenceRange[],
+	/**  Whether `coverage` now spans the whole requested window. */
+	complete: boolean,
+	/**
+	 *  The run's durable tail, so a reader knows what "the end" is without a
+	 *  second call.
+	 */
+	tailCursor: number,
+};
+
+/**  One answer to "everything in this window except what I already hold". */
+export type EvidencePage_Serialize = {
+	events: OptimizerEventEnvelope[],
+	/**
+	 *  The span this page actually covers. `None` when the window was already
+	 *  fully held, which is the "nothing to send" answer.
+	 */
+	range?: EvidenceRange | null,
+	/**
+	 *  Held spans plus this page, normalized. The caller stores it verbatim
+	 *  and sends it back on the next request; it never has to reconstruct
+	 *  what it has from what it displayed.
+	 */
+	coverage: EvidenceRange[],
+	/**  Whether `coverage` now spans the whole requested window. */
+	complete: boolean,
+	/**
+	 *  The run's durable tail, so a reader knows what "the end" is without a
+	 *  second call.
+	 */
+	tailCursor: number,
+};
+
+/**
+ *  An inclusive span of durable event sequences.
+ *
+ *  Evidence is browsed, not streamed. A reader that opens Replay at the end of
+ *  a run and then scrolls back holds two disjoint spans, not a prefix — so the
+ *  unit of both request and answer is a range, and `from > to` is empty rather
+ *  than an error.
+ */
+export type EvidenceRange = {
+	from: number,
+	to: number,
+};
 
 export type EvidenceRef = {
 	kind: string,
@@ -1578,6 +1893,7 @@ export type ExperimentGroup = {
 	status: string,
 	task: string | null,
 	model: string | null,
+	tags?: string[],
 	bestResult: unknown | null,
 	members: ExperimentMember[],
 	nodes: ExperimentNode[],
@@ -1624,7 +1940,7 @@ export type ExperimentNode = {
 export type ExperimentRecord = {
 	experimentId: string,
 	reportId?: string | null,
-	revision?: number,
+	revision?: number | null,
 	title: string,
 	hypothesis?: string | null,
 	status: ExperimentStatus,
@@ -1698,6 +2014,16 @@ export type ExperimentRelateRequest = {
 
 export type ExperimentStatus = "planned" | "running" | "completed" | "failed" | "aborted" | "superseded" | "excluded";
 
+export type ExperimentUpdateRequest = {
+	experimentId: string,
+	sessionId: string,
+	title: string | null,
+	task: string | null,
+	model: string | null,
+	tags: string[] | null,
+	updatedAt: string,
+};
+
 export type FailureContextView = {
 	sessionId: string | null,
 	containerId: string | null,
@@ -1752,29 +2078,33 @@ export type FailureView = {
 	diagnosticReference: string,
 };
 
-export type FeatureReport = {
-	name: string,
-	summary: string,
-	owner: string,
-	minTier: Tier,
-	enforcement: Enforcement,
-	/**  Classified inside this build's envelope (min_tier ≤ build tier). */
-	included: boolean,
-	/**  Actually in the binary: `included`, or grandfathered pre-envelope code. */
-	present: boolean,
-	enabled: boolean,
-	runtimeFlag: string | null,
-};
-
 export type GepaCandidate = {
 	id: string,
 	parentId?: string | null,
-	generation?: number,
+	generation?: number | null,
 	source?: string | null,
 	digest?: string | null,
+	/**
+	 *  Durable candidate levers (for GEPA, normally the proposed prompt).
+	 *  This is bounded by the candidate count and lets the live visual render
+	 *  content/diffs without replaying the entire optimizer journal.
+	 */
+	values?: unknown,
+	proposalIndex?: number | null,
 	heldoutReward?: number | null,
 	trainReward?: number | null,
+	minibatchReward?: number | null,
 	gateAccepted?: boolean | null,
+};
+
+export type GepaEvaluationSummary = {
+	id: string,
+	candidateId?: string | null,
+	stage?: string | null,
+	exampleId?: string | null,
+	rolloutId?: string | null,
+	reward?: number | null,
+	costUsd?: number | null,
 };
 
 export type GepaProjection = {
@@ -1790,10 +2120,34 @@ export type GepaProjection = {
 	rolloutsAllocated: number,
 	rolloutsScored: number,
 	rolloutsFailed: number,
-	proposalsRequested: number,
-	proposalsReturned: number,
-	maxActiveWorkers: number,
-	rolloutBudget: number,
+	proposalsRequested: number | null,
+	proposalsReturned: number | null,
+	maxActiveWorkers: number | null,
+	rolloutBudget: number | null,
+	/**
+	 *  Durable, bounded summaries used by the live visual. These are not raw
+	 *  traces; the journal remains the authority for full inspection.
+	 */
+	evaluations?: GepaEvaluationSummary[],
+	proposerCalls?: GepaProposerCallSummary[],
+	/**
+	 *  Compact product-facing setup facts reduced from the durable journal.
+	 *  This deliberately excludes task rows, prompts, and credentials.
+	 */
+	contract?: unknown,
+	/**
+	 *  Latest observed execution shape. Capacity is kept distinct from
+	 *  measured parallelism and throughput.
+	 */
+	runtime?: unknown,
+};
+
+export type GepaProposerCallSummary = {
+	generation: number,
+	model?: string | null,
+	provider?: string | null,
+	proposalCount: number,
+	costUsd?: number | null,
 };
 
 export type GepaResult = {
@@ -1813,6 +2167,27 @@ export type GepaRunView = {
 
 export type GepaVerdict = "measured_improvement" | "no_measured_improvement" | "inconclusive" | "failed";
 
+export type GoExCandidateSummary = {
+	id: string,
+	status?: string | null,
+	score?: number | null,
+	selected: boolean,
+	parentId?: string | null,
+	values: unknown,
+	details: unknown,
+	sequence: number,
+};
+
+export type GoExChildSummary = {
+	id: string,
+	candidateId?: string | null,
+	status?: string | null,
+	reward?: number | null,
+	costUsd?: number | null,
+	details: unknown,
+	sequence: number,
+};
+
 export type GoExProjection = {
 	workItems: WorkItem[],
 	phase: RunPhase | null,
@@ -1822,6 +2197,22 @@ export type GoExProjection = {
 	selectedCandidateId: string | null,
 	remoteStatus: string | null,
 	childEvalRunIds: string[],
+	candidates?: GoExCandidateSummary[],
+	proposerCalls?: GoExProposerSummary[],
+	childRollouts?: GoExChildSummary[],
+	board?: unknown,
+	frontier?: unknown,
+	dataEngine?: unknown,
+	agents?: unknown,
+};
+
+export type GoExProposerSummary = {
+	id: string,
+	status: string,
+	model?: string | null,
+	costUsd?: number | null,
+	details: unknown,
+	sequence: number,
 };
 
 export type GoExResult = {
@@ -1837,6 +2228,19 @@ export type GoExRunView = {
 	header: OptimizerRunHeader,
 	projection: GoExProjection,
 	result: GoExResult | null,
+};
+
+/**  A projection as it stood at a requested sequence. */
+export type HistoricalProjection = {
+	schemaVersion: string,
+	runId: string,
+	requestedSequence: number,
+	asOfSequence: number,
+	/**  Checkpoint the fold started from; absent when it started from zero. */
+	checkpointSequence?: number | null,
+	/**  Events folded after the checkpoint to reach the requested sequence. */
+	replayedEvents: number,
+	view: OptimizerRunViewV2,
 };
 
 export type HostedTrainingModel = {
@@ -1856,6 +2260,199 @@ export type HostedTrainingModelCatalog = {
 	livePreflightRequired: boolean,
 	models: HostedTrainingModel[],
 	total: number,
+};
+
+export type HumanAnnotationAnswerRequest = {
+	sessionId: string,
+	expectedRevision: number,
+	questionId: string,
+	answer: unknown,
+};
+
+export type HumanAnnotationAudioBeginRequest = {
+	sessionId: string,
+	mediaType: string,
+	metadata: unknown | null,
+};
+
+export type HumanAnnotationAudioChunkRequest = {
+	attachmentId: string,
+	chunkIndex: number,
+	base64Data: string,
+};
+
+export type HumanAnnotationAudioData = {
+	attachmentId: string,
+	mediaType: string,
+	base64Data: string,
+};
+
+export type HumanAnnotationAudioFinishRequest = {
+	attachmentId: string,
+	durationMs: number | null,
+};
+
+export type HumanAnnotationAudioReceipt = {
+	attachmentId: string,
+	state: string,
+	casDigest: string | null,
+	byteSize: number | null,
+};
+
+export type HumanAnnotationAudioTranscribeRequest = {
+	sessionId: string,
+	expectedRevision: number,
+	attachmentId: string,
+};
+
+export type HumanAnnotationCampaignActionRequest = {
+	campaignId: string,
+	rationale: string,
+};
+
+export type HumanAnnotationCampaignAdjudicateRequest = {
+	campaignId: string,
+	resultIds: string[],
+	decision: unknown,
+	rationale: string,
+	adjudicatorId: string | null,
+};
+
+export type HumanAnnotationCampaignCreateRequest = {
+	campaign: unknown,
+};
+
+export type HumanAnnotationCancelRequest = {
+	taskId: string,
+	reason: string,
+};
+
+export type HumanAnnotationCommentRequest = {
+	sessionId: string,
+	expectedRevision: number,
+	evidenceDigest: string,
+	selector: unknown,
+	bodyText: string | null,
+	audioAttachmentId: string | null,
+};
+
+export type HumanAnnotationCreateRequest = {
+	task: unknown,
+	/**
+	 *  Evaluator-owned answer keys. Persisted separately and never returned in
+	 *  the reviewer task or agent status projection.
+	 */
+	sealedAnswerKeys: unknown | null,
+	idempotencyKey: string,
+	reviewerId: string | null,
+	createdBy: string | null,
+};
+
+export type HumanAnnotationExportReceipt = {
+	resultId: string,
+	format: string,
+	exportDigest: string,
+	byteSize: number,
+};
+
+export type HumanAnnotationExportRequest = {
+	resultId: string,
+	format: string,
+};
+
+export type HumanAnnotationListQuery = {
+	campaignId: string | null,
+	state: string | null,
+	limit: number | null,
+};
+
+export type HumanAnnotationMutationReceipt = {
+	sessionId: string,
+	draftRevision: number,
+	state: string,
+	updatedAt: string,
+};
+
+export type HumanAnnotationPreviewRequest = {
+	task: unknown,
+	sealedAnswerKeys: unknown | null,
+	reviewerId: string | null,
+};
+
+export type HumanAnnotationResultReceipt = {
+	taskId: string,
+	sessionId: string,
+	resultId: string,
+	resultDigest: string,
+	sealDigest: string,
+	state: string,
+	submittedAt: string,
+};
+
+export type HumanAnnotationSessionView = {
+	schemaVersion: string,
+	taskId: string,
+	sessionId: string,
+	taskDigest: string,
+	task: unknown,
+	state: string,
+	draftRevision: number,
+	answers: unknown,
+	presentation: unknown,
+	comments: unknown[],
+	attachments: unknown[],
+	result: unknown | null,
+	updatedAt: string,
+};
+
+export type HumanAnnotationStatus = {
+	taskId: string,
+	sessionId: string,
+	taskDigest: string,
+	state: string,
+	revision: number,
+	resultId: string | null,
+	resultDigest: string | null,
+	sealDigest: string | null,
+	updatedAt: string,
+};
+
+export type HumanAnnotationSubmitRequest = {
+	sessionId: string,
+	expectedRevision: number,
+};
+
+export type HumanAnnotationSupersedeRequest = {
+	resultId: string,
+	reason: string,
+	reviewerId: string | null,
+};
+
+export type HumanAnnotationTaskPreview = {
+	schemaVersion: string,
+	taskDigest: string,
+	title: string,
+	questionCount: number,
+	requiredQuestionCount: number,
+	evidenceCount: number,
+	evidence: unknown,
+	presentation: unknown,
+	warnings: string[],
+};
+
+export type HumanAnnotationTaskRef = {
+	taskId: string,
+	sessionId: string,
+	taskDigest: string,
+	state: string,
+	created: boolean,
+};
+
+export type HumanAnnotationTranscriptRequest = {
+	sessionId: string,
+	expectedRevision: number,
+	attachmentId: string,
+	correctedText: string,
 };
 
 export type ImportPreview = {
@@ -1921,7 +2518,7 @@ export type InternSessionWire = {
 	createdAt: string,
 	updatedAt: string,
 	status: string,
-	stateGeneration: number,
+	stateGeneration: number | null,
 	latestCursor: number,
 	activeRunId: string | null,
 	metadata: unknown,
@@ -1962,9 +2559,9 @@ export type LagunaGeneration = {
 	startedAt?: number | null,
 	firstTokenAt?: number | null,
 	lastTokenAt?: number | null,
-	promptTokens?: number,
-	cachedTokens?: number,
-	outputTokens?: number,
+	promptTokens?: number | null,
+	cachedTokens?: number | null,
+	outputTokens?: number | null,
 	cacheHitRatio?: number | null,
 	prefillTokensPerSecond?: number | null,
 	decodeTokensPerSecond?: number | null,
@@ -1978,7 +2575,7 @@ export type LagunaGeneration = {
 export type LagunaInference = {
 	model?: string | null,
 	resident?: boolean,
-	residentBytes?: number,
+	residentBytes?: number | null,
 	queueDepth?: number | null,
 	queueCapacity?: number | null,
 	/**  `None` while the daemon is idle. */
@@ -2021,12 +2618,13 @@ export type LagunaPolicy = {
  *  exist, which is reported as `null` rather than a fabricated value.
  */
 export type LagunaRollingStats = {
-	requestsCompleted?: number,
-	requestsFailed?: number,
-	requestsCancelled?: number,
-	inputTokens?: number,
-	outputTokens?: number,
-	cachedTokens?: number,
+	requestsCompleted?: number | null,
+	requestsFailed?: number | null,
+	requestsCancelled?: number | null,
+	lastFailureReason?: string | null,
+	inputTokens?: number | null,
+	outputTokens?: number | null,
+	cachedTokens?: number | null,
 	ttftP50Ms?: number | null,
 	ttftP95Ms?: number | null,
 	decodeTpsP50?: number | null,
@@ -2057,11 +2655,11 @@ export type LagunaStatus = {
 	backend: string | null,
 	loadedModel: string | null,
 	detail: string | null,
-	memoryBytes: number,
-	idleSeconds: number,
-	idleUnloadAfterSeconds: number,
-	lastUsedAt: number,
-	freeAt: number,
+	memoryBytes: number | null,
+	idleSeconds: number | null,
+	idleUnloadAfterSeconds: number | null,
+	lastUsedAt: number | null,
+	freeAt: number | null,
 	updatedAt: number,
 };
 
@@ -2087,6 +2685,17 @@ export type LegacyDetection = {
 	isLegacyRuntime: boolean,
 	tables: string[],
 	warnings: string[],
+};
+
+export type LockWaitDiagnostics = {
+	readTransactions: number,
+	readWaitAvgUs: number,
+	readWaitMaxUs: number,
+	writeTransactions: number,
+	writeWaitAvgUs: number,
+	writeWaitMaxUs: number,
+	/**  Transactions that gave up rather than acquiring. */
+	timeouts: number,
 };
 
 export type LogQuery = {
@@ -2140,6 +2749,15 @@ export type MeasurementKind = "decode" |
  *  measurement: see migration 21.
  */
 "legacy_observed_stream_estimate" | "end_to_end" | "provider_reported";
+
+/**  A bounded, deterministically downsampled metric series. */
+export type MetricSeries = {
+	points: TrainingMetricPoint[],
+	/**  Current decimation stride. 1 until the ceiling is first reached. */
+	stride?: number,
+	/**  Every point ever offered, including the ones decimation dropped. */
+	observed?: number,
+};
 
 export type MigrationApplyRequest = {
 	confirmationToken: string,
@@ -2291,6 +2909,20 @@ export type ModelPerformanceTurnSample = {
 
 export type MultiAgentVersion = "none" | "v1" | "v2";
 
+export type NativeTerminalFrame = {
+	x: number | null,
+	top: number | null,
+	width: number | null,
+	height: number | null,
+};
+
+export type NativeTerminalMountRequest = {
+	terminalId: string,
+	frame: NativeTerminalFrame,
+	fontFamily: string,
+	fontSize: number | null,
+};
+
 export type ObservabilityStatus = {
 	mode: string,
 	emergency: boolean,
@@ -2418,8 +3050,8 @@ export type OptimizerQuery = {
 	source: string | null,
 	search: string | null,
 	sessionRef: string | null,
-	limit: number,
-	offset: number,
+	limit: number | null,
+	offset: number | null,
 };
 
 /**
@@ -2473,7 +3105,7 @@ export type OptimizerRecipeRunRequest = {
 
 export type OptimizerReconcileRequest = {
 	optimizerRunId: string,
-	afterSeq?: number,
+	afterSeq?: number | null,
 	openVisual?: boolean | null,
 };
 
@@ -2511,7 +3143,7 @@ export type OptimizerRunArtifact = {
 	locator: string,
 	digest?: string | null,
 	mediaType?: string | null,
-	byteSize?: number,
+	byteSize?: number | null,
 	metadata: unknown,
 	declaredAt: string,
 };
@@ -2650,6 +3282,166 @@ export type OptimizerRunStatus =
 /**  Stopped because a spend or step ceiling was reached. */
 "cap_reached";
 
+/**
+ *  The algorithm-neutral, byte-budgeted run summary every live surface
+ *  mounts from. Growing collections are counted here and paged elsewhere.
+ */
+export type OptimizerRunSummary = {
+	schemaVersion: string,
+	runId: string,
+	algorithm: AlgorithmKind,
+	/**  Compatibility status string the run record carries. */
+	status: string,
+	lifecycle: RunLifecycle,
+	phase?: RunPhase | null,
+	condition: RunCondition,
+	placement: ExecutionPlacement,
+	terminal?: RunTerminalSummary | null,
+	failureRef?: string | null,
+	specId: string,
+	specDigest: string,
+	reducerVersion: string,
+	projectionRevision: number,
+	asOfSequence: number,
+	tailCursor: number,
+	source: string,
+	objective?: string | null,
+	sessionRef?: string | null,
+	createdAt: string,
+	startedAt?: string | null,
+	finishedAt?: string | null,
+	elapsedMs?: number | null,
+	concurrency: RunConcurrencySummary,
+	work: WorkSummary,
+	usage: UsageCompleteness,
+	/**  Whether the cost figure is complete according to the run record. */
+	costComplete: boolean,
+	throughput?: RunThroughputSummary | null,
+	result?: RunResultSummary | null,
+	collections: RunCollectionSummary[],
+	executionBindings: OptimizerExecutionBinding[],
+	/**
+	 *  Compact setup facts (dataset, container, models) as the projection
+	 *  reduced them. Never task rows, prompts, or credentials.
+	 */
+	setup: unknown,
+	/**  Latest observed execution shape (workers, job state). */
+	runtime: unknown,
+	evidence: RunEvidenceSummary,
+	artifactCount: number,
+	inputRefCount: number,
+	outputRefCount: number,
+	visualRefCount: number,
+	budget: RunSummaryBudget,
+};
+
+export type OptimizerRunSummaryEnvelope = OptimizerRunSummaryEnvelope_Serialize | OptimizerRunSummaryEnvelope_Deserialize;
+
+export type OptimizerRunSummaryEnvelope_Deserialize = {
+	unchanged: boolean,
+	summary?: OptimizerRunSummary | null,
+	projectionRevision: number,
+	tailCursor: number,
+};
+
+export type OptimizerRunSummaryEnvelope_Serialize = {
+	unchanged: boolean,
+	summary?: OptimizerRunSummary | null,
+	projectionRevision: number,
+	tailCursor: number,
+};
+
+/**
+ *  One coherent read of everything a visual needs to mount.
+ *
+ *  Replaces the renderer's `runViewV2 → get → eventsAfter` choreography for
+ *  first paint. The projection and the run record are read in the same
+ *  deferred transaction — `run_view_v2` already loaded the run row to build
+ *  the view's context, so carrying it costs nothing and removes an entire
+ *  IPC round trip from the mount path.
+ *
+ *  The envelope is also *conditional*. `projection_revision` is already a
+ *  monotonic version stamp on the durable projection; a caller that holds a
+ *  revision sends it as `if_newer_than` and gets `unchanged` back instead of a
+ *  second copy of bytes it already has. That is what makes a background
+ *  freshness check cheap enough to run against a cached first paint.
+ */
+export type OptimizerRunViewEnvelope = OptimizerRunViewEnvelope_Serialize | OptimizerRunViewEnvelope_Deserialize;
+
+/**
+ *  One coherent read of everything a visual needs to mount.
+ *
+ *  Replaces the renderer's `runViewV2 → get → eventsAfter` choreography for
+ *  first paint. The projection and the run record are read in the same
+ *  deferred transaction — `run_view_v2` already loaded the run row to build
+ *  the view's context, so carrying it costs nothing and removes an entire
+ *  IPC round trip from the mount path.
+ *
+ *  The envelope is also *conditional*. `projection_revision` is already a
+ *  monotonic version stamp on the durable projection; a caller that holds a
+ *  revision sends it as `if_newer_than` and gets `unchanged` back instead of a
+ *  second copy of bytes it already has. That is what makes a background
+ *  freshness check cheap enough to run against a cached first paint.
+ */
+export type OptimizerRunViewEnvelope_Deserialize = {
+	/**
+	 *  True when the caller's `if_newer_than` already matched the durable
+	 *  revision. `view` and `run` are then `None` — deliberately, so a stale
+	 *  consumer cannot mistake an empty envelope for an empty run.
+	 */
+	unchanged: boolean,
+	view?: OptimizerRunViewV2 | null,
+	/**
+	 *  Compatibility fields the templates still read: usage extras, the
+	 *  terminal manifest, timings, objective, and capabilities.
+	 */
+	run?: OptimizerRunRecord | null,
+	projectionRevision: number,
+	/**
+	 *  The run's durable event cursor: the tail an evidence reader may page
+	 *  up to. Carried here so a detail tab never has to call `get` to learn
+	 *  how much journal exists.
+	 */
+	tailCursor: number,
+};
+
+/**
+ *  One coherent read of everything a visual needs to mount.
+ *
+ *  Replaces the renderer's `runViewV2 → get → eventsAfter` choreography for
+ *  first paint. The projection and the run record are read in the same
+ *  deferred transaction — `run_view_v2` already loaded the run row to build
+ *  the view's context, so carrying it costs nothing and removes an entire
+ *  IPC round trip from the mount path.
+ *
+ *  The envelope is also *conditional*. `projection_revision` is already a
+ *  monotonic version stamp on the durable projection; a caller that holds a
+ *  revision sends it as `if_newer_than` and gets `unchanged` back instead of a
+ *  second copy of bytes it already has. That is what makes a background
+ *  freshness check cheap enough to run against a cached first paint.
+ */
+export type OptimizerRunViewEnvelope_Serialize = {
+	/**
+	 *  True when the caller's `if_newer_than` already matched the durable
+	 *  revision. `view` and `run` are then `None` — deliberately, so a stale
+	 *  consumer cannot mistake an empty envelope for an empty run.
+	 */
+	unchanged: boolean,
+	view?: OptimizerRunViewV2 | null,
+	/**
+	 *  Compatibility fields the templates still read: usage extras, the
+	 *  terminal manifest, timings, objective, and capabilities.
+	 */
+	run?: OptimizerRunRecord | null,
+	projectionRevision: number,
+	/**
+	 *  The run's durable event cursor: the tail an evidence reader may page
+	 *  up to. Carried here so a detail tab never has to call `get` to learn
+	 *  how much journal exists.
+	 */
+	tailCursor: number,
+};
+
 export type OptimizerRunViewV2 = {
 	algorithm: "eval",
 } & EvalRunView | {
@@ -2663,10 +3455,10 @@ export type OptimizerRunViewV2 = {
 } & CispoRunView;
 
 export type OptimizerSearchOverrides = {
-	proposalsPerGeneration?: number,
-	maxInFlightCandidates?: number,
-	policyConcurrency?: number,
-	rolloutConcurrency?: number,
+	proposalsPerGeneration?: number | null,
+	maxInFlightCandidates?: number | null,
+	policyConcurrency?: number | null,
+	rolloutConcurrency?: number | null,
 };
 
 export type OptimizerSidecarStatus = {
@@ -2782,6 +3574,14 @@ export type PaidComputeAutoApprovalSettings = {
 	providers: string[],
 };
 
+export type PendingApprovalView = {
+	approvalId: string,
+	sessionId: string,
+	kind: string,
+	requiresHuman: boolean,
+	preparationDigest: string | null,
+};
+
 export type PendingGrantSummary = {
 	requestId: string,
 	secretId: string,
@@ -2847,28 +3647,18 @@ export type ProjectSourceApproval = {
 	request: ProjectSourceRequest,
 	source: ProjectSourceRow,
 	catalog: ProjectSourceCatalog,
-	/**
-	 *  Present only when the request asked to attach the folder to its
-	 *  conversation and that attachment succeeded.
-	 */
 	scope: ConversationWorkspaceScope | null,
+	attachmentError: string | null,
 };
 
 export type ProjectSourceCatalog = {
 	configPath: string,
 	sources: ProjectSourceRow[],
-	/**
-	 *  Roots in effect that are *not* persisted -- environment overrides,
-	 *  remembered provenance, the development fallback. Shown so the user can
-	 *  see why discovery behaves as it does without reading the launcher.
-	 */
 	implicitRoots: ProjectSourceRow[],
 };
 
-/**  What Workshop found beneath one root, without running anything. */
 export type ProjectSourceInspection = {
 	path: string,
-	/**  `valid`, `invalid`, or `missing`. */
 	status: string,
 	code: string | null,
 	message: string | null,
@@ -2890,7 +3680,15 @@ export type ProjectSourceRequest = {
 	resolvedAt: string | null,
 };
 
-/**  One persisted project source plus its current validation state. */
+export type ProjectSourceRequestInput = {
+	sessionId: string | null,
+	path: string,
+	reason: string,
+	containers: boolean,
+	recipes: boolean,
+	attachToConversation?: boolean,
+};
+
 export type ProjectSourceRow = {
 	path: string,
 	containers: boolean,
@@ -2968,12 +3766,6 @@ export type RegisteredInstance = {
 	status: string,
 	current: boolean,
 	deepLink: string,
-};
-
-export type ReleaseTierReport = {
-	tier: Tier,
-	contractVersion: string,
-	features: FeatureReport[],
 };
 
 /**  What `remove` did, for the receipt. G7. */
@@ -3090,7 +3882,7 @@ export type ReportPromotion = {
 export type ReportQuery = {
 	status: string | null,
 	search: string | null,
-	limit: number,
+	limit: number | null,
 	includeArchived?: boolean,
 };
 
@@ -3171,7 +3963,7 @@ export type ReportSource = {
 export type ReportStatus = "draft" | "sealed";
 
 export type ReportUpdateRequest = {
-	expectedRevision?: number,
+	expectedRevision?: number | null,
 	title: string | null,
 	summary: string | null,
 	authors: string[] | null,
@@ -3186,7 +3978,7 @@ export type ReportUpload = {
 	receiptDigest: string,
 	collectionId: string | null,
 	publicationId: string | null,
-	publicationRevision: number,
+	publicationRevision: number | null,
 	state: string,
 	committedUrl: string | null,
 	error: string | null,
@@ -3234,6 +4026,37 @@ export type ReportVisibilityRequestCreate = {
 	slug: string | null,
 	reason: string | null,
 	requestedBy: string | null,
+};
+
+export type ResearchJournalAppendRequest = {
+	occurredAt: string | null,
+	author: string | null,
+	actorKind: string | null,
+	entryKind: string,
+	title: string,
+	body: string,
+	tags: string[] | null,
+	links: unknown,
+	experimentId: string | null,
+	supersedesEntryId: string | null,
+	sourceDigest: string | null,
+};
+
+export type ResearchJournalEntry = {
+	entryId: string,
+	sequence: number,
+	occurredAt: string,
+	recordedAt: string,
+	author: string,
+	actorKind: string,
+	entryKind: string,
+	title: string,
+	body: string,
+	tags: string[],
+	links: unknown,
+	experimentId: string | null,
+	supersedesEntryId: string | null,
+	sourceDigest: string | null,
 };
 
 export type ResearchLogAppend = {
@@ -3307,14 +4130,130 @@ export type RolloutEvidenceEntry = {
  */
 export type RolloutEvidenceState = "open" | "sealed_complete" | "sealed_partial" | "aborted" | "missing";
 
+export type RootOrigin = "configured" | "environment";
+
+export type RunCollection = "candidates" | "rollouts" | "evaluations" | "metric_points" | "proposer_calls" | "artifacts" | "evidence_refs";
+
+export type RunCollectionFilter = {
+	/**
+	 *  Rows whose `parent_id` equals this (candidate for evaluations, trial
+	 *  for rollouts, checkpoint for training evaluations).
+	 */
+	parentId?: string | null,
+	/**  Rows whose `label` equals this (GEPA stage, training phase, model). */
+	label?: string | null,
+	status?: string | null,
+	kind?: string | null,
+	/**  Rows written or changed after this projection revision. */
+	changedAfterRevision?: number | null,
+};
+
+export type RunCollectionPage = RunCollectionPage_Serialize | RunCollectionPage_Deserialize;
+
+export type RunCollectionPage_Deserialize = {
+	runId: string,
+	collection: RunCollection,
+	rows: RunCollectionRow[],
+	/**  Present when more rows match; absent means the page reached the end. */
+	nextCursor?: string | null,
+	/**  Rows matching the filter across all pages, as of this read. */
+	total: number,
+	projectionRevision: number,
+	asOfSequence: number,
+	/**  The page ended on the byte budget before reaching `limit`. */
+	truncatedByBytes: boolean,
+	/**  Rows requested after clamping. */
+	limit: number,
+};
+
+export type RunCollectionPage_Serialize = {
+	runId: string,
+	collection: RunCollection,
+	rows: RunCollectionRow[],
+	/**  Present when more rows match; absent means the page reached the end. */
+	nextCursor?: string | null,
+	/**  Rows matching the filter across all pages, as of this read. */
+	total: number,
+	projectionRevision: number,
+	asOfSequence: number,
+	/**  The page ended on the byte budget before reaching `limit`. */
+	truncatedByBytes: boolean,
+	/**  Rows requested after clamping. */
+	limit: number,
+};
+
+export type RunCollectionQuery = {
+	/**  Opaque keyset cursor from the previous page's `next_cursor`. */
+	cursor?: string | null,
+	/**
+	 *  Rows requested. Clamped to [`COLLECTION_PAGE_MAX_ROWS`]; absent means
+	 *  [`COLLECTION_PAGE_DEFAULT_ROWS`].
+	 */
+	limit?: number | null,
+	filter?: RunCollectionFilter | null,
+	/**  Newest ordinals first. Default is append order. */
+	descending?: boolean,
+};
+
 /**
- *  Where an effective root came from. Reported in diagnostics so "no sources"
- *  can be told apart from "sources configured, none of them valid".
+ *  One row of a durable collection. The common envelope is deliberately
+ *  small; algorithm-specific detail lives in `details` under its own version.
  */
-export type RootOrigin = "configured" | "environment" | "remembered" | "development_fallback";
+export type RunCollectionRow = {
+	schemaVersion: string,
+	runId: string,
+	algorithm: AlgorithmKind,
+	collection: RunCollection,
+	itemId: string,
+	/**
+	 *  Position in the collection's append order. Keyset cursor; stable
+	 *  across concurrent appends because appends only ever add higher ones.
+	 */
+	ordinal: number,
+	/**
+	 *  Aggregate sequence the projection had reached when this row was
+	 *  written or last changed.
+	 */
+	sequence: number,
+	/**  Projection revision that wrote or last changed this row. */
+	revision: number,
+	kind: string,
+	label?: string | null,
+	parentId?: string | null,
+	score?: number | null,
+	costUsd?: number | null,
+	status?: string | null,
+	detailsVersion: string,
+	/**
+	 *  True only on a collection page when this row's detail alone exceeds
+	 *  the page byte budget. The common envelope remains visible; callers
+	 *  fetch the full detail through `run_collection_item` on selection.
+	 */
+	detailsDeferred?: boolean,
+	detailsBytes: number,
+	details: unknown,
+};
+
+export type RunCollectionSummary = {
+	collection: RunCollection,
+	count: number,
+	/**  Highest projection revision that wrote or changed a row. */
+	latestRevision: number,
+};
+
+export type RunConcurrencySummary = {
+	configured?: number | null,
+	observedMax?: number | null,
+};
 
 /**  Execution health, stored beside lifecycle rather than as a status. */
-export type RunCondition = "healthy" | "environment_unreachable" | "waiting_for_producer" | "producer_sequence_blocked";
+export type RunCondition = "healthy" | "environment_unreachable" | "waiting_for_producer" | "producer_sequence_blocked" | "evaluation_blocked" | "budget_blocked" | "operation_uncertain" | "pause_requested";
+
+export type RunEvidenceSummary = {
+	completeness: EvidenceCompleteness,
+	reason?: string | null,
+	refCount: number,
+};
 
 /**
  *  Common execution lifecycle. Algorithm phase and execution health are not
@@ -3327,6 +4266,39 @@ export type RunLifecycle = "queued" | "starting" | "running" | "paused" | "cance
  *  lifecycle peer.
  */
 export type RunPhase = "validating" | "provisioning" | "waiting_for_viewer" | "training" | "selection" | "checkpoint_evaluation" | "heldout_evaluation" | "materializing";
+
+export type RunResultSummary = {
+	schema: string,
+	verdict?: string | null,
+	selectedItemId?: string | null,
+	bestScore?: number | null,
+	/**
+	 *  The settled algorithm result. Small by construction: counts, ids,
+	 *  usage. Never candidate content or rollout detail.
+	 */
+	value: unknown,
+};
+
+export type RunSummaryBudget = {
+	bytes: number,
+	limit: number,
+	within: boolean,
+};
+
+export type RunTerminalSummary = {
+	kind: TerminalKind,
+	reason?: TerminalReason | null,
+	finalSequence: number,
+	sealedAt: string,
+	failureRef?: string | null,
+	evidence: RunEvidenceSummary,
+};
+
+export type RunThroughputSummary = {
+	unit: string,
+	perMinute: number | null,
+	measuredOverMs: number,
+};
 
 /**
  *  One About row. Serialised from the same table the code enforces — a
@@ -3373,7 +4345,7 @@ export type SavedLoraCheckpoint = {
 	optimizerAlgorithm: string | null,
 	baseModel: string,
 	loraRank: number | null,
-	step: number,
+	step: number | null,
 	status: string,
 	storage: SavedLoraStorage,
 	lineage?: SavedLoraLineage,
@@ -3408,8 +4380,8 @@ export type SavedLoraCheckpointQuery = {
 	optimizerAlgorithm: string | null,
 	status: string | null,
 	tags: string[] | null,
-	limit: number,
-	offset: number,
+	limit: number | null,
+	offset: number | null,
 };
 
 export type SavedLoraDownload = {
@@ -3417,7 +4389,7 @@ export type SavedLoraDownload = {
 	url: string,
 	expiresIn: number,
 	contentType: string,
-	sizeBytes: number,
+	sizeBytes: number | null,
 	sha256: string | null,
 };
 
@@ -3465,7 +4437,7 @@ export type SavedLoraStorage = {
 	version: string | null,
 	etag: string | null,
 	sha256: string | null,
-	sizeBytes: number,
+	sizeBytes: number | null,
 	contentType: string,
 };
 
@@ -3555,6 +4527,19 @@ export type SftProjection = {
 	childEvalRunIds: string[],
 	producedAdapter: string | null,
 	trainLoss: number | null,
+	/**
+	 *  Checkpoint evaluation scorecards, bounded by the evaluation schedule.
+	 *  Served through the `evaluations` collection; the renderer never
+	 *  rebuilds these from raw `training.evaluation.completed` events.
+	 */
+	evaluations?: TrainingEvaluationSummary[],
+	/**  Bounded, deterministically downsampled loss/step curve. */
+	metrics?: MetricSeries,
+	datasetSummary?: unknown,
+	computeSummary?: unknown,
+	curationSummary?: unknown,
+	curationCandidates?: unknown[],
+	comparisonSummary?: unknown,
 };
 
 export type SftResult = {
@@ -3574,17 +4559,13 @@ export type SftRunView = {
 
 export type SignInBegin = {
 	verificationUri: string,
-	/**
-	 *  Human-comparable pairing code; the browser approval page shows the
-	 *  same code so the user can confirm the request came from this desktop.
-	 */
 	userCode: string | null,
-	expiresAtEpochS: number,
 	intervalS: number,
+	expiresAtEpochS: number,
 };
 
 export type SignInPoll =
-/**  Browser approval not observed yet; poll again after `retry_in_s`. */
+/**  Browser approval not observed yet; keep polling. */
 { status: "pending"; retryInS: number } |
 /**  Key received, stored, and runtime reloaded. */
 { status: "active" } |
@@ -3595,6 +4576,16 @@ export type SkillHit = {
 	id: string,
 	name: string,
 	description: string,
+};
+
+export type Snapshot = {
+	entries: { [key in string]: Entry },
+};
+
+export type StartRequest = {
+	backendId: string,
+	title: string,
+	parentSessionId: string | null,
 };
 
 export type Status = {
@@ -3792,6 +4783,12 @@ export type TelemetryPolicy = {
 export type TemplateMeta = {
 	schemaVersion: string,
 	id: string,
+	/**
+	 *  Digest of every file in this template package. Certification binds to
+	 *  this value so template changes stale earlier reviews without requiring
+	 *  a cosmetic visual revision bump.
+	 */
+	templateDigest?: string,
 	title?: string,
 	genre?: string | null,
 	/**
@@ -3801,14 +4798,14 @@ export type TemplateMeta = {
 	 */
 	family?: string | null,
 	version?: string | null,
+	/**
+	 *  Registered renderer capability. Dispatch is based on this descriptor,
+	 *  never on a hard-coded template id.
+	 */
+	rendererKind?: string | null,
 	description?: string | null,
 	tags?: string[],
 	path?: string | null,
-	/**
-	 *  TSX entry point. Bundled families resolve it through Vite's static
-	 *  graph; a `source_kind: "user"` template is compiled in the pane from
-	 *  this file through `compileSourcedModule`.
-	 */
 	shellPath?: string | null,
 	/**
 	 *  `renderer.html` packages are imported into the instance-local managed
@@ -3830,42 +4827,25 @@ export type TemplateObservationContract = {
 	readiness: TemplateReadinessContract,
 };
 
-/**
- *  What a template requires before its current revision can be called ready.
- *
- *  Two different observers answer these. `minimum_rollout_count`,
- *  `minimum_rendered_frame_count`, `minimum_semantic_event_count` and
- *  `require_terminal` are read from the *rendered* observation the pane
- *  publishes: claims about what the projector folded and the DOM then drew.
- *  `minimum_transport_envelope_count` is read from the host's own stream
- *  receipt at the poll seam: a claim about what arrived, before any fold has an
- *  opinion about it. Keeping them separate is the whole point — see that
- *  field's note.
- */
 export type TemplateReadinessContract = {
 	rejectTransportStates?: string[],
 	minimumRolloutCount?: number,
 	minimumRenderedFrameCount?: number,
 	minimumSemanticEventCount?: number,
-	/**
-	 *  Non-control envelopes the transport must have delivered, counted by the
-	 *  host's stream receipt rather than by the pane.
-	 *
-	 *  Deliberately *not* `minimum_semantic_event_count`. That number is a
-	 *  claim about what the projector produced, and only the fold can answer
-	 *  it; the receipt counts at the transport level, where a heartbeat and a
-	 *  verifier result are told apart by envelope kind and nothing more. A
-	 *  template that renders one summary line out of a hundred envelopes, and a
-	 *  template that fans one envelope into a hundred rows, both exist — so
-	 *  satisfying a projector claim with a transport count would certify a fold
-	 *  nobody ran, and satisfying a transport claim with a projector count
-	 *  would veto a stream that did arrive. Two observers, two knobs.
-	 *
-	 *  Defaults to 0, so a template that says nothing here keeps exactly the
-	 *  behaviour it had before the receipt gate existed.
-	 */
+	/**  Distinct non-control transport envelopes required from the host receipt. */
 	minimumTransportEnvelopeCount?: number,
 	requireTerminal?: boolean,
+	/**
+	 *  Which evidence affordances this surface actually offers, out of
+	 *  `temporalControls`, `traceInspector`, `realEvidence`.
+	 *
+	 *  Absent means all three, so no existing template is relaxed by this
+	 *  field. A template opts out only by declaring the shorter list in its
+	 *  manifest, which is reviewable — unlike a reviewer ticking a box that is
+	 *  false. A static analysis projection of immutable sealed evidence has no
+	 *  temporal control to offer, and demanding one made it uncertifiable.
+	 */
+	authoringAffordances?: AuthoringAffordance[] | null,
 };
 
 export type TerminalCreateRequest = {
@@ -3905,17 +4885,18 @@ export type TerminalKind = "completed" | "failed" | "cancelled" | "degraded";
  */
 export type TerminalReason = "evidence_unusable" | "interrupted" | "infrastructure_lost" | "cap_reached" | "producer_failed" | "operator_cancelled" | "admission_rejected";
 
-/**
- *  Maturity tiers, narrowest to widest. Declaration order is the envelope
- *  order, so `Ord` compares inclusion breadth.
- */
-export type Tier = "core" | "stable" | "beta" | "alpha" | "dev";
-
 export type TraceBundleIngestRequest = {
 	sourcePath: string,
 	sourceKind: string | null,
 	title: string | null,
 	sourceUri: string | null,
+	/**
+	 *  Immutable registry id of the container that sealed this trace, when the
+	 *  importer knows it (container-driven imports do; a bare file import does
+	 *  not). Persisted on `traces.container_id` so paid annotation can name the
+	 *  owning container on the approval card. Never a URL.
+	 */
+	containerId?: string | null,
 };
 
 export type TraceBundleIngestResult = {
@@ -3961,6 +4942,47 @@ export type TrainingArtifact = {
 	createdAt: string,
 };
 
+export type TrainingEvaluationSummary = {
+	/**  Stable identity: the checkpoint id when reported, else the phase+step. */
+	id: string,
+	phase?: string | null,
+	step?: number | null,
+	score?: number | null,
+	metric?: string | null,
+	loss?: number | null,
+	delta?: number | null,
+	macroF1?: number | null,
+	ciLow?: number | null,
+	ciHigh?: number | null,
+	confidence?: number | null,
+	pairedN?: number | null,
+	verdict?: string | null,
+	claimReady?: boolean | null,
+	checkpointId?: string | null,
+	artifactDigest?: string | null,
+	evaluator?: string | null,
+	sampleCount?: number | null,
+	status?: string | null,
+	/**  Child eval run when the evaluation ran as its own optimizer run. */
+	childRunId?: string | null,
+	/**  Sequence of the event that reported it; the durable evidence pointer. */
+	sequence: number,
+};
+
+export type TrainingMetricPoint = {
+	step: number,
+	loss?: number | null,
+	learningRate?: number | null,
+	reward?: number | null,
+	advantage?: number | null,
+	advantageStd?: number | null,
+	rewardVariance?: number | null,
+	groupSize?: number | null,
+	optimizerStep?: number | null,
+	tokensPerSecond?: number | null,
+	sequence: number,
+};
+
 export type TrainingModelHit = {
 	path: string,
 	modelsRoot: string,
@@ -3989,10 +5011,10 @@ export type UsageBreakdown = {
 	modelId: string,
 	requests: number,
 	inputTokens: number,
-	cachedInputTokens: number,
-	nonCachedInputTokens: number,
-	cacheWriteTokens: number,
-	reasoningTokens: number,
+	cachedInputTokens: number | null,
+	nonCachedInputTokens: number | null,
+	cacheWriteTokens: number | null,
+	reasoningTokens: number | null,
 	outputTokens: number,
 	totalTokens: number,
 	cacheHitRate: number | null,
@@ -4011,10 +5033,10 @@ export type UsageBreakdown = {
 /**  Usage that was never reported stays unavailable. Zero is a measured zero. */
 export type UsageCompleteness = {
 	costUsd?: number | null,
-	calls?: number,
-	promptTokens?: number,
-	completionTokens?: number,
-	steps?: number,
+	calls?: number | null,
+	promptTokens?: number | null,
+	completionTokens?: number | null,
+	steps?: number | null,
 };
 
 /**
@@ -4062,39 +5084,6 @@ export type UseRequestResult = {
 	providerRoutes: unknown,
 };
 
-/**  One reason a directory is not, or not yet, a user template. */
-export type UserTemplateFinding = {
-	/**  Stable machine tag. `message` is what a person reads. */
-	code: string,
-	/**
-	 *  Verbatim from `templates.rs` wherever it came from there, so an author
-	 *  reads the same sentence the registry used to refuse the file.
-	 */
-	message: string,
-};
-
-/**
- *  Structural verdict on one user template directory. A verdict rather than a
- *  `Result` because "manifest is fine, no shell.tsx yet" is the normal
- *  mid-authoring state, not an error.
- */
-export type UserTemplateValidation = {
-	schemaVersion: string,
-	id: string,
-	/**  Absolute directory this id names, even when nothing is there yet. */
-	path: string,
-	/**  True when the registry would index this directory as a user template. */
-	ok: boolean,
-	/**  `templates.rs`'s tag, present only once the directory indexes. */
-	sourceKind: string | null,
-	findings: UserTemplateFinding[],
-	/**
-	 *  Where the import allowlist and forbidden-token scan actually run, said
-	 *  out loud so silence here cannot read as approval.
-	 */
-	sourceScan: string,
-};
-
 export type VisualAnnotation = {
 	id: string,
 	visualId: string,
@@ -4131,8 +5120,8 @@ export type VisualAsset = {
 	sizeClass?: string | null,
 	digest: string,
 	base64: string,
-	widthPx?: number,
-	heightPx?: number,
+	widthPx?: number | null,
+	heightPx?: number | null,
 };
 
 export type VisualCreateRequest = {
@@ -4164,8 +5153,8 @@ export type VisualQuery = {
 	sessionId: string | null,
 	templateId: string | null,
 	search: string | null,
-	limit: number,
-	offset: number,
+	limit: number | null,
+	offset: number | null,
 };
 
 export type VisualReadyRequest = {
@@ -4177,16 +5166,25 @@ export type VisualReadyRequest = {
 	templateDigest: string | null,
 };
 
-export type VisualRecord = {
+export type VisualRecord = VisualRecord_Serialize | VisualRecord_Deserialize;
+
+export type VisualRecord_Deserialize = {
 	schemaVersion: string,
 	id: string,
 	currentRevision: number,
 	title: string,
+	/**
+	 *  Short, human-readable label chosen by the authoring agent. The full
+	 *  title remains the descriptive/technical fallback for older visuals.
+	 */
+	displayName?: string | null,
 	templateId: string,
 	status: VisualStatus,
 	rendererKind: RendererKind,
 	bindings: unknown,
 	sessionId?: string | null,
+	/**  Durable owner for visuals authored in the shared local workspace. */
+	workspaceId?: string | null,
 	messageId?: string | null,
 	runId?: string | null,
 	traceId?: string | null,
@@ -4200,6 +5198,70 @@ export type VisualRecord = {
 	updatedAt: string,
 };
 
+export type VisualRecord_Serialize = {
+	schemaVersion: string,
+	id: string,
+	currentRevision: number,
+	title: string,
+	/**
+	 *  Short, human-readable label chosen by the authoring agent. The full
+	 *  title remains the descriptive/technical fallback for older visuals.
+	 */
+	displayName: string | null,
+	templateId: string,
+	status: VisualStatus,
+	rendererKind: RendererKind,
+	bindings: unknown,
+	sessionId: string | null,
+	/**  Durable owner for visuals authored in the shared local workspace. */
+	workspaceId?: string | null,
+	messageId: string | null,
+	runId: string | null,
+	traceId: string | null,
+	parentVisualId: string | null,
+	sourceAgentId: string | null,
+	sourceModel: string | null,
+	contentDigest: string | null,
+	previewDigest: string | null,
+	metadata: unknown,
+	createdAt: string,
+	updatedAt: string,
+};
+
+/**
+ *  Durable proof that one visual revision rendered from complete local
+ *  evidence.
+ *
+ *  Not a copy of the evidence — the kernel projection remains the sole
+ *  authority and is already durable. This is the checkable claim *about* a
+ *  render, which is what lets a reopened visual tell the difference between
+ *  "the projection has moved on" (normal) and "the projection is now older or
+ *  different than what I already showed" (a regression that must be reported,
+ *  never silently rendered).
+ */
+export type VisualRenderReceipt = {
+	visualId: string,
+	visualRevision: number,
+	optimizerRunId: string,
+	templateId: string,
+	/**
+	 *  The template digest the render was produced by. A template change
+	 *  invalidates the comparison rather than failing it: different code
+	 *  legitimately renders the same projection differently.
+	 */
+	templateVersion: string,
+	/**  The durable projection revision this render was produced from. */
+	projectionRevision: number,
+	/**
+	 *  Digest of the projection content, so the same revision carrying
+	 *  different bytes is detectable.
+	 */
+	dataDigest: string,
+	/**  How far the journal had been replayed when the render completed. */
+	tailCursor: number,
+	renderedAt: string,
+};
+
 export type VisualRendition = {
 	visualId: string,
 	revision: number,
@@ -4209,8 +5271,8 @@ export type VisualRendition = {
 	contentDigest: string,
 	mediaType: string,
 	rendererVersion: string,
-	widthPx?: number,
-	heightPx?: number,
+	widthPx?: number | null,
+	heightPx?: number | null,
 	createdAt: string,
 };
 
@@ -4224,7 +5286,7 @@ export type VisualRevision = {
 	bindings?: unknown,
 	previewDigest?: string | null,
 	authorAgentId?: string | null,
-	parentRevision?: number,
+	parentRevision?: number | null,
 	createdAt: string,
 };
 
@@ -4396,7 +5458,7 @@ export type VisualUpload = {
 	receiptDigest: string,
 	collectionId: string | null,
 	publicationId: string | null,
-	publicationRevision: number,
+	publicationRevision: number | null,
 	state: string,
 	committedUrl: string | null,
 	error: string | null,
@@ -4410,7 +5472,7 @@ export type WhisperModelHit = {
 	recommended: boolean,
 	multilingual: boolean,
 	downloadBytes: number,
-	installedBytes: number,
+	installedBytes: number | null,
 	path: string | null,
 	selected: boolean,
 	modelsRoot: string,
@@ -4419,10 +5481,10 @@ export type WhisperModelHit = {
 export type WhisperRuntimeStatus = {
 	phase: string,
 	loadedModel: string | null,
-	idleSeconds: number,
+	idleSeconds: number | null,
 	idleUnloadAfterSeconds: number,
-	lastUsedAt: number,
-	freeAt: number,
+	lastUsedAt: number | null,
+	freeAt: number | null,
 	updatedAt: number,
 };
 
@@ -4450,12 +5512,12 @@ export type WorkItemLifecycle = "planned" | "queued" | "starting" | "running" | 
 
 /**  Counts a projection may report. Missing stays `None`; it is never zero. */
 export type WorkSummary = {
-	planned?: number,
-	queued?: number,
-	running?: number,
-	succeeded?: number,
-	failed?: number,
-	cancelled?: number,
+	planned?: number | null,
+	queued?: number | null,
+	running?: number | null,
+	succeeded?: number | null,
+	failed?: number | null,
+	cancelled?: number | null,
 	unit?: string | null,
 	/**  False when the algorithm's work ceiling is a budget, not a fixed plan. */
 	fixedDenominator?: boolean,
@@ -4528,6 +5590,12 @@ export type WorkspaceGrantRequest = {
 export type WorkspaceRootSummary = {
 	workspaceRootRef: string,
 	displayName: string,
+};
+
+export type Write = {
+	key: string,
+	value: string | null,
+	expectedRevision: number,
 };
 
 /* Tauri Specta runtime */

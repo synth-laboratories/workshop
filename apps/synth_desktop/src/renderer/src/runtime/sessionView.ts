@@ -31,7 +31,6 @@ import {
 	type SyncSessionStatus
 } from "../types/landing";
 import { assertLocalActivityPlacementInvariant } from "./activityPlacementInvariant";
-import { formatUsdMicros } from "./paidComputeUsd";
 import { modelCapabilitiesForExecutionTarget } from "./modelCapabilities";
 import {
 	modelCatalogEntry,
@@ -225,10 +224,26 @@ function mapAsyncPhase(status: Session["status"], events: RuntimeEvent[] = []): 
 	}
 }
 
+/** Select one thread from the shared journal without mixing sibling lifecycles.
+ * Child views retain at most 600 events and never create a second event store.
+ */
+export function conversationThreadEvents(events: RuntimeEvent[], threadId: string | null, includeUnscoped = false): RuntimeEvent[] {
+	if (!threadId) return [];
+	const selected: RuntimeEvent[] = [];
+	for (let index = events.length - 1; index >= 0 && selected.length < 600; index -= 1) {
+		const event = events[index]!;
+		const id = eventThreadId(event.payload ?? {}, eventItem(event));
+		if (id === threadId || (includeUnscoped && !id)) selected.push(event);
+	}
+	return selected.reverse();
+}
+
 export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 	const byId = new Map<string, ChatMessage>();
 	const order: string[] = [];
 	const subagentIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
+	const scopedThreadIds = new Set(events.map((event) => eventThreadId(event.payload ?? {}, eventItem(event))).filter(Boolean));
+	const isSingleThreadProjection = scopedThreadIds.size === 1;
 	let activeAssistantId: string | null = null;
 	let producedAssistantForTurn = false;
 	let compactedDuringTurn = false;
@@ -241,7 +256,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 		// letting those terminal events reach the parent would manufacture
 		// "provider ended" messages and reset the parent's streaming state.
 		const sourceThreadId = eventThreadId(payload, eventItem(event));
-		if (sourceThreadId && subagentIds.has(sourceThreadId)) continue;
+		if (!isSingleThreadProjection && sourceThreadId && subagentIds.has(sourceThreadId)) continue;
 		if (event.eventKind === "run.started") {
 			activeAssistantId = null;
 			producedAssistantForTurn = false;
@@ -497,31 +512,85 @@ function providerLimitMessageFor(payload: Record<string, unknown>): string | und
 	const error = turn.error && typeof turn.error === "object"
 		? turn.error as Record<string, unknown>
 		: payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : undefined;
-	const code = typeof error?.codexErrorInfo === "string" ? error.codexErrorInfo.toLowerCase() : "";
+	const code = [error?.codexErrorInfo, error?.code, turn.code, payload.code]
+		.find((value): value is string => typeof value === "string")
+		?.toLowerCase() ?? "";
 	const rawMessage = typeof error?.message === "string" ? error.message.trim() : "";
 	const message = rawMessage.toLowerCase();
-	const provider = typeof payload.provider === "string" ? payload.provider.toLowerCase() : "";
-	if (code === "usagelimitexceeded" || message.includes("hit your usage limit")) {
+	const explicitProvider = [
+		error?.provider,
+		error?.providerId,
+		turn.provider,
+		turn.providerId,
+		payload.provider,
+		payload.providerId,
+		objectValue(payload.target)?.provider,
+		objectValue(payload.modelIdentity)?.provider,
+		objectValue(payload.credentialChain)?.provider
+	].find((value): value is string => typeof value === "string" && value.trim().length > 0);
+	let provider = explicitProvider?.trim().toLowerCase() ?? "";
+	if (!provider && (code.startsWith("codex_oauth_") || code === "usagelimitexceeded")) {
+		provider = "openai-codex-oauth";
+	} else if (!provider && message.includes("openrouter")) {
+		provider = "openrouter";
+	} else if (!provider && (message.includes("synth cloud") || message.includes("synth allowance"))) {
+		provider = "synth-cloud";
+	}
+	const providerPrefix = `Provider: ${providerLimitLabel(provider)}.`;
+	if (/\b401\b|unauthorized|invalid[_ ]api[_ ]key|missing authentication header/.test(message)) {
+		return `${providerPrefix} Your credentials were rejected. Update the provider API key or sign in again, then resend your message. Your message is preserved in this conversation.`;
+	}
+	if (
+		code === "usagelimitexceeded" || code === "codex_oauth_usage_limit" ||
+		message.includes("hit your usage limit")
+	) {
 		const reset = /try again at\s+(.+?)(?:\.+)?$/i.exec(rawMessage)?.[1]?.trim();
 		return reset
-			? `Your ChatGPT usage limit has been reached. You are still signed in; use another model or try again at ${reset}.`
-			: "Your ChatGPT usage limit has been reached. You are still signed in; use another model or try again after your limit resets.";
+			? `${providerPrefix} Your usage limit has been reached. You are still signed in; use another model or try again at ${reset}.`
+			: `${providerPrefix} Your usage limit has been reached. You are still signed in; use another model or try again after your limit resets.`;
 	}
 	if (
 		provider === "openrouter" ||
 		message.includes("openrouter") ||
 		/(insufficient[_ ](?:credits|funds)|credit balance|no credits|payment required)/.test(message)
 	) {
-		return "Your OpenRouter credits are unavailable or exhausted. Add credits or choose another model, then retry.";
+		const prefix = `Provider: ${providerLimitLabel(provider || "openrouter")}.`;
+		return `${prefix} Credits are unavailable or exhausted. Add credits or choose another model, then retry.`;
 	}
 	if (
 		provider === "synth" || provider === "synth-cloud" ||
 		message.includes("synth cloud") || message.includes("synth allowance") ||
 		/(allowance (?:is )?(?:used up|exhausted)|billing (?:needs attention|limit))/.test(message)
 	) {
-		return "Your Synth Cloud allowance is unavailable. Manage billing or choose a local/API-key model, then retry.";
+		const prefix = `Provider: ${providerLimitLabel(provider || "synth-cloud")}.`;
+		return `${prefix} Your allowance is unavailable. Manage billing or choose a local/API-key model, then retry.`;
 	}
 	return undefined;
+}
+
+function providerLimitLabel(provider: string): string {
+	switch (provider.toLowerCase()) {
+		case "openai-codex-oauth":
+		case "chatgpt":
+		case "codex":
+			return "ChatGPT Codex";
+		case "openai":
+			return "OpenAI";
+		case "openrouter":
+			return "OpenRouter";
+		case "synth":
+		case "synth-cloud":
+			return "Synth Cloud";
+		case "google":
+		case "gemini":
+			return "Gemini";
+		case "":
+			return "Unknown";
+		default:
+			return provider
+				.replace(/[-_]+/g, " ")
+				.replace(/\b\w/g, (character) => character.toUpperCase());
+	}
 }
 
 export function eventsToActivity(
@@ -915,10 +984,6 @@ function compactDuration(start: string | undefined, end: string): string {
 	if (!start) return "a moment";
 	const milliseconds = Math.max(0, Date.parse(end) - Date.parse(start));
 	if (!Number.isFinite(milliseconds) || milliseconds < 1_000) return "a moment";
-	// Replayed provider journals can carry a stale run.started boundary from a
-	// prior day. Presenting that restore gap as active work is misleading; keep
-	// the outcome while declining false precision for implausibly long spans.
-	if (milliseconds >= 3 * 60 * 60 * 1_000) return "a while";
 	const seconds = Math.round(milliseconds / 1_000);
 	if (seconds < 60) return `${seconds}s`;
 	const minutes = Math.floor(seconds / 60);
@@ -1218,6 +1283,9 @@ export function eventsToLocalActivity(
 	options?: { enforcePlacementInvariant?: boolean }
 ): Record<string, LocalActivityLine[]> {
 	const assistantIds = messages.filter((message) => message.role === "assistant").map((message) => message.id);
+	const childThreadIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
+	const scopedThreadIds = new Set(events.map((event) => eventThreadId(event.payload ?? {}, eventItem(event))).filter(Boolean));
+	const isSingleThreadProjection = scopedThreadIds.size === 1;
 	const lastContentSequenceByMessageId = new Map<string, number>();
 	const approvalKey = (event: RuntimeEvent): string | undefined => {
 		const payload = event.payload ?? {};
@@ -1376,6 +1444,7 @@ export function eventsToLocalActivity(
 			}
 			continue;
 		}
+		if (!isSingleThreadProjection && threadId && childThreadIds.has(threadId)) continue;
 		const explicit = typeof payload.messageId === "string" ? payload.messageId : null;
 		const messageText = event.eventKind.startsWith("message.")
 			? (typeof payload.delta === "string" ? payload.delta
@@ -1431,6 +1500,15 @@ export function eventsToLocalActivity(
 		if (event.eventKind === "run.completed" || event.eventKind === "run.failed" || event.eventKind === "run.cancelled") {
 			const key = runIdentity(payload) ?? activeRunKey;
 			if (key && completedRunKeys.has(key)) continue;
+			// A turn without an assistant answer projects a terminal system message.
+			// Seal its pending activity there so the next reply cannot inherit a
+			// previous turn's failure duration or tool activity.
+			const terminalMessageId = `terminal-${event.sequence}`;
+			if (current === "__active__" && messages.some((message) => message.id === terminalMessageId)) {
+				(byMessage[terminalMessageId] ??= []).push(...(byMessage.__active__ ?? []));
+				delete byMessage.__active__;
+				current = terminalMessageId;
+			}
 			const actions = actionCountLabel(runActions);
 			if (event.eventKind === "run.cancelled") {
 				for (const line of shownToolLines.values()) {
@@ -1556,41 +1634,40 @@ export function eventsToLocalActivity(
 		// activity. Keep it in the journal/Advanced view and let the composer’s
 		// permissions control present the active policy.
 		if (event.eventKind === "approval.policy.effective") continue;
+		// A successful conversation-budget auto-approval is likewise control-plane
+		// bookkeeping, not something the user said or must act on. Repeated eval
+		// calls can produce dozens of these receipts; keep them in Advanced and the
+		// durable journal instead of turning the transcript into a spend ledger.
+		if (event.eventKind === "approval.granted"
+			&& payload.kind === "paid_compute"
+			&& payload.policyAuto === true
+			&& payload.approvalPolicy === "conversation_paid_compute_budget") continue;
 		const path = typeof payload.path === "string" ? payload.path : undefined;
 		const approvalKind = typeof payload.kind === "string" ? payload.kind : "permission";
 		const approvalSubject = approvalKind === "paid_compute" ? "Paid compute"
+			: approvalKind === "visual_template_persist" ? "Persistent visual template"
 			: approvalKind === "credential_access" ? "Credential access"
 				: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
 					: approvalKind === "container_lifecycle" ? "Container replacement"
 					: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
 						: approvalKind === "computer_use" ? "App control"
-							: approvalKind === "visual_template_persist" ? "Visual template"
 							: approvalKind === "project_source" ? "Project source"
 								: "Permission";
 		let label: string | undefined;
 		switch (event.eventKind) {
 			case "approval.requested":
 				label = approvalKind === "paid_compute" ? "Paid compute approval"
+					: approvalKind === "visual_template_persist" ? "Save persistent visual template"
 					: approvalKind === "credential_access" ? "Credential access"
 						: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
 							: approvalKind === "container_lifecycle" ? "Replace container workload"
 							: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
 								: approvalKind === "computer_use"
 									? (payload.hazard === true ? "Confirm this action" : "Allow app control")
-									: approvalKind === "visual_template_persist"
-										? "Persist visual template code"
-										: "Approval requested";
+									: "Approval requested";
 				break;
 			case "approval.granted":
-				if (payload.policyAuto === true && payload.approvalPolicy === "conversation_paid_compute_budget") {
-					const reserved = typeof payload.reservedUsdMicros === "number" ? payload.reservedUsdMicros : 0;
-					const remaining = typeof payload.remainingUsdMicros === "number" ? payload.remainingUsdMicros : 0;
-					const cap = typeof payload.conversationCapUsdMicros === "number" ? payload.conversationCapUsdMicros : 0;
-					const used = Math.max(0, cap - remaining);
-					label = `Auto-approved a $${formatUsdMicros(reserved)} maximum · $${formatUsdMicros(used)} of $${formatUsdMicros(cap)} conversation allowance used`;
-				} else {
-					label = `${approvalSubject} granted`;
-				}
+				label = `${approvalSubject} granted`;
 				break;
 			case "approval.rejected":
 				label = `${approvalSubject} rejected`;
@@ -1625,6 +1702,11 @@ export function eventsToLocalActivity(
 					: [])
 			].filter((value): value is string => typeof value === "string" && value !== "").join(" · ")
 			: undefined;
+		const templateDetail = payload.kind === "visual_template_persist"
+			? [payload.templateId, payload.sourceKind === "user" ? "TSX template" : "Sandboxed HTML template", payload.destination, payload.packageDigest,
+				`${payload.byteSize} bytes`, payload.overwrites ? "Replaces existing template" : "Creates new template",
+				"Renderer code remains available across sessions and restarts"].join(" · ")
+			: undefined;
 		const pluginDetail = payload.kind === "plugin_lifecycle"
 			? [
 				payload.action,
@@ -1649,27 +1731,10 @@ export function eventsToLocalActivity(
 					Array.isArray(payload.credentialNames) ? `credentials ${payload.credentialNames.join(", ")}` : null
 				].filter((value): value is string => Boolean(value)).join(" · ")
 				: undefined;
-		// `visual_template_persist` composes its whole sentence host-side
-		// (`ApprovalKind::visual_template_detail`), which names the id, the tier,
-		// the byte count, the origin and whether it replaces reviewed code.
-		// Re-deriving that here would be a second copy of the question.
-		const autoPaid = event.eventKind === "approval.granted"
-			&& approvalKind === "paid_compute"
-			&& payload.policyAuto === true
-			&& payload.approvalPolicy === "conversation_paid_compute_budget";
-		const autoPaidDetail = autoPaid
-			? [
-				typeof payload.reservedUsdMicros === "number" ? `reserved $${formatUsdMicros(payload.reservedUsdMicros)}` : null,
-				typeof payload.settledSpendUsdMicros === "number" ? `settled $${formatUsdMicros(payload.settledSpendUsdMicros)}` : null,
-				typeof payload.remainingUsdMicros === "number" ? `remaining $${formatUsdMicros(payload.remainingUsdMicros)}` : null,
-				typeof payload.conversationCapUsdMicros === "number" ? `conversation $${formatUsdMicros(payload.conversationCapUsdMicros)}` : null
-			].filter((value): value is string => Boolean(value)).join(" · ")
-			: undefined;
 		const safeKind = payload.kind === "shell_command" || payload.kind === "file_change" || payload.kind === "permission"
-			|| payload.kind === "plugin_lifecycle" || payload.kind === "paid_compute"
-			|| payload.kind === "visual_template_persist";
-		const detail = autoPaidDetail
-			?? typedDetail
+			|| payload.kind === "plugin_lifecycle" || payload.kind === "paid_compute";
+		const detail = typedDetail
+			?? templateDetail
 			?? computerUseDetail
 			?? pluginDetail
 			?? (safeKind && typeof payload.detail === "string"
@@ -1683,19 +1748,17 @@ export function eventsToLocalActivity(
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
-			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "container_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use" || approvalKind === "visual_template_persist"
+			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "container_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "visual_template_persist" || approvalKind === "computer_use"
 				? approvalKind : "permission",
 			approvalPayload: event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? {
+				approvalDigest: typeof payload.approvalDigest === "string" ? payload.approvalDigest : typeof payload.preparationDigest === "string" ? payload.preparationDigest : undefined,
 				operation: typeof payload.operation === "string" ? payload.operation : undefined,
 				parameters: payload.parameters && typeof payload.parameters === "object" && !Array.isArray(payload.parameters) ? payload.parameters as Record<string, unknown> : undefined,
 				estimatedCostUsdMicros: typeof payload.estimatedCostUsdMicros === "number" ? payload.estimatedCostUsdMicros : undefined,
 				requestedCap: payload.requestedCap && typeof payload.requestedCap === "object" && !Array.isArray(payload.requestedCap)
 					? payload.requestedCap as { maxCostUsdMicros?: number; maxRollouts?: number }
 					: undefined,
-				requestingAgent: typeof payload.requestingAgent === "string" ? payload.requestingAgent : undefined,
-				approvalDigest: typeof payload.approvalDigest === "string" ? payload.approvalDigest : undefined,
-				requestedAt: typeof payload.requestedAt === "string" ? payload.requestedAt : undefined,
-				expiresAt: typeof payload.expiresAt === "string" ? payload.expiresAt : undefined
+				requestingAgent: typeof payload.requestingAgent === "string" ? payload.requestingAgent : undefined
 			} : event.eventKind === "approval.requested" && approvalKind === "credential_access" ? {
 				provider: typeof payload.provider === "string" ? payload.provider : undefined,
 				purpose: typeof payload.purpose === "string" ? payload.purpose : undefined,
@@ -1704,17 +1767,6 @@ export function eventsToLocalActivity(
 				displayPath: typeof payload.displayPath === "string" ? payload.displayPath : undefined,
 				variable: typeof payload.variable === "string" ? payload.variable : undefined,
 				switchFromDisplay: typeof payload.switchFromDisplay === "string" ? payload.switchFromDisplay : undefined
-			} : autoPaid ? {
-				policyAuto: true,
-				reservedUsdMicros: typeof payload.reservedUsdMicros === "number" ? payload.reservedUsdMicros : undefined,
-				settledSpendUsdMicros: typeof payload.settledSpendUsdMicros === "number" ? payload.settledSpendUsdMicros : undefined,
-				remainingUsdMicros: typeof payload.remainingUsdMicros === "number" ? payload.remainingUsdMicros : undefined,
-				conversationCapUsdMicros: typeof payload.conversationCapUsdMicros === "number" ? payload.conversationCapUsdMicros : undefined,
-				requestedCap: payload.requestedCap && typeof payload.requestedCap === "object" && !Array.isArray(payload.requestedCap)
-					? payload.requestedCap as { maxCostUsdMicros?: number; maxRollouts?: number }
-					: payload.cap && typeof payload.cap === "object" && !Array.isArray(payload.cap)
-						? payload.cap as { maxCostUsdMicros?: number; maxRollouts?: number }
-						: undefined
 			} : undefined,
 			alwaysAllowSupported: event.eventKind === "approval.requested" && payload.alwaysSupported === true,
 			detail,
@@ -1811,6 +1863,8 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 		id,
 		kind: "report",
 		title,
+		displayName: stringField(visual, "displayName", "display_name") ?? title,
+		updatedAt: stringField(visual, "updatedAt", "updated_at") ?? event.createdAt,
 		summary: stringField(metadata ?? {}, "summary"),
 		messageId: stringField(visual, "messageId", "message_id"),
 		shownByAgent: true,
@@ -1859,6 +1913,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 				? payload.templateId
 				: artifacts.get(id)?.templateId;
 		const prior = artifacts.get(id);
+		const metadata = objectValue(payload.metadata) ?? prior?.metadata;
 		const ownerSessionId = stringField(payload, "ownerSessionId", "owner_session_id") ?? prior?.ownerSessionId;
 		const runId = optimizerRunIdFromBindings(payload.bindings ?? prior?.bindings)
 			?? stringField(payload, "runId", "run_id")
@@ -1868,6 +1923,14 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			id,
 			kind: "report",
 			title: typeof payload.title === "string" ? payload.title : prior?.title ?? title,
+			displayName:
+				typeof payload.displayName === "string"
+					? payload.displayName
+					: stringField(metadata ?? {}, "displayName", "display_name")
+						?? prior?.displayName
+						?? (typeof payload.title === "string" ? payload.title : title),
+			updatedAt:
+				typeof payload.updatedAt === "string" ? payload.updatedAt : event.createdAt ?? prior?.updatedAt,
 			summary:
 				typeof payload.summary === "string" ? payload.summary : prior?.summary,
 			messageId:
@@ -1878,7 +1941,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			revision: typeof payload.revision === "number" && Number.isFinite(payload.revision)
 				? payload.revision
 				: prior?.revision,
-			metadata: objectValue(payload.metadata) ?? prior?.metadata,
+			metadata,
 			ownerSessionId,
 			sessionId: ownerSessionId ?? prior?.sessionId,
 			runId: runId ?? undefined,

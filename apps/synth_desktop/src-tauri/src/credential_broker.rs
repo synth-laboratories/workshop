@@ -192,6 +192,49 @@ impl CredentialBroker {
         self.state.receipts.clone()
     }
 
+    /// Read Shoal's side-effect-free lifecycle projection through the same
+    /// session-bound credential lease used for inference. The renderer never
+    /// receives either the upstream origin or the real provider credential.
+    pub async fn hosted_inference_status(&self, session_id: &str, model: &str) -> Result<Value> {
+        let token = self
+            .state
+            .by_session
+            .read()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+            .context("this cloud session has no active provider lease")?;
+        let lease = self
+            .state
+            .lookup(&token)
+            .context("this cloud session's provider lease is no longer valid")?;
+        let mut url = reqwest::Url::parse(&lease.upstream_origin)
+            .context("the Synth Cloud lifecycle origin is invalid")?;
+        url.set_path("");
+        {
+            let mut segments = url.path_segments_mut().map_err(|_| {
+                anyhow::anyhow!("the Synth Cloud lifecycle origin cannot carry a path")
+            })?;
+            // Synth Cloud's public gateway is rooted at /api/v1 (the same
+            // path apply_synth_cloud_provider gives Codex through this proxy).
+            segments.extend(["api", "v1", "models", model]);
+        }
+        let response = self
+            .state
+            .http
+            .get(url)
+            .bearer_auth(&lease.api_key)
+            .send()
+            .await
+            .context("Synth Cloud lifecycle status is unavailable")?
+            .error_for_status()
+            .context("Synth Cloud rejected the lifecycle status request")?;
+        response
+            .json::<Value>()
+            .await
+            .context("Synth Cloud returned an invalid lifecycle status")
+    }
+
     /// Bind subsequent relayed requests for a session to one turn scope.
     pub fn begin_turn(&self, session_id: &str, turn_scope: &str) {
         self.state

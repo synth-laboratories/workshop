@@ -4,6 +4,31 @@
 use super::models::{OptimizerEventEnvelope, OptimizerRunStatus, OPTIMIZER_EVENT_SCHEMA_VERSION};
 use serde_json::{json, Map, Value};
 
+pub(super) fn checkpoint_child_event(kind: &str, payload: &Map<String, Value>) -> (String, Map<String, Value>) {
+    let mut delta = payload.clone();
+    if kind == "sft.child_eval.progress" && payload.get("event").and_then(Value::as_str) == Some("eval.child.attached") {
+        if let Some(child) = payload.get("run_id").and_then(Value::as_str) {
+            delta.insert("childEvalRunId".into(), json!(child));
+            return ("sft.checkpoint_evaluation.started".into(), delta);
+        }
+    }
+    if kind == "sft.child_eval.completed" {
+        if let Some(child) = payload.get("eval_job_id").and_then(Value::as_str) {
+            delta.insert("childEvalRunId".into(), json!(child));
+            delta.insert("evaluation".into(), json!({
+                "evaluation_id": child, "checkpoint_id": payload.get("checkpoint_id"),
+                "phase": payload.get("role"), "step": payload.get("step"),
+                "score": payload.get("value"), "metric": payload.get("metric_ref"),
+                "evaluator": payload.get("evaluator_id"), "sample_count": payload.get("completed"),
+                "status": payload.get("status"), "units": payload.get("units"),
+                "reward_version": payload.get("reward_version")
+            }));
+            return ("sft.checkpoint_evaluation.completed".into(), delta);
+        }
+    }
+    (kind.into(), delta)
+}
+
 pub fn normalize_event(
     raw: &Value,
     default_run_id: &str,
@@ -73,7 +98,7 @@ fn normalize_canonical(
             .or_else(|| obj.get("seq"))
             .or_else(|| obj.get("_seq")),
     )?;
-    let event_type = obj
+    let mut event_type = obj
         .get("type")
         .or_else(|| obj.get("event_type"))
         .and_then(Value::as_str)
@@ -103,9 +128,21 @@ fn normalize_canonical(
         .to_string();
     let mut delta = obj
         .get("delta")
+        .or_else(|| (obj.get("schema_version").and_then(Value::as_str) == Some("training.event.v1")).then(|| obj.get("payload")).flatten())
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    if event_type == "training.lifecycle" {
+        match delta.get("state").and_then(Value::as_str) {
+            Some("paused" | "blocked_evaluation" | "blocked_budget" | "blocked_uncertain") => event_type = "optimizer.run.paused".into(),
+            Some("cancel_requested") => event_type = "optimizer.run.cancelling".into(),
+            Some("running") => event_type = "optimizer.run.resumed".into(),
+            _ => {}
+        }
+    }
+    if event_type.starts_with("sft.child_eval.") {
+        (event_type, delta) = checkpoint_child_event(&event_type, &delta);
+    }
     lift_child_resource_ref(&mut delta);
     let usage_delta = obj
         .get("usage_delta")

@@ -378,6 +378,16 @@ pub fn run_stdio_server_enriched(
     call_tool: impl Fn(&str, &Value) -> Result<Value, String>,
     enrich_breaker_args: impl Fn(&str, &Value) -> Value,
 ) {
+    run_stdio_server_with_instructions(info, tools, call_tool, enrich_breaker_args, "")
+}
+
+pub fn run_stdio_server_with_instructions(
+    info: McpServerInfo,
+    tools: impl Fn() -> Value,
+    call_tool: impl Fn(&str, &Value) -> Result<Value, String>,
+    enrich_breaker_args: impl Fn(&str, &Value) -> Value,
+    instructions: &str,
+) {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut breaker = ToolLoopBreaker::default();
@@ -392,6 +402,9 @@ pub fn run_stdio_server_enriched(
         };
         let id = req.get("id").cloned().unwrap_or(Value::Null);
         let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+        if req.get("id").is_none() && method.starts_with("notifications/") {
+            continue;
+        }
         let response = match method {
             "initialize" => {
                 json!({
@@ -400,6 +413,7 @@ pub fn run_stdio_server_enriched(
                     "result": {
                         "protocolVersion": "2024-11-05",
                         "capabilities": { "tools": {} },
+                        "instructions": instructions,
                         "serverInfo": {
                             "name": info.name,
                             "version": info.version,
@@ -408,6 +422,7 @@ pub fn run_stdio_server_enriched(
                 })
             }
             "notifications/initialized" | "notifications/cancelled" => continue,
+            "ping" => json!({"jsonrpc":"2.0","id":id,"result":{}}),
             "tools/list" => json!({"jsonrpc":"2.0","id":id,"result":tools()}),
             "tools/call" => {
                 let params = req.get("params").cloned().unwrap_or(json!({}));

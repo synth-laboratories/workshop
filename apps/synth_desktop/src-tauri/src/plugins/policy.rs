@@ -21,7 +21,7 @@ pub fn classify(kind: &ApprovalKind, active_runs: u64) -> PluginRisk {
     match kind {
         ApprovalKind::PluginLifecycle { action, .. } => match action.as_str() {
             "enable" | "disable" => PluginRisk::Low,
-            "start" | "stop" if active_runs == 0 => PluginRisk::Low,
+            "start" | "restart" | "stop" if active_runs == 0 => PluginRisk::Low,
             "stop" | "install" | "update" | "remove" => PluginRisk::High,
             _ => PluginRisk::High,
         },
@@ -29,14 +29,13 @@ pub fn classify(kind: &ApprovalKind, active_runs: u64) -> PluginRisk {
             "start" | "stop" if active_runs == 0 => PluginRisk::Low,
             _ => PluginRisk::High,
         },
-        // Unreachable: `requires_human` above already returned `HandOff`.
-        // Spelled out anyway because the match is exhaustive on purpose — a
-        // kind added later must not be able to acquire a risk class by
-        // falling into somebody else's arm.
-        ApprovalKind::VisualTemplatePersist { .. } => PluginRisk::HandOff,
-        ApprovalKind::ContainerLifecycle { .. } => PluginRisk::HandOff,
+        // A validated container declaration is a bounded local mutation. It
+        // remains modal under on-request/untrusted, but `never` is an explicit
+        // operator choice to let trusted lifecycle recovery proceed.
+        ApprovalKind::ContainerLifecycle { .. } => PluginRisk::High,
         ApprovalKind::PaidCompute { .. } => PluginRisk::High,
         ApprovalKind::CredentialAccess { .. } => PluginRisk::High,
+        ApprovalKind::VisualTemplatePersist { .. } => PluginRisk::HandOff,
         ApprovalKind::ShellCommand { .. } => PluginRisk::High,
         // Non-hazard computer use: driving an app the operator has not yet
         // allowed. Hazard actions never reach here — `requires_human` above
@@ -103,6 +102,14 @@ pub fn plugin_kind(
             true,
         ),
         "start" => ("Start the installed optimizer service", true),
+        "restart" if active_runs == 0 => (
+            "Restart the idle optimizer service; retain runs, artifacts, and visuals",
+            true,
+        ),
+        "restart" => (
+            "Restart the optimizer service while jobs are active; product safety refuses",
+            false,
+        ),
         "stop" if active_runs == 0 => ("Stop the idle optimizer service; retain runs and visuals", true),
         "stop" => (
             "Stop the optimizer service while jobs are active; product safety may refuse",
@@ -123,7 +130,7 @@ pub fn plugin_kind(
         download_size_bytes: matches!(action, "install" | "update")
             .then_some(catalog.download_size_bytes),
         network_host: matches!(action, "install" | "update").then(|| catalog.network_host.clone()),
-        service_effect: service_effect.into(),
+        service_effect: if catalog.plugin_id == super::jesterky::ID { format!("{action} the optional Jesterky runtime; analysis runs on demand") } else { service_effect.into() },
         active_runs,
         retention: retention.into(),
         always_supported,
@@ -135,6 +142,7 @@ pub fn compute_kind(
     preparation_digest: &str,
     max_cost_usd: f64,
     max_rollouts: u64,
+    provider: &str,
     proposer_model: &str,
     timeout_seconds: u64,
 ) -> ApprovalKind {
@@ -144,6 +152,10 @@ pub fn compute_kind(
         parameters: json!({
             "recipeId": recipe_id,
             "preparationDigest": preparation_digest,
+            "model": {
+                "provider": provider,
+                "model": proposer_model,
+            },
         }),
         estimated_cost_usd_micros: Some(micros),
         requested_cap: PaidComputeCap {
@@ -156,7 +168,7 @@ pub fn compute_kind(
         proposer_model: Some(proposer_model.into()),
         evaluator_model: Some(recipe_id.into()),
         timeout_seconds: Some(timeout_seconds),
-        credential_names: vec!["OPENAI_API_KEY".into()],
+        credential_names: vec![format!("{provider}:workshop_secrets_proxy")],
         preparation_digest: Some(preparation_digest.into()),
     }
 }

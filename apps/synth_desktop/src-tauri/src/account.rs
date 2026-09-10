@@ -79,6 +79,22 @@ pub struct AccountPlan {
     /// must then omit allowance figures instead of showing zeros.
     pub metered: bool,
     #[serde(default)]
+    pub effective_price_usd: Option<f64>,
+    #[serde(default)]
+    pub billing_interval: Option<String>,
+    #[serde(default)]
+    pub grant_kind: Option<String>,
+    #[serde(default)]
+    pub entitlement_state: Option<String>,
+    #[serde(default)]
+    pub entitlement_starts_at: Option<String>,
+    #[serde(default)]
+    pub entitlement_expires_at: Option<String>,
+    #[serde(default)]
+    pub campaign_id: Option<String>,
+    #[serde(default)]
+    pub claim_state: Option<String>,
+    #[serde(default)]
     pub monthly_allowance_usd: Option<f64>,
     pub used_usd: Option<f64>,
     #[serde(default)]
@@ -87,6 +103,8 @@ pub struct AccountPlan {
     pub resets_at: Option<String>,
     #[serde(default)]
     pub renews_at: Option<String>,
+    #[serde(default)]
+    pub cancel_at_period_end: bool,
     /// `cloud` or `dev_seed`; the UI labels the stand-in explicitly.
     pub source: String,
 }
@@ -332,11 +350,20 @@ fn dev_seed_plan(
         tier: Some("dev".into()),
         state: Some("active".into()),
         metered: true,
+        effective_price_usd: None,
+        billing_interval: None,
+        grant_kind: None,
+        entitlement_state: None,
+        entitlement_starts_at: None,
+        entitlement_expires_at: None,
+        campaign_id: None,
+        claim_state: None,
         monthly_allowance_usd: Some(usd(stored.monthly_allowance_cents)),
         used_usd: Some(usd(used_cents)),
         remaining_usd: Some(usd(remaining_cents)),
         resets_at: Some(next_monthly_reset(now).to_rfc3339()),
         renews_at: None,
+        cancel_at_period_end: false,
         source: SOURCE_DEV_SEED.into(),
     }))
 }
@@ -349,11 +376,20 @@ fn plan_from_snapshot(snapshot: &CloudSnapshot) -> AccountPlan {
         tier: Some(snapshot.plan.tier.clone()),
         state: Some(snapshot.plan.state.clone()),
         metered,
+        effective_price_usd: snapshot.plan.effective_price_cents.map(usd),
+        billing_interval: snapshot.plan.billing_interval.clone(),
+        grant_kind: snapshot.plan.grant_kind.clone(),
+        entitlement_state: snapshot.plan.entitlement_state.clone(),
+        entitlement_starts_at: snapshot.plan.entitlement_starts_at.clone(),
+        entitlement_expires_at: snapshot.plan.entitlement_expires_at.clone(),
+        campaign_id: snapshot.plan.campaign_id.clone(),
+        claim_state: snapshot.plan.claim_state.clone(),
         monthly_allowance_usd: allowance.limit_cents.map(usd),
         used_usd: allowance.used_cents.map(usd),
         remaining_usd: allowance.remaining_cents.map(usd),
         resets_at: allowance.resets_at.clone(),
         renews_at: snapshot.plan.renews_at.clone(),
+        cancel_at_period_end: snapshot.plan.cancel_at_period_end,
         source: SOURCE_CLOUD.into(),
     }
 }

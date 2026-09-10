@@ -1,0 +1,9 @@
+.project-sources { display: grid; gap: 12px; padding: 18px; }
+.project-sources h3, .project-sources h4, .project-sources p { margin: 0; }
+.project-sources code { overflow-wrap: anywhere; }
+.project-source-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.project-source-actions label { display: inline-flex; align-items: center; gap: 6px; }
+.project-source-row { display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border-subtle, #4444); }
+.project-source-row > div { min-width: 0; display: grid; gap: 4px; }
+.project-source-row button { flex-shrink: 0; }
+.project-source-request { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border-subtle, #4444); border-radius: 8px; }

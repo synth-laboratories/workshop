@@ -1,29 +1,65 @@
-import { useEffect, useMemo } from "react";
+import type { MainView } from "./routes";
+import { runtimeStorage } from "./preferences/runtimeStorage";
+import { useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { formatTps } from "./components/InferencePanel";
 import { AppTitlebar, type TabCopyItem } from "./components/AppTitlebar";
+import { OperatorTrainingApproval } from "./components/OperatorTrainingApproval";
 import { AppOverlays } from "./components/AppOverlays";
 import { ComposerDock } from "./components/ComposerDock";
+import { ComposerLayoutProvider } from "./components/ComposerLayout";
 import { ManderLabGate } from "./components/mander";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { useAppController } from "./hooks/useAppController";
+import { useChatOutputs } from "./hooks/useChatOutputs";
 import {
 	archiveConversation,
 	pinConversation,
 	renameConversation,
-	promptsForConversation,
-	setToolActivityMode
+	promptsForConversation
 } from "./preferences";
 import { publicError } from "./runtime/publicError";
 import { conversationMarkdown } from "./runtime/chatCopy";
 import { copyText } from "./runtime/clipboard";
 import { eventsToMessages } from "./runtime/sessionView";
+import {
+	CAPTURE_EVENT,
+	currentCaptureRequest,
+	isCapturePluginId,
+	markCaptureReady,
+	publishAppState,
+	type CaptureRequest
+} from "./runtime/captureSurface";
+import { installCaptureAudit } from "./runtime/captureFindings";
 import { MainRoutes } from "./routes";
+import { subscribeVisualPresentation } from "./runtime/visualPresentation";
 import { bridges } from "./runtime/desktopBridge";
+import type { WhisperRuntimeStatus } from "./bridge";
 
 /** Shell + wiring only — orchestration lives in useAppController / ComposerDock. */
 export default function App() {
 	const c = useAppController();
+    useEffect(() => {
+        type Request = { requestId: string; view: MainView };
+        const target = window as Window & { __workshopAppPresentation?: Request };
+        const apply = (request?: Request) => {
+            if (!request?.view) return;
+            c.setView(request.view);
+            delete target.__workshopAppPresentation;
+        };
+        const handle = (event: Event) => apply((event as CustomEvent<Request>).detail);
+        window.addEventListener("workshop:app-present", handle);
+        apply(target.__workshopAppPresentation);
+        return () => window.removeEventListener("workshop:app-present", handle);
+    }, [c.setView]);
+	useEffect(() => subscribeVisualPresentation(() => c.setView({ kind: "visuals" })), [c.setView]);
+	const activeChatOutputs = useChatOutputs(c.activeChat ?? { id: "", title: "", messages: [] });
+	const [whisperStatus, setWhisperStatus] = useState<WhisperRuntimeStatus | null>(null);
+	useEffect(() => {
+		void bridges.whisper?.getRuntimeStatus?.().then(setWhisperStatus).catch(() => undefined);
+		return bridges.whisper?.onRuntimeStatus?.(setWhisperStatus);
+	}, []);
 	const tabCopyItems = useMemo<TabCopyItem[]>(() => {
 		if (c.view.kind !== "chat" || !c.activeSessionId) return [];
 		const messages = eventsToMessages(c.eventsBySession[c.activeSessionId] ?? []);
@@ -47,21 +83,129 @@ export default function App() {
 		return () => window.removeEventListener("synth:visual-review-capture", openReviewSurface);
 	}, [c.setView]);
 
+	// The audit is a function the host calls during a capture, so it has to be
+	// installed before the first one arrives rather than on demand.
+	useEffect(() => {
+		installCaptureAudit();
+	}, []);
+
+	// What the app was showing when a capture was taken. Published continuously
+	// rather than assembled during a capture: a screenshot record whose state
+	// was gathered after the shutter has no guarantee it describes the frame.
+	useEffect(() => {
+		publishAppState({
+			route: c.view.kind,
+			chatId: c.view.kind === "chat" ? c.view.chatId : undefined,
+			openVisualId: c.openArtifactId ?? undefined,
+			visiblePluginIds: c.preferences.navigation?.visiblePluginIds,
+			terminalOpen: c.terminalOpen,
+			sidePanelOpen: c.showSidePanel,
+			sidePanelTab: c.sidePanelTab
+		});
+	}, [c.view, c.openArtifactId, c.preferences.navigation, c.terminalOpen, c.showSidePanel, c.sidePanelTab]);
+
+	// Host surface capture. `app` and `element` photograph the app where it
+	// already stands, so they route nowhere; only a plugin capture navigates,
+	// and it acknowledges after the route has actually changed rather than on
+	// the request, which is the difference between a screenshot of the page and
+	// a screenshot of the page it was leaving.
+	const [captureRequest, setCaptureRequest] = useState<CaptureRequest | undefined>(currentCaptureRequest);
+	useEffect(() => {
+		const onCapture = (event: Event) => setCaptureRequest((event as CustomEvent<CaptureRequest>).detail);
+		window.addEventListener(CAPTURE_EVENT, onCapture);
+		return () => window.removeEventListener(CAPTURE_EVENT, onCapture);
+	}, []);
+	useEffect(() => {
+		if (!captureRequest?.active) return;
+		if (captureRequest.route && isCapturePluginId(captureRequest.target)) {
+			c.setView({ kind: captureRequest.target });
+		}
+	}, [captureRequest, c.setView]);
+	useEffect(() => {
+		if (!captureRequest?.active) return;
+		const { scope, target } = captureRequest;
+		if (scope === "app") {
+			const frame = requestAnimationFrame(() => markCaptureReady("app", "app"));
+			return () => cancelAnimationFrame(frame);
+		}
+		if (!scope || !target) return;
+		if (scope === "plugin" && c.view.kind !== target) return;
+		const frame = requestAnimationFrame(() => markCaptureReady(scope, target));
+		return () => cancelAnimationFrame(frame);
+	}, [captureRequest, c.view.kind]);
+
+	useEffect(() => {
+		if (!("__TAURI_INTERNALS__" in window)) return;
+		let unlisten: (() => void) | undefined;
+		let disposed = false;
+		void listen<{ visiblePluginIds?: string[] }>("workshop-display-plugin-visibility", (event) => {
+			if (!Array.isArray(event.payload.visiblePluginIds)) return;
+			c.setPreferences({ ...c.preferences, navigation: { visiblePluginIds: event.payload.visiblePluginIds } });
+		}).then((dispose) => { if (disposed) dispose(); else unlisten = dispose; });
+		return () => { disposed = true; unlisten?.(); };
+	}, [c.preferences, c.setPreferences]);
+
+	const appTitlebar = (
+		<AppTitlebar
+			tabLabel={c.view.kind === "landing" ? "New conversation" : c.tabLabel}
+			isChatTab={c.view.kind === "chat" || c.view.kind === "landing"}
+			activeLocalModel={Boolean(c.activeLocalModel)}
+			reserveNativeControls={c.view.kind === "settings" || !c.sidebarVisible}
+			brand={c.view.kind === "settings" && c.view.section === "models" ? "openai" : "synth"}
+			showTabIcon={c.view.kind !== "landing"}
+			showCloseTab={c.view.kind !== "landing"}
+			copyItems={tabCopyItems}
+			onCopyItem={async (item) => {
+				try {
+					await copyText(item.value);
+					c.showToast(item.successMessage);
+				} catch (reason) {
+					c.showToast(`Copy failed: ${publicError(reason)}`);
+				}
+			}}
+			terminalOpen={c.terminalOpen}
+			sidePanelOpen={c.showSidePanel}
+			outputCount={activeChatOutputs.count}
+			onCloseTab={() => {
+				c.setView({ kind: "landing" });
+				c.showToast("Back to landing");
+			}}
+			onNewConversation={c.onNewConversation}
+			onToggleTerminal={() => {
+				c.persistLayoutSnapshot({ bottomPanelVisible: !c.terminalOpen });
+			}}
+			onToggleInference={() => {
+				const next = !c.showSidePanel;
+				if (next) c.setSidePanelTab(c.activeLocalModel ? "inference" : "outputs");
+				c.setSidePanelOpen(next);
+				runtimeStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
+			}}
+		/>
+	);
+
 	return (
 		<div className="app-shell">
 			<ManderLabGate />
+            <OperatorTrainingApproval eventsBySession={c.eventsBySession} onError={c.showToast} />
 			<div className="body-row">
 				{c.view.kind !== "settings" ? (
 					<Sidebar
 						state={c.state}
+						appVersion={c.appVersion}
 						lagunaStatus={c.laguna}
+						whisperStatus={whisperStatus}
 						activeChatId={c.view.kind === "chat" ? c.view.chatId : null}
 						inventoryActive={c.view.kind === "inventory"}
+						inferenceActive={c.view.kind === "inference"}
 						visualsActive={c.view.kind === "visuals"}
 						reportsActive={c.view.kind === "reports"}
 						experimentsActive={c.view.kind === "experiments"}
 						optimizersActive={c.view.kind === "optimizers"}
+						jesterkyActive={c.view.kind === "jesterky"}
+						onOpenJesterky={() => c.setView({kind:"jesterky"})}
+						environmentQaActive={c.view.kind === "environment-qa"}
 						computerUseActive={c.view.kind === "computer-use"}
+						visiblePluginIds={c.preferences.navigation.visiblePluginIds}
 						workingChatIds={c.workingChatIds}
 						chatPresence={c.chatPresence}
 						activeLocalDecodeTps={c.inferenceMonitor.snapshot?.active?.decodeTokensPerSecond == null
@@ -101,11 +245,14 @@ export default function App() {
 						}}
 						pluginStatuses={c.pluginStatuses}
 						onOpenInventory={() => c.setView({ kind: "inventory" })}
+						onOpenInference={() => c.setView({ kind: "inference" })}
 						onOpenVisuals={() => c.setView({ kind: "visuals" })}
 						onOpenReports={() => c.setView({ kind: "reports" })}
 						onOpenExperiments={() => c.setView({ kind: "experiments" })}
 						onOpenOptimizers={() => c.setView({ kind: "optimizers" })}
+						onOpenEnvironmentQa={() => c.setView({ kind: "environment-qa" })}
 						onOpenComputerUse={() => c.setView({ kind: "computer-use" })}
+						onOpenPlugins={() => c.setView({ kind: "plugins" })}
 						onSearch={c.openSearch}
 						onSettings={() => c.setView({ kind: "settings" })}
 						account={c.accountView}
@@ -135,39 +282,8 @@ export default function App() {
 				) : null}
 
 				<main className="main-pane">
-					<AppTitlebar
-						tabLabel={c.tabLabel}
-						appVersion={c.appVersion}
-						activeLocalModel={Boolean(c.activeLocalModel)}
-						reserveNativeControls={c.view.kind === "settings" || !c.sidebarVisible}
-						brand={c.view.kind === "settings" && c.view.section === "models" ? "openai" : "synth"}
-						copyItems={tabCopyItems}
-						onCopyItem={async (item) => {
-							try {
-								await copyText(item.value);
-								c.showToast(item.successMessage);
-							} catch (reason) {
-								c.showToast(`Copy failed: ${publicError(reason)}`);
-							}
-						}}
-						terminalOpen={c.terminalOpen}
-						sidePanelOpen={c.sidePanelOpen}
-						sidePanelTab={c.sidePanelTab}
-						onCloseTab={() => {
-							c.setView({ kind: "landing" });
-							c.showToast("Back to landing");
-						}}
-						onNewConversation={c.onNewConversation}
-						onToggleTerminal={() => {
-							c.persistLayoutSnapshot({ bottomPanelVisible: !c.terminalOpen });
-						}}
-						onToggleInference={() => {
-							const next = !(c.sidePanelOpen && c.sidePanelTab === "inference");
-							c.setSidePanelTab("inference");
-							c.setSidePanelOpen(next);
-							window.localStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
-						}}
-					/>
+					<ComposerLayoutProvider>
+					{c.view.kind === "chat" ? null : appTitlebar}
 
 					{c.bootError ? (
 						<div className="boot-error" role="alert">
@@ -176,6 +292,7 @@ export default function App() {
 					) : null}
 
 					<MainRoutes
+						chatTitlebar={c.view.kind === "chat" ? appTitlebar : null}
 						view={c.view}
 						setView={c.setView}
 						computerUse={c.computerUse}
@@ -199,8 +316,9 @@ export default function App() {
 						activeChatSession={c.activeChatSession}
 						activeChatRunning={c.activeChatRunning}
 						activeChatWarmingUp={c.activeChatWarmingUp}
+						activeHostedInferencePhase={c.activeHostedInferencePhase}
+						activeHostedInference={c.activeHostedInference}
 						activeLocalModel={Boolean(c.activeLocalModel)}
-						activeSessionId={c.activeSessionId}
 						openArtifact={c.openArtifact}
 						openArtifactId={c.openArtifactId}
 						openContainer={c.openContainer}
@@ -208,6 +326,8 @@ export default function App() {
 						setContainerPaneExpanded={c.setContainerPaneExpanded}
 						inventoryContainerWidth={c.inventoryContainerWidth}
 						setInventoryContainerWidth={c.setInventoryContainerWidth}
+						sidePanelWidth={c.sidePanelWidth}
+						setSidePanelWidth={c.setSidePanelWidth}
 						persistLayoutSnapshot={c.persistLayoutSnapshot}
 						showSidePanel={c.showSidePanel}
 						sidePanelCanSharePane={c.sidePanelCanSharePane}
@@ -236,6 +356,9 @@ export default function App() {
 						setApprovalPolicy={c.setApprovalPolicy}
 						setSandboxMode={c.setSandboxMode}
 						showToast={c.showToast}
+                        ensureTrainingApprovalSession={async () => {
+                            return `operator-training-${crypto.randomUUID()}`;
+                        }}
 						startOptimizerAgent={async (title, prompt) => {
 							// An optimizer setup is an ordinary product turn on the
 							// operator-selected target. Do not silently route a local
@@ -259,7 +382,20 @@ export default function App() {
 						repairOpenContainer={c.repairOpenContainer}
 						restartOpenContainer={c.restartOpenContainer}
 						controlActive={c.controlActive}
-						onActivityModeChange={(mode) => c.setPreferences(setToolActivityMode(mode))}
+						bottomPanel={c.terminalOpen ? (
+							<TerminalPanel
+								open
+								workspaceId={c.terminalWorkspaceId}
+								workspaceRoot={c.terminalWorkspaceRoot}
+								height={c.preferences.layout.last.bottomPanelHeight}
+								fontFamily={c.preferences.appearance.terminalFontFamily}
+								fontSize={c.preferences.appearance.terminalFontSize}
+								onOpenChange={(open) => {
+									c.persistLayoutSnapshot({ bottomPanelVisible: open });
+								}}
+								onHeightChange={(height) => c.persistLayoutSnapshot({ bottomPanelHeight: height })}
+							/>
+						) : null}
 					/>
 
 					<ComposerDock
@@ -312,18 +448,7 @@ export default function App() {
 						}}
 					/>
 
-					<TerminalPanel
-						open={c.terminalOpen}
-						workspaceId={c.terminalWorkspaceId}
-						workspaceRoot={c.terminalWorkspaceRoot}
-						height={c.preferences.layout.last.bottomPanelHeight}
-						fontFamily={c.preferences.appearance.terminalFontFamily}
-						fontSize={c.preferences.appearance.terminalFontSize}
-						onOpenChange={(open) => {
-							c.persistLayoutSnapshot({ bottomPanelVisible: open });
-						}}
-						onHeightChange={(height) => c.persistLayoutSnapshot({ bottomPanelHeight: height })}
-					/>
+					</ComposerLayoutProvider>
 				</main>
 			</div>
 

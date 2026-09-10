@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "analysis.swarm_trajectories.v1",
+  "title": "Agent trajectory swarm explorer",
+  "genre": "analysis",
+  "version": "1.0.0",
+  "rendererKind": "template",
+  "description": "Query and explore a trajectory corpus from aggregate distributions and behavior cohorts down to exact trajectory events while preserving prevalence, sampling, and navigation lineage.",
+  "accent": "#6D4AFF",
+  "tags": ["agents", "trajectories", "evals", "swarm", "cohorts", "analysis"],
+  "inputs": [
+    {"name":"optimizer_run","description":"A recorded optimizer run; its durable collections are indexed natively, with detail fetched only on selection.","accepts":["optimizer_run"],"required":false},
+    {
+      "name": "trajectories",
+      "description": "A versioned array of synth.workshop.agent-trajectory.v1 records. Fixtures require an explicit fixture binding; missing input never falls back to demo data.",
+      "accepts": ["inline", "fixture", "local_cas", "query_snapshot"],
+      "required": false,
+      "schema": "synth.workshop.agent-trajectory.v1"
+    }
+  ],
+  "slots": [
+    {"name":"optimizer_run","description":"A recorded optimizer run; its durable collections are indexed natively, with detail fetched only on selection.","accepts":["optimizer_run"],"required":false},
+    {
+      "name": "trajectories",
+      "description": "A versioned array of synth.workshop.agent-trajectory.v1 records. Fixtures require an explicit fixture binding; missing input never falls back to demo data.",
+      "accepts": ["inline", "fixture", "local_cas", "query_snapshot"],
+      "required": false,
+      "schema": "synth.workshop.agent-trajectory.v1"
+    }
+  ],
+  "shell": "shell.tsx",
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "minimumRolloutCount": 1,
+      "requireTerminal": false
+    }
+  }
+}

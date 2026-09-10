@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "synth.jesterky-release.v1",
+  "artifacts": [
+    {
+      "version": "0.1.4",
+      "target": "linux-aarch64",
+      "sha256": "824d1922803f63fb6cac67302070fa0f820dfc30b08a994f1ce41ae7e29fbdc4",
+      "size": 11111088,
+      "url": "https://github.com/synth-laboratories/jesterky/releases/download/v0.1.4/jesterky-0.1.4-linux-aarch64"
+    },
+    {
+      "version": "0.1.4",
+      "target": "linux-x86_64",
+      "sha256": "9f1a814af245d61100ea20ab394c435ca24ec681d87f0f973b713bf3db60bed2",
+      "size": 11701736,
+      "url": "https://github.com/synth-laboratories/jesterky/releases/download/v0.1.4/jesterky-0.1.4-linux-x86_64"
+    },
+    {
+      "version": "0.1.4",
+      "target": "macos-aarch64",
+      "sha256": "35465ef6e76c08586754d34fb51923bafc97798ac14748825a45e440796feacf",
+      "size": 10004800,
+      "url": "https://github.com/synth-laboratories/jesterky/releases/download/v0.1.4/jesterky-0.1.4-macos-aarch64"
+    }
+  ]
+}

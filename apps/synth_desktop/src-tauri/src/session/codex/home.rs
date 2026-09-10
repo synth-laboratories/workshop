@@ -339,10 +339,6 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         visuals_skill.join("references/visual-recipes.md"),
         include_str!("../../../../skills/use-synth-visuals/references/visual-recipes.md"),
     )?;
-    fs::write(
-        visuals_skill.join("references/ad-hoc-visuals.md"),
-        include_str!("../../../../skills/use-synth-visuals/references/ad-hoc-visuals.md"),
-    )?;
     let diagrams_skill = home.join("skills/author-synth-diagrams");
     fs::create_dir_all(diagrams_skill.join("references"))?;
     fs::write(
@@ -438,6 +434,14 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
     ] {
         fs::write(dynamic_explainers_skill.join("references").join(name), body)?;
     }
+    let trace_skill=home.join("skills/use-synth-traces");
+    fs::create_dir_all(&trace_skill)?;
+    fs::write(trace_skill.join("SKILL.md"),include_str!("../../../../skills/use-synth-traces/SKILL.md"))?;
+    let jesterky_skill = home.join("skills/use-synth-jesterky");
+    if crate::plugins::jesterky::available() {
+        fs::create_dir_all(&jesterky_skill)?;
+        fs::write(jesterky_skill.join("SKILL.md"), include_str!("../../../../skills/use-synth-jesterky/SKILL.md"))?;
+    } else if jesterky_skill.exists() { fs::remove_dir_all(&jesterky_skill)?; }
     let optimizers_skill = home.join("skills/use-synth-optimizers");
     fs::create_dir_all(&optimizers_skill)?;
     fs::write(
@@ -502,11 +506,39 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         secrets_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-secrets/SKILL.md"),
     )?;
-    let banking77_skill = home.join("skills/run-banking77-gepa");
-    fs::create_dir_all(&banking77_skill)?;
+    let trace_v5_annotate_skill = home.join("skills/trace-v5-annotate");
+    fs::create_dir_all(&trace_v5_annotate_skill)?;
     fs::write(
-        banking77_skill.join("SKILL.md"),
-        include_str!("../../../../skills/run-banking77-gepa/SKILL.md"),
+        trace_v5_annotate_skill.join("SKILL.md"),
+        include_str!("../../../../skills/trace-v5-annotate/SKILL.md"),
+    )?;
+    let trace_v5_verify_skill = home.join("skills/trace-v5-verify");
+    fs::create_dir_all(&trace_v5_verify_skill)?;
+    fs::write(
+        trace_v5_verify_skill.join("SKILL.md"),
+        include_str!("../../../../skills/trace-v5-verify/SKILL.md"),
+    )?;
+    let craftax_trace_analysis_skill = home.join("skills/craftax-trace-analysis");
+    fs::create_dir_all(&craftax_trace_analysis_skill)?;
+    fs::write(
+        craftax_trace_analysis_skill.join("SKILL.md"),
+        include_str!("../../../../skills/craftax-trace-analysis/SKILL.md"),
+    )?;
+    let annotation_review_skill = home.join("skills/annotation-review");
+    fs::create_dir_all(&annotation_review_skill)?;
+    fs::write(
+        annotation_review_skill.join("SKILL.md"),
+        include_str!("../../../../skills/annotation-review/SKILL.md"),
+    )?;
+    let human_annotations_skill = home.join("skills/use-human-annotations");
+    fs::create_dir_all(human_annotations_skill.join("agents"))?;
+    fs::write(
+        human_annotations_skill.join("SKILL.md"),
+        include_str!("../../../../skills/use-human-annotations/SKILL.md"),
+    )?;
+    fs::write(
+        human_annotations_skill.join("agents/openai.yaml"),
+        include_str!("../../../../skills/use-human-annotations/agents/openai.yaml"),
     )?;
     // Apply the durable Context settings after bundled materialization. This
     // keeps the existing reference-file setup intact while making disabled
@@ -517,15 +549,25 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         "use-synth-visuals",
         "author-synth-diagrams",
         "use-synth-optimizers",
+        "use-synth-traces",
+        "use-synth-jesterky",
         "use-computer-use",
         "use-workshop-browser",
         "use-synth-session",
         "use-synth-secrets",
         "run-live-container-evals",
-        "run-banking77-gepa",
+        "trace-v5-annotate",
+        "trace-v5-verify",
+        "craftax-trace-analysis",
+        "annotation-review",
+        "use-human-annotations",
     ] {
         let directory = home.join("skills").join(id);
-        if !crate::context::skill_enabled(id) {
+        if !crate::context::skill_enabled(id) || (id=="use-synth-jesterky" && !crate::plugins::jesterky::available()) {
+            if ["use-synth-traces","use-synth-jesterky"].contains(&id) {
+                let system=home.join("skills/.system").join(id);
+                if system.exists(){fs::remove_dir_all(system)?;}
+            }
             if directory.exists() {
                 fs::remove_dir_all(&directory)?;
             }
@@ -672,12 +714,20 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         // `docs/COMPUTER_USE.md` §4.
         for (server, binary, group) in [
             ("synth_plugins", "synth-plugins-mcp", "bundled"),
+            ("synth_jesterky", "synth-jesterky-mcp", "bundled"),
+            ("workshop_display", "synth-display-mcp", "bundled"),
             ("synth_containers", "synth-containers-mcp", "bundled"),
             ("synth_visuals", "synth-visuals-mcp", "bundled"),
             ("synth_optimizers", "synth-optimizers-mcp", "bundled"),
             ("synth_session", "synth-session-mcp", "bundled"),
             ("synth_secrets", "synth-secrets-mcp", "bundled"),
             ("synth_traces", "synth-traces-mcp", "bundled"),
+            ("synth_annotations", "synth-annotations-mcp", "bundled"),
+            (
+                "synth_human_annotations",
+                "synth-human-annotations-mcp",
+                "bundled",
+            ),
             ("synth_diagnostics", "synth-diagnostics-mcp", "bundled"),
             (
                 "synth_computer_use",
@@ -690,6 +740,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
                 crate::context::BROWSER_MCP_GROUP,
             ),
         ] {
+            if server == "synth_jesterky" && !crate::plugins::jesterky::available() { continue; }
             if !crate::context::mcp_group_enabled(group) {
                 continue;
             }
@@ -717,6 +768,47 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
                 "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"{}\"\n{}",
                 toml_string(&bin.display().to_string()), mcp_enabled_tools(server), crate::session::approval_policy::MCP_TOOLS_APPROVAL_MODE, mcp_env_config(server, &ipc, &request.session_id, &app_name, &bundle_id),
             ));
+        }
+        // Native and external agents receive one catalogue. Compatibility
+        // executables remain available for old installations, but a new private
+        // home removes the generated legacy registrations once Workshop exists.
+        if crate::context::mcp_group_enabled("bundled") && !existing.contains("[mcp_servers.workshop]") {
+            if let Some(binary) = exe.parent().map(|dir| dir.join("workshop")).filter(|path| path.is_file()) {
+                existing.push_str(&format!("\n[mcp_servers.workshop]\ncommand = \"{}\"\nargs = [\"mcp\", \"--data-root\", \"{}\"]\n",
+                    toml_string(&binary.display().to_string()), toml_string(&crate::instance::data_root().display().to_string())));
+                let skill = home.join("skills/workshop");
+                fs::create_dir_all(&skill)?;
+                fs::write(skill.join("SKILL.md"), include_str!("../../../../../../integrations/workshop/skills/workshop/SKILL.md"))?;
+            }
+        }
+        if existing.contains("[mcp_servers.workshop]") {
+            let mut config: toml_edit::Document = existing.parse().context("parse generated Codex configuration")?;
+            if let Some(servers) = config.get_mut("mcp_servers").and_then(toml_edit::Item::as_table_mut) {
+                if let Some(server) = servers.get_mut("workshop") {
+                    let owned = server.get("command").and_then(toml_edit::Item::as_str)
+                        .and_then(|command| Path::new(command).file_name()).and_then(|name| name.to_str()) == Some("workshop");
+                    if owned {
+                        server["env"]["SYNTH_SESSION_ID"] = toml_edit::value(&request.session_id);
+                    }
+                }
+                for (server, binary) in [
+                    ("synth_plugins", "synth-plugins-mcp"), ("workshop_display", "synth-display-mcp"),
+                    ("synth_containers", "synth-containers-mcp"), ("synth_visuals", "synth-visuals-mcp"),
+                    ("synth_optimizers", "synth-optimizers-mcp"), ("synth_session", "synth-session-mcp"),
+                    ("synth_secrets", "synth-secrets-mcp"), ("synth_traces", "synth-traces-mcp"),
+                    ("synth_annotations", "synth-annotations-mcp"), ("synth_human_annotations", "synth-human-annotations-mcp"),
+                    ("synth_diagnostics", "synth-diagnostics-mcp"), ("synth_computer_use", "synth-computer-use-mcp"),
+                    ("synth_browser", "synth-browser-mcp")
+                ] {
+                    let owned = servers.get(server).and_then(|entry| entry.get("command")).and_then(toml_edit::Item::as_str)
+                        .and_then(|command| Path::new(command).file_name()).and_then(|name| name.to_str()) == Some(binary);
+                    if owned { servers.remove(server); }
+                }
+            }
+            existing = config.to_string();
+            let skill = home.join("skills/workshop");
+            fs::create_dir_all(&skill)?;
+            fs::write(skill.join("SKILL.md"), include_str!("../../../../../../integrations/workshop/skills/workshop/SKILL.md"))?;
         }
         fs::write(home.join("config.toml"), existing)?;
     }
@@ -1023,7 +1115,7 @@ pub(crate) fn workspace_write_config(allowed_roots: &[String]) -> String {
 /// Codex `sandbox_workspace_write` has no read-denylist field. Document the
 /// policy next to the real schema so we do not invent an ignored TOML key.
 pub(crate) fn credential_read_policy_comment() -> &'static str {
-    "# Codex has no sandbox read-denylist. Do not cat .env, .env.*, or secrets.toml.\n# Use only the authorized ephemeral secrets proxy; never use a Keychain-backed registry or import flow. See AGENTS.md.\n\n"
+    "# Codex has no sandbox read-denylist. Do not cat .env, .env.*, or secrets.toml.\n# Import through mcp__synth_secrets__secrets_manage (request_env_import). See AGENTS.md.\n\n"
 }
 
 pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
@@ -1031,11 +1123,12 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         // Codex sees one compact namespace member. The adapter keeps legacy
         // tools callable for other MCP clients, while visual_manage routes the
         // same operations after the visual skill is loaded.
-        "synth_visuals" => "enabled_tools = [\"visual_manage\", \"experiment_create\", \"experiment_create_child\", \"experiment_fork\", \"experiment_rerun\", \"experiment_relate\", \"experiment_attach_evidence\", \"experiment_finalize\"]\n",
+        "synth_visuals" => "enabled_tools = [\"visual_manage\", \"experiment_list\", \"experiment_get\", \"experiment_create\", \"experiment_update\", \"experiment_create_child\", \"experiment_fork\", \"experiment_rerun\", \"experiment_relate\", \"experiment_attach_evidence\", \"experiment_finalize\", \"research_log_list\", \"research_log_append\", \"research_log_correct\"]\n",
         // Keep the compact facade and the two eval-specific aliases visible.
         // Some models reliably select a dedicated schema while others follow
         // the facade; both route through the same production adapter.
         "synth_optimizers" => "enabled_tools = [\"optimizer_manage\", \"optimizer_stage_eval_candidates\", \"optimizer_start_recipe\"]\n",
+        "synth_jesterky" => "enabled_tools = [\"jesterky_prepare\", \"jesterky_settings\"]\n",
         "synth_plugins" => "enabled_tools = [\"plugin_manage\"]\n",
         "synth_session" => "enabled_tools = [\"session_present\"]\n",
         "synth_secrets" => "enabled_tools = [\"secrets_manage\"]\n",

@@ -63,6 +63,19 @@ takes the deterministic path — no window, no show, no observation handshake �
 so the loop is `visual_chart` → look at the PNG → `visual_chart` again with
 the same `visual_id`. Contract: [`docs/contracts/visual_chart_spec.md`](../../docs/contracts/visual_chart_spec.md).
 
+A minimal literal `spec` is:
+
+```json
+{"version":1,"panels":[
+  {"kind":"metrics","items":[{"label":"Mean reward","value":"0.42"}]},
+  {"kind":"bars","categories":["base","candidate"],"series":[{"name":"reward","values":[0.31,0.42]}]}
+]}
+```
+
+Pass that as an object, not a JSON-encoded string. The discriminant is
+`version` (not `schemaVersion`), metric `value` is a display string, and a bar
+series is named with `name` (not `label`).
+
 Nulls are absence, not zero: a null `y` breaks the line, a null bar value is a
 hatched stub, a null heatmap cell is hatched, a null table cell is an em dash.
 

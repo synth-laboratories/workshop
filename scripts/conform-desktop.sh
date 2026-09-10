@@ -155,7 +155,7 @@ sequence_fold_outside="$(count_rg_prod "$sequence_fold_pattern" src-tauri/src sr
 # read by the readiness gate rather than drawn, and the host already observes
 # it at the poll seam (STREAM_REPLAY_GAP, lib.rs).
 sequence_gap_pattern='(StreamGap|SequenceGap)\s*\{|gaps\.push\(\{\s*scope'
-sequence_gap_outside="$(count_rg_prod "$sequence_gap_pattern" src-tauri/src src/renderer/src "$ROOT/visuals" --glob '!**/stream_fold.rs' --glob '!**/stream_fold/**' --glob '!**/tests/**' --glob '!**/*tests*.rs' --glob '!**/tests.rs')"
+sequence_gap_outside="$(count_rg_prod "$sequence_gap_pattern" src-tauri/src src/renderer/src "$ROOT/packages/workshop-visuals" --glob '!**/stream_fold.rs' --glob '!**/stream_fold/**' --glob '!**/tests/**' --glob '!**/*tests*.rs' --glob '!**/tests.rs')"
 
 # Boundary: schema DDL lives in storage/migrations.rs, which is the only file
 # allowed to say what a table looks like. A DDL const anywhere else is a second
@@ -166,7 +166,7 @@ create_table_outside="$(count_rg_prod 'CREATE TABLE' src-tauri/src --glob '!**/s
 # bundler. Every import.meta.glob is a build-time directory scan that decides
 # at compile time what exists, so it cannot see a user-installed template and
 # it silently changes what ships when a directory is renamed.
-import_meta_glob="$(count_rg_prod 'import\.meta\.glob\(' src/renderer/src "$ROOT/visuals" --glob '!**/node_modules/**')"
+import_meta_glob="$(count_rg_prod 'import\.meta\.glob\(' src/renderer/src "$ROOT/packages/workshop-visuals" --glob '!**/node_modules/**')"
 
 # Boundary: the visual template registry root is derived only in
 # visuals/templates.rs (visuals_root / user_templates_root). Anything else that

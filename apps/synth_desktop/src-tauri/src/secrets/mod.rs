@@ -6,9 +6,11 @@
 
 mod audit;
 mod backend;
+
 pub(crate) mod capability;
 mod fingerprint;
 mod importer;
+pub(crate) use importer::parse_dotenv;
 pub mod lease;
 mod locator;
 mod path_gate;
@@ -36,7 +38,6 @@ use importer::{AfterImportAction, ImportPreview, PendingImport};
 use proxy::{ProviderProxy, ProxyState, WorkloadEnv};
 use vault::SecretSummary;
 
-pub use capability::CapabilityLedger;
 pub use capability::ProviderUsePolicy as SecretsUsePolicy;
 pub(crate) use capability::{ProviderUsageCapability, ProviderUsageReceipt};
 #[allow(unused_imports)]
@@ -84,59 +85,12 @@ pub fn revoke_run_best_effort(run_id: &str) {
     }
 }
 
-/// Revoke a run and seal the public credential-chain receipt. Terminal owners
-/// use this path so the durable projection cannot continue to claim an active
-/// capability after the authoritative capability ledger revoked it.
-pub fn seal_run_best_effort(run_id: &str) {
-    if let Some(secrets) = live() {
-        if let Err(error) = secrets.seal_run_chain(run_id) {
-            crate::platform::logging::report(
-                "secrets",
-                "eprintln",
-                format!("synth-desktop: seal secrets for {run_id}: {error:#}"),
-            );
-        }
-    }
-}
-
 /// Drops by revoking the run's provider capabilities.
 pub struct RevokeRunOnDrop(pub String);
 
 impl Drop for RevokeRunOnDrop {
     fn drop(&mut self) {
-        seal_run_best_effort(&self.0);
-    }
-}
-
-/// Failure-scoped capability guard for run preparation. Armed at issue time so
-/// any error path between issuing a provider capability and handing ownership
-/// to a durable run record (or the run worker) revokes it; `disarm` transfers
-/// ownership and makes the drop a no-op.
-pub struct RevokeRunOnFailure {
-    run_id: String,
-    armed: bool,
-}
-
-impl RevokeRunOnFailure {
-    pub fn new(run_id: impl Into<String>) -> Self {
-        Self {
-            run_id: run_id.into(),
-            armed: true,
-        }
-    }
-
-    /// Ownership of the capability has been transferred to a durable owner
-    /// (a prepared run record, or the spawned run worker's own guard).
-    pub fn disarm(mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for RevokeRunOnFailure {
-    fn drop(&mut self) {
-        if self.armed {
-            seal_run_best_effort(&self.run_id);
-        }
+        revoke_run_best_effort(&self.0);
     }
 }
 
@@ -832,7 +786,8 @@ impl SecretsService {
         policy: ProviderUsePolicy,
         actor: &str,
     ) -> Result<UseRequestResult> {
-        if let Some(live) = self.capabilities.find_active(secret_id, run_id) {
+        self.persist_expired_capabilities()?;
+        if let Some(live) = self.capabilities.find_reusable(secret_id, run_id) {
             ensure_capability_covers(&live, &policy)?;
             return self.live_result(live);
         }
@@ -890,7 +845,8 @@ impl SecretsService {
         actor: &str,
         remember_recipe: bool,
     ) -> Result<UseRequestResult> {
-        if let Some(live) = self.capabilities.find_active(secret_id, run_id) {
+        self.persist_expired_capabilities()?;
+        if let Some(live) = self.capabilities.find_reusable(secret_id, run_id) {
             ensure_capability_covers(&live, &policy)?;
             return self.live_result(live);
         }
@@ -915,6 +871,19 @@ impl SecretsService {
             )
         })?;
         Ok(self.issued_result(issued, &record.display_suffix))
+    }
+
+    fn persist_expired_capabilities(&self) -> Result<()> {
+        let expired = self.capabilities.expire_stale();
+        if expired.is_empty() {
+            return Ok(());
+        }
+        self.db.transaction(|conn| {
+            for live in &expired {
+                capability::persist_status(conn, live)?;
+            }
+            Ok(())
+        })
     }
 
     pub fn grant_pending(
@@ -1095,16 +1064,6 @@ impl SecretsService {
         })
     }
 
-    /// The trusted provider accounting for one run.
-    ///
-    /// Read while the run is live and again at terminal. It is host-owned
-    /// evidence, so it answers even when the evaluator has reported nothing —
-    /// which is the whole reason a run must never render "cost unavailable"
-    /// over a ledger that already holds a billed figure.
-    pub fn run_ledger(&self, run_id: &str) -> capability::CapabilityLedger {
-        capability::CapabilityLedger::from_capabilities(&self.capabilities.list_for_run(run_id))
-    }
-
     pub fn active_capabilities(&self) -> Result<Vec<CapabilitySummary>> {
         let live = self.capabilities.list_active();
         let mut out = Vec::new();
@@ -1143,59 +1102,6 @@ impl SecretsService {
     pub fn revoke_run(&self, run_id: &str) -> Result<Vec<String>> {
         self.db
             .transaction(|conn| capability::revoke_run(conn, &self.capabilities, run_id))
-    }
-
-    /// Aggregate the provider proxy's run-level meter. Request attempts are
-    /// reserved before forwarding, so this count includes failed provider
-    /// requests and is more authoritative than agent-message heuristics.
-    pub fn provider_usage_for_run(&self, run_id: &str) -> Option<serde_json::Value> {
-        let capabilities = self.capabilities.list_for_run(run_id);
-        if capabilities.is_empty() {
-            return None;
-        }
-        let request_attempts = capabilities
-            .iter()
-            .map(|live| u64::from(live.used_calls))
-            .sum::<u64>();
-        let input_tokens = capabilities
-            .iter()
-            .map(|live| live.used_input_tokens)
-            .sum::<u64>();
-        let output_tokens = capabilities
-            .iter()
-            .map(|live| live.used_output_tokens)
-            .sum::<u64>();
-        // Cost is Option-typed on purpose: a reported $0.00 must never be
-        // confused with an absent charge. The aggregate is only a dollar
-        // figure when every capability's meter is known.
-        let cost_known = capabilities
-            .iter()
-            .all(|live| live.used_cost_usd_micros.is_some());
-        let cost_usd_micros = capabilities
-            .iter()
-            .filter_map(|live| live.used_cost_usd_micros)
-            .sum::<u64>();
-        let mut providers = capabilities
-            .iter()
-            .map(|live| live.provider.clone())
-            .collect::<Vec<_>>();
-        providers.sort();
-        providers.dedup();
-        Some(serde_json::json!({
-            "requestAttempts": request_attempts,
-            "inputTokens": input_tokens,
-            "outputTokens": output_tokens,
-            "totalTokens": input_tokens.saturating_add(output_tokens),
-            "costUsd": if cost_known {
-                serde_json::json!(cost_usd_micros as f64 / 1_000_000.0)
-            } else {
-                serde_json::Value::Null
-            },
-            "capabilityCount": capabilities.len(),
-            "providers": providers,
-            "basis": "workshop_provider_proxy_reserved_requests",
-            "requestCountComplete": true,
-        }))
     }
 
     pub fn audit(&self, limit: i64) -> Result<Vec<SecretAuditEvent>> {

@@ -2,36 +2,15 @@
 //!
 //! Replay from the digest after the engine is gone (C7-W02 / W0). Duplicate
 //! identities are dropped. Control records are stored; visuals decide ready.
-//!
-//! # What is stored, and what decides "duplicate"
-//!
-//! Identity is [`crate::stream_fold::envelope_identity`] — the same rule the
-//! renderer's fold and the host's receipt use, and the reason this file no
-//! longer has one of its own. The rule it used to carry treated a bare
-//! `event_id` as globally unique, which is wrong for every multiplexed run: a
-//! ten-lane eval legitimately carries ten `event_id: "1"` records, so the
-//! spool persisted one lane and the aggregate count still looked right. The
-//! renderer's ingest had a comment warning about exactly this bug while the
-//! spool committed it.
-//!
-//! That is why the schema is versioned rather than reinterpreted. A `…v1`
-//! spool was deduplicated under the old rule and a multiplexed one may be
-//! lane-collapsed; it still loads, because refusing to read evidence already
-//! captured helps nobody, but it is not the same artifact a `…v2` spool of the
-//! same stream would be.
 
 use super::ContentStore;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
-/// Schema written by [`persist_live_envelopes`].
-pub const LIVE_SPOOL_SCHEMA: &str = "synth.live-eval-spool.v2";
-
-/// Spools written before identity had one home. Readable, and lane-collapsed
-/// for any multiplexed run: see the module header.
-pub const LIVE_SPOOL_SCHEMA_V1: &str = "synth.live-eval-spool.v1";
+pub const LIVE_SPOOL_SCHEMA: &str = "synth.live-eval-spool.v1";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct LiveSpool {
@@ -58,21 +37,34 @@ pub fn envelopes_from_event_log(log: &Value) -> Vec<Value> {
     Vec::new()
 }
 
+pub fn envelope_identity(event: &Value, index: usize) -> String {
+    // Preserve the older spool wire aliases at this boundary only.
+    let mut normalized = event.clone();
+    if let Some(object) = normalized.as_object_mut() {
+        if !object.contains_key("event_id") {
+            if let Some(id) = event.get("id") { object.insert("event_id".into(), id.clone()); }
+        }
+        if !object.contains_key("sequence_number") && !object.contains_key("sequence") {
+            if let Some(seq) = event.get("seq") { object.insert("sequence".into(), seq.clone()); }
+        }
+    }
+    let scope = crate::stream_fold::envelope_scope(&normalized);
+    crate::stream_fold::envelope_identity(&normalized, &scope, index as u64 + 1)
+}
+
 pub fn persist_live_envelopes(
     store: &ContentStore,
     stream_id: Option<&str>,
     rollout_id: Option<&str>,
     envelopes: impl IntoIterator<Item = Value>,
 ) -> Result<LiveSpool> {
-    let mut seen = HashSet::new();
+    let mut seen = HashMap::new();
     let mut unique = Vec::new();
     for (index, envelope) in envelopes.into_iter().enumerate() {
-        // One identity rule, in one place. The ordinal is the delivery
-        // position and is consulted only for an envelope that carries no
-        // identity of its own at all.
-        let scope = crate::stream_fold::envelope_scope(&envelope);
-        let id = crate::stream_fold::envelope_identity(&envelope, &scope, index as u64 + 1);
-        if !seen.insert(id) {
+        let id = envelope_identity(&envelope, index);
+        let body_digest: [u8; 32] = Sha256::digest(serde_json::to_vec(&envelope)?).into();
+        if let Some(prior) = seen.insert(id.clone(), body_digest) {
+            if prior != body_digest { bail!("conflicting live spool envelope identity {id}"); }
             continue;
         }
         unique.push(envelope);
@@ -98,7 +90,7 @@ pub fn persist_live_envelopes(
 pub fn load_live_spool(store: &ContentStore, digest: &str) -> Result<LiveSpool> {
     let bytes = store.get_bytes("traces", digest)?;
     let mut spool: LiveSpool = serde_json::from_slice(&bytes).context("parse live eval spool")?;
-    if spool.schema != LIVE_SPOOL_SCHEMA && spool.schema != LIVE_SPOOL_SCHEMA_V1 {
+    if spool.schema != LIVE_SPOOL_SCHEMA {
         bail!("unsupported live eval spool schema: {}", spool.schema);
     }
     spool.digest = digest.to_string();

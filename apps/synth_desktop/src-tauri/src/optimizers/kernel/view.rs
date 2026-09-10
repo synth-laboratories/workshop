@@ -76,6 +76,41 @@ pub struct OptimizerRunHeader {
     pub projection_revision: u64,
 }
 
+/// One coherent read of everything a visual needs to mount.
+///
+/// Replaces the renderer's `runViewV2 → get → eventsAfter` choreography for
+/// first paint. The projection and the run record are read in the same
+/// deferred transaction — `run_view_v2` already loaded the run row to build
+/// the view's context, so carrying it costs nothing and removes an entire
+/// IPC round trip from the mount path.
+///
+/// The envelope is also *conditional*. `projection_revision` is already a
+/// monotonic version stamp on the durable projection; a caller that holds a
+/// revision sends it as `if_newer_than` and gets `unchanged` back instead of a
+/// second copy of bytes it already has. That is what makes a background
+/// freshness check cheap enough to run against a cached first paint.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OptimizerRunViewEnvelope {
+    /// True when the caller's `if_newer_than` already matched the durable
+    /// revision. `view` and `run` are then `None` — deliberately, so a stale
+    /// consumer cannot mistake an empty envelope for an empty run.
+    pub unchanged: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<OptimizerRunViewV2>,
+    /// Compatibility fields the templates still read: usage extras, the
+    /// terminal manifest, timings, objective, and capabilities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<OptimizerRunRecord>,
+    #[specta(type = specta_typescript::Number)]
+    pub projection_revision: u64,
+    /// The run's durable event cursor: the tail an evidence reader may page
+    /// up to. Carried here so a detail tab never has to call `get` to learn
+    /// how much journal exists.
+    #[specta(type = specta_typescript::Number)]
+    pub tail_cursor: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(tag = "algorithm", rename_all = "kebab-case")]
 pub enum OptimizerRunViewV2 {
@@ -125,6 +160,71 @@ pub struct CispoRunView {
     pub header: OptimizerRunHeader,
     pub projection: super::algorithms::cispo::CispoProjection,
     pub result: Option<super::algorithms::cispo::CispoResult>,
+}
+
+impl OptimizerRunViewV2 {
+    pub fn header(&self) -> &OptimizerRunHeader {
+        match self {
+            Self::Eval(view) => &view.header,
+            Self::Gepa(view) => &view.header,
+            Self::GoEx(view) => &view.header,
+            Self::Sft(view) => &view.header,
+            Self::Cispo(view) => &view.header,
+        }
+    }
+
+    /// The algorithm projection as canonical JSON, for equality checks that
+    /// must not depend on which variant carries it.
+    pub fn projection_json(&self) -> serde_json::Value {
+        match self {
+            Self::Eval(view) => serde_json::to_value(&view.projection).unwrap_or_default(),
+            Self::Gepa(view) => serde_json::to_value(&view.projection).unwrap_or_default(),
+            Self::GoEx(view) => serde_json::to_value(&view.projection).unwrap_or_default(),
+            Self::Sft(view) => serde_json::to_value(&view.projection).unwrap_or_default(),
+            Self::Cispo(view) => serde_json::to_value(&view.projection).unwrap_or_default(),
+        }
+    }
+
+    /// Remove unbounded collection-shaped data before this view crosses the
+    /// IPC boundary. Checkpoint evaluation summaries are already bounded by
+    /// the declared evaluation schedule, so they stay in first paint; detailed
+    /// rows remain pageable through the shared collection API.
+    pub fn into_bounded_wire(mut self) -> Self {
+        match &mut self {
+            Self::Eval(view) => {
+                view.projection.work_items.clear();
+                view.projection.evidence_ledger.clear();
+                view.projection.trials.clear();
+                view.projection.scorecards.clear();
+                view.projection.evidence_refs.clear();
+            }
+            Self::Gepa(view) => {
+                view.projection.evaluations.clear();
+                view.projection.proposer_calls.clear();
+            }
+            Self::GoEx(view) => {
+                view.projection.candidate_ids.clear();
+                view.projection.candidates.clear();
+                view.projection.proposer_calls.clear();
+                view.projection.child_rollouts.clear();
+                view.projection.child_eval_run_ids.clear();
+                if let Some(result) = &mut view.result {
+                    result.child_eval_run_ids.clear();
+                }
+            }
+            Self::Sft(view) => {
+                view.projection.work_items.clear();
+                view.projection.metrics.points.clear();
+                view.projection.curation_candidates.clear();
+            }
+            Self::Cispo(view) => {
+                view.projection.work_items.clear();
+                view.projection.metrics.points.clear();
+                view.projection.checkpoint_details.clear();
+            }
+        }
+        self
+    }
 }
 
 pub fn project_view(state: &RunKernelState) -> OptimizerRunViewV2 {

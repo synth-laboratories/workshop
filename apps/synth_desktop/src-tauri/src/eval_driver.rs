@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, sync::Arc, time::Duration};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
@@ -318,6 +318,13 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
         ("POST", "/v1/sessions") | ("POST", "/v1/create_session") => {
             create_session(deps, body).await
         }
+        ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/select") => {
+            let session_id = path
+                .trim_start_matches("/v1/sessions/")
+                .trim_end_matches("/select")
+                .trim_end_matches('/');
+            select_session(deps, session_id)
+        }
         ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/messages") => {
             let session_id = path
                 .trim_start_matches("/v1/sessions/")
@@ -388,11 +395,6 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
                 .and_then(Value::as_str)
                 .context("approval resolution requires decision")?
                 .to_string();
-            let approval_digest = body
-                .get("approvalDigest")
-                .or_else(|| body.get("approval_digest"))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
             deps.codex
                 .resolve_approval(
                     deps.app.clone(),
@@ -400,7 +402,7 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
                         session_id: session_id.clone(),
                         approval_id: approval_id.clone(),
                         decision,
-                        approval_digest,
+                        approval_digest: body.get("approvalDigest").and_then(Value::as_str).map(str::to_owned),
                     },
                 )
                 .await?;
@@ -501,6 +503,27 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
         ("POST", "/v1/policy_preflight") => policy_preflight(deps, body).await,
         _ => bail!("unsupported eval driver route {method} {path}"),
     }
+}
+
+fn session_selection_script(session_id: &str) -> Result<String> {
+    if session_id.trim().is_empty() || session_id.contains('/') {
+        bail!("select_session requires one session id");
+    }
+    let session_id = serde_json::to_string(session_id)?;
+    Ok(format!(
+        "window.__synthEval?.invoke('select_session',{{sessionId:{session_id}}});"
+    ))
+}
+
+fn select_session(deps: &EvalDriverDeps, session_id: &str) -> Result<Value> {
+    let window = deps
+        .app
+        .get_webview_window("main")
+        .context("select_session requires the main Desktop window")?;
+    window
+        .eval(session_selection_script(session_id)?)
+        .context("select the QA session in the renderer")?;
+    Ok(json!({"selected": true, "sessionId": session_id}))
 }
 
 fn session_approval_route(path: &str) -> Option<(String, String)> {
@@ -660,6 +683,18 @@ async fn laguna_status(laguna: &LagunaManager) -> Result<Value> {
 
 async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -> Result<Value> {
     let visual = core.visuals().get(visual_id.to_string()).await?;
+    let quality_gate = visual
+        .metadata
+        .get("qualityGate")
+        .filter(|gate| gate.get("ready").and_then(Value::as_bool) == Some(true))
+        .context("VisualsBench export requires a fresh ready certification")?;
+    let certification_identity = quality_gate
+        .get("certificationIdentity")
+        .context("VisualsBench export requires a content-bound certification identity")?;
+    let certified = quality_gate
+        .get("certifiedBy")
+        .and_then(Value::as_array)
+        .context("VisualsBench export requires immutable certification receipts")?;
     let mut revisions = core.visuals().revisions(visual_id.to_string()).await?;
     revisions.sort_by_key(|row| row.revision);
     let current_revision = revisions
@@ -710,30 +745,28 @@ async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let captures = reviews
+    let captures = certified
         .iter()
-        .filter(|review| {
-            review.get("revision").and_then(Value::as_i64) == Some(visual.current_revision)
-        })
-        .filter_map(|review| {
-            let viewport = review.get("viewport")?;
-            let width = viewport.get("width")?.as_u64()?;
-            let height = viewport.get("height")?.as_u64()?;
+        .map(|receipt| -> Result<Option<Value>> {
+            let width = receipt.get("viewportWidth").and_then(Value::as_u64).context("certification receipt missing viewport width")?;
+            let height = receipt.get("viewportHeight").and_then(Value::as_u64).context("certification receipt missing viewport height")?;
             let requested = requested_viewports.iter().find(|candidate| {
                 candidate.get("width").and_then(Value::as_u64) == Some(width)
                     && candidate.get("height").and_then(Value::as_u64) == Some(height)
             });
             if !requested_viewports.is_empty() && requested.is_none() {
-                return None;
+                return Ok(None);
             }
-            let screenshot_path = review.get("screenshotPath")?.as_str()?;
-            let bytes = fs::read(screenshot_path).ok();
-            let screenshot_sha256 = bytes
-                .as_deref()
-                .map(hex_sha256)
-                .unwrap_or_default();
-            let checks = review.get("checks").cloned().unwrap_or_else(|| json!({}));
-            Some(json!({
+            let screenshot_path = receipt.get("screenshotPath").and_then(Value::as_str).context("certification receipt missing screenshot path")?;
+            let expected_sha256 = receipt.get("screenshotSha256").and_then(Value::as_str).context("certification receipt missing screenshot digest")?;
+            let bytes = fs::read(screenshot_path).with_context(|| format!("read certified screenshot {screenshot_path}"))?;
+            let screenshot_sha256 = format!("sha256:{}", hex_sha256(&bytes));
+            if screenshot_sha256 != expected_sha256 {
+                anyhow::bail!("certified screenshot bytes changed after review: {screenshot_path}");
+            }
+            let review = reviews.iter().find(|review| review.get("screenshotPath").and_then(Value::as_str) == Some(screenshot_path));
+            let checks = review.and_then(|row| row.get("checks")).cloned().unwrap_or_else(|| json!({}));
+            Ok(Some(json!({
                 "viewport": {
                     "width": width,
                     "height": height,
@@ -746,18 +779,26 @@ async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -
                     "noHorizontalOverflow": checks.get("noOverflow").cloned().unwrap_or(Value::Null),
                     "falsifiedMissing": checks.get("falsifiedMissing").cloned().unwrap_or(Value::Bool(false)),
                 },
-                "inspected": bytes.is_some() && checks.get("screenshotInspected").and_then(Value::as_bool) == Some(true),
-            }))
+                "certificationIdentity": certification_identity,
+                "inspected": checks.get("screenshotInspected").and_then(Value::as_bool) == Some(true),
+            })))
         })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
         .collect::<Vec<_>>();
     let annotation_ids = active_annotations
         .iter()
         .map(|row| Value::String(row.id.clone()))
         .collect::<Vec<_>>();
     let trace_digest = visual.trace_id.clone();
+    let human_reference_results = crate::human_annotations::from_core(core)
+        .submitted_for_subject("visual_revision".into(), visual_id.to_owned())
+        .await?;
     Ok(json!({
         "schemaVersion": "synth.visualsbench-export.v1",
         "sourceRevision": crate::instance::diagnostics().source_revision,
+        "certificationIdentity": certification_identity,
         "visual": {
             "id": visual.id,
             "revision": visual.current_revision,
@@ -774,6 +815,7 @@ async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -
         })).collect::<Vec<_>>(),
         "journal": journal,
         "annotations": active_annotations,
+        "humanReferenceResults": human_reference_results,
         "overlayDigest": overlay_digest,
         "nextTurnContext": {
             "visualId": visual_id,
@@ -789,26 +831,6 @@ async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -
 
 fn hex_sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
-}
-
-/// The driver never picks a provider on the caller's behalf. A defaulted
-/// OpenRouter lane silently violated tasks whose contract required the
-/// ChatGPT subscription (or any other specific provider); the caller must
-/// state the lane it means.
-fn require_explicit_provider(body: &Value, route: &str) -> Result<String> {
-    body.get("provider")
-        .or_else(|| body.get("providerName"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| {
-            anyhow!(
-                "{route} requires an explicit `provider`; the eval driver never defaults to an \
-                 API provider. ChatGPT subscription (openai-codex-oauth) tasks are not served by \
-                 this driver — use the authenticated Workshop task path"
-            )
-        })
 }
 
 async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
@@ -833,7 +855,12 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
         .and_then(Value::as_str)
         .unwrap_or("openai/gpt-5.6-luna")
         .to_string();
-    let provider_name = require_explicit_provider(&body, "create_session")?;
+    let provider_name = body
+        .get("provider")
+        .or_else(|| body.get("providerName"))
+        .and_then(Value::as_str)
+        .unwrap_or("openrouter")
+        .to_string();
     let mut start = CodexSessionStartRequest {
         session_id: session_id.clone(),
         workspace,
@@ -933,18 +960,7 @@ async fn prepare_start(
             .map_err(|message| anyhow!(message))?;
         }
         crate::codex::ProviderClass::OpenaiCodexOauth => {
-            // Prohibited by contract, never substituted: a ChatGPT-required
-            // task must be created through the ordinary authenticated Workshop
-            // task path, which uses the session's existing app-server OAuth.
-            // Falling back to an API provider here would silently violate the
-            // task's provider requirement.
-            bail!(
-                "provider_contract: ChatGPT subscription sessions \
-                 (openai-codex-oauth) are not available through the eval \
-                 driver; create the task through the authenticated Workshop \
-                 task path instead — the driver never substitutes an API \
-                 provider for a required ChatGPT session"
-            )
+            bail!("ChatGPT subscription sessions are not available through the eval driver")
         }
         crate::codex::ProviderClass::Direct => {}
     }
@@ -980,7 +996,12 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         .and_then(Value::as_str)
         .unwrap_or("openai/gpt-5.6-luna")
         .to_string();
-    let provider_name = require_explicit_provider(&body, "send_message")?;
+    let provider_name = body
+        .get("provider")
+        .or_else(|| body.get("providerName"))
+        .and_then(Value::as_str)
+        .unwrap_or("openrouter")
+        .to_string();
     let mut start = CodexSessionStartRequest {
         session_id: session_id.to_string(),
         workspace,
@@ -1022,6 +1043,7 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
                 start,
                 prompt,
                 effort,
+                ui_context: None,
                 compact_before_model_switch: false,
                 client_message_id: None,
                 recovery_mode: false,
@@ -1321,6 +1343,11 @@ async fn ingest_trace_bundle(core: &CoreRuntime, body: Value) -> Result<Value> {
             .or_else(|| body.get("source_uri"))
             .and_then(Value::as_str)
             .map(str::to_string),
+        container_id: body
+            .get("containerId")
+            .or_else(|| body.get("container_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
     };
     let (result, event) = core.data().ingest_trace_bundle(request).await?;
     core.broadcast_committed(event);
@@ -1594,7 +1621,11 @@ async fn run_policy_rollout(
         .and_then(Value::as_str)
         .map(str::to_owned)
         .unwrap_or_else(|| format!("roll_{}", Uuid::new_v4().simple()));
-    let prepare_body = json!({ "rollout_id": rollout_id, "telemetry": telemetry });
+    let mut preparation = body.clone();
+    preparation["task_instance_id"] = json!(task_instance_id);
+    let prepare_body = crate::container_stream::prepared_rollout_request(
+        &preparation, &rollout_id, telemetry.clone(),
+    )?;
     let mut prepare_response = client
         .post(format!("{base}/rollouts/prepare"))
         .json(&prepare_body)

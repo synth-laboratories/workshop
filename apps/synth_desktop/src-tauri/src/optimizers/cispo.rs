@@ -5,17 +5,122 @@ use super::models::{
     OptimizerQuery, OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
 };
 use super::sidecar_training::{
-    advertised_placement, spawn_watch_worker, training_create_request, tunneled_evaluation_plan,
-    EvaluationContract, SidecarTrainingClient, HOSTED_CISPO_RECIPE, LOCAL_MLX_CISPO_RECIPE,
-    PLACEMENT_TRAINING_CISPO_HOSTED, PLACEMENT_TRAINING_CISPO_LOCAL,
+    advertised_placement, require_training_ready, spawn_watch_worker, training_create_request,
+    tunneled_evaluation_plan, EvaluationContract, HOSTED_BANKING77_CISPO_RECIPE,
+    HOSTED_CISPO_RECIPE, LOCAL_MLX_CISPO_RECIPE, PLACEMENT_TRAINING_CISPO_HOSTED,
+    PLACEMENT_TRAINING_CISPO_LOCAL,
 };
 use super::OptimizerService;
 use anyhow::Result;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+pub(crate) const BANKING77_LABEL_TAXONOMY: &[&str] = &[
+    "Refund_not_showing_up",
+    "activate_my_card",
+    "age_limit",
+    "apple_pay_or_google_pay",
+    "atm_support",
+    "automatic_top_up",
+    "balance_not_updated_after_bank_transfer",
+    "balance_not_updated_after_cheque_or_cash_deposit",
+    "beneficiary_not_allowed",
+    "cancel_transfer",
+    "card_about_to_expire",
+    "card_acceptance",
+    "card_arrival",
+    "card_delivery_estimate",
+    "card_linking",
+    "card_not_working",
+    "card_payment_fee_charged",
+    "card_payment_not_recognised",
+    "card_payment_wrong_exchange_rate",
+    "card_swallowed",
+    "cash_withdrawal_charge",
+    "cash_withdrawal_not_recognised",
+    "change_pin",
+    "compromised_card",
+    "contactless_not_working",
+    "country_support",
+    "declined_card_payment",
+    "declined_cash_withdrawal",
+    "declined_transfer",
+    "direct_debit_payment_not_recognised",
+    "disposable_card_limits",
+    "edit_personal_details",
+    "exchange_charge",
+    "exchange_rate",
+    "exchange_via_app",
+    "extra_charge_on_statement",
+    "failed_transfer",
+    "fiat_currency_support",
+    "get_disposable_virtual_card",
+    "get_physical_card",
+    "getting_spare_card",
+    "getting_virtual_card",
+    "lost_or_stolen_card",
+    "lost_or_stolen_phone",
+    "order_physical_card",
+    "passcode_forgotten",
+    "pending_card_payment",
+    "pending_cash_withdrawal",
+    "pending_top_up",
+    "pending_transfer",
+    "pin_blocked",
+    "receiving_money",
+    "request_refund",
+    "reverted_card_payment?",
+    "supported_cards_and_currencies",
+    "terminate_account",
+    "top_up_by_bank_transfer_charge",
+    "top_up_by_card_charge",
+    "top_up_by_cash_or_cheque",
+    "top_up_failed",
+    "top_up_limits",
+    "top_up_reverted",
+    "topping_up_by_card",
+    "transaction_charged_twice",
+    "transfer_fee_charged",
+    "transfer_into_account",
+    "transfer_not_received_by_recipient",
+    "transfer_timing",
+    "unable_to_verify_identity",
+    "verify_my_identity",
+    "verify_source_of_funds",
+    "verify_top_up",
+    "virtual_card_not_working",
+    "visa_or_mastercard",
+    "why_verify_identity",
+    "wrong_amount_of_cash_received",
+    "wrong_exchange_rate_for_cash_withdrawal",
+];
 use std::collections::HashSet;
 
 pub fn recipe_catalog() -> Vec<Value> {
-    vec![local_mlx_recipe(), hosted_slime_recipe()]
+    let mut recipes = vec![
+        local_mlx_recipe(),
+        hosted_cispo_recipe(HOSTED_BANKING77_CISPO_RECIPE, "Banking77 Tinker CISPO"),
+        hosted_cispo_recipe(HOSTED_CISPO_RECIPE, "Hosted CISPO · Tinker"),
+    ];
+    if std::env::var("SYNTH_OPTIMIZERS_RL_EXPERIMENT_PREVIEW").as_deref() == Ok("1") {
+        let available = super::sidecar_training::hosted_cispo_receipt_admits()
+            && super::cispo_client::CispoOptimizerClient::from_env().is_ok();
+        for benchmark in ["healthbench", "craftax"] {
+            recipes.push(json!({
+                "id": format!("cispo.{benchmark}.container.v1"),
+                "title": format!("{benchmark} · container CISPO preview"),
+                "algorithmId": "cispo", "provider": "tinker", "model": "openai/gpt-oss-20b",
+                "task": benchmark, "placement": PLACEMENT_TRAINING_CISPO_HOSTED,
+                "availability": if available { "available" } else { "unavailable" },
+                "availabilityReason": if available { Value::Null } else { json!("Requires the public CISPO service and paid CISPO validation receipt") },
+                "limits": {"costCeilingUsd": 35.0, "maxSteps": 50,
+                    "experimentSchema": "rl.experiment.v1", "releaseStage": "preview",
+                    "costNotice": "One cumulative $35 maximum across screening, training and grading. Requires a frozen experiment specification and configured budgeted containers."},
+                "credentialInputs": [], "prerequisites": ["budgeted benchmark endpoints", "frozen split digests", "environment or secrets-proxy credentials"]
+            }));
+        }
+    }
+    recipes
 }
 
 fn local_mlx_recipe() -> Value {
@@ -48,28 +153,214 @@ fn local_mlx_recipe() -> Value {
     })
 }
 
-fn hosted_slime_recipe() -> Value {
+fn hosted_cispo_recipe(id: &str, title: &str) -> Value {
+    let (available, reason) = hosted_cispo_availability();
+    json!({
+        "id": id,
+        "title": title,
+        "algorithmId": "cispo",
+        "provider": "tinker",
+        "model": "openai/gpt-oss-20b",
+        "task": "banking77",
+        "placement": PLACEMENT_TRAINING_CISPO_HOSTED,
+        "availability": if available { "available" } else { "unavailable" },
+        "availabilityReason": reason,
+        "limits": {
+            "backend": "cispo.slime.v1",
+            "implementation": "slime-reference",
+            "implementationVersion": "cispo.slime.v1",
+            "maxSteps": 50,
+            "groupSize": 64,
+            "promptsPerUpdate": 3,
+            "estimatedRollouts": 9600,
+            "selectionExamples": 400,
+            "heldoutExamples": 400,
+            "costCeilingUsd": 35.0,
+            "costNotice": "Hosted Tinker via the public CISPO service. Receipt-gated; unpaid fixture with SYNTH_OPTIMIZERS_CISPO_FIXTURE=1."
+        },
+        "credentialInputs": [],
+        "prerequisites": hosted_cispo_prerequisites()
+    })
+}
+
+
+fn hosted_cispo_prerequisites() -> Vec<&'static str> {
+    vec![
+        "synth-optimizers-cispo service --db … --bind 127.0.0.1:8880",
+        "SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN",
+        "SYNTH_OPTIMIZERS_CISPO_SERVICE_URL (default http://127.0.0.1:8880)",
+        "TINKER_CISPO_VALIDATION_RECEIPT",
+        "SYNTH_BANKING77_TRAIN_CSV + SYNTH_BANKING77_HELDOUT_CSV",
+        "SYNTH_BANKING77_CISPO_PARENT_JSON (Tinker SFT state + sampler receipt)",
+        "SYNTH_OPTIMIZERS_CISPO_FIXTURE=1 for unpaid",
+    ]
+}
+
+fn hosted_cispo_availability() -> (bool, Value) {
     let admitted = advertised_placement(
         &json!({"placements": super::sidecar_training::admitted_placements()}),
         PLACEMENT_TRAINING_CISPO_HOSTED,
     );
-    json!({
-        "id": HOSTED_CISPO_RECIPE,
-        "title": "Hosted CISPO · slime.v1",
-        "algorithmId": "cispo",
-        "task": Value::Null,
-        "placement": PLACEMENT_TRAINING_CISPO_HOSTED,
-        "availability": if admitted { "available" } else { "unavailable" },
-        "availabilityReason": if admitted { Value::Null } else { json!("Hosted CISPO stays fail-closed until the slime clip canary (1+eps_high) admits it.") },
-        "limits": {
-            "backend": "cispo.slime.v1",
-            "maxSteps": 2,
-            "costCeilingUsd": 10.0,
-            "costNotice": "Hosted Tinker plus the bound container. Sidecar owns the tunnel lease."
+    let client_ok = super::cispo_client::CispoOptimizerClient::from_env().is_ok();
+    let reference_ok = super::hosted_sft::banking77_reference_sources().is_ok()
+        && banking77_cispo_parent().is_ok();
+    if admitted && client_ok && reference_ok {
+        return (true, Value::Null);
+    }
+    if !admitted {
+        return (
+            false,
+            json!("Hosted CISPO stays fail-closed until TINKER_CISPO_VALIDATION_RECEIPT points at a paid slime-canary receipt (validated=true, paid_update=true)."),
+        );
+    }
+    if std::env::var("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return (
+            false,
+            json!("SYNTH_OPTIMIZERS_CISPO_SERVICE_TOKEN is required to reach the public CISPO service."),
+        );
+    }
+    if std::env::var("SYNTH_OPTIMIZERS_CISPO_SERVICE_URL")
+        .ok()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return (
+            false,
+            json!("SYNTH_OPTIMIZERS_CISPO_SERVICE_URL is empty; default is http://127.0.0.1:8880."),
+        );
+    }
+    if !reference_ok {
+        return (
+            false,
+            json!("Hosted Banking77 CISPO requires the NanoClassify train/heldout CSVs and SYNTH_BANKING77_CISPO_PARENT_JSON."),
+        );
+    }
+    (
+        false,
+        json!("Public CISPO service client is not configured."),
+    )
+}
+
+fn banking77_cispo_parent() -> Result<Value> {
+    let raw = std::env::var("SYNTH_BANKING77_CISPO_PARENT_JSON")?;
+    let path = std::path::PathBuf::from(raw.trim());
+    let receipt: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    let state = receipt
+        .get("state_checkpoint")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("CISPO parent receipt omitted state_checkpoint"))?;
+    if !state.starts_with("tinker://") || !state.contains("/weights/") {
+        anyhow::bail!("CISPO parent must reference saved training weights, not sampler weights");
+    }
+    let step = receipt.get("updates").and_then(Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("CISPO parent receipt omitted exact updates"))?;
+    // The public Tinker adapter defines checkpoint digest as SHA256(path),
+    // because the remote weights are not available as local artifact bytes.
+    let digest = format!("sha256:{:x}", Sha256::digest(state.as_bytes()));
+    Ok(json!({
+        "checkpoint_id": receipt.get("checkpoint_id").and_then(Value::as_str).unwrap_or(state),
+        "provider_reference": state,
+        "resume_token": state,
+        "step": step,
+        "digest": digest,
+        "kind": "training"
+    }))
+}
+
+fn hosted_cispo_config_json() -> Result<Value> {
+    let sources = super::hosted_sft::banking77_reference_sources()?;
+    let labels = BANKING77_LABEL_TAXONOMY;
+    let heldout_indices = sources
+        .heldout_indices_json
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+    Ok(json!({
+        "schema_version": "cispo.request.v1",
+        "algorithm_id": "cispo",
+        "implementation": "slime-reference",
+        "implementation_version": "cispo.slime.v1",
+        "provider": "tinker",
+        "model_id": "openai/gpt-oss-20b",
+        "base_model": "openai/gpt-oss-20b",
+        "renderer_version": "renderers.gpt-oss.low.v1",
+        "runner_version": "synth-optimizers.training.v1",
+        "seed": 20260902,
+        "repeat_index": 0,
+        "mode": "canonical",
+        "rank": 16,
+        "budget": {
+            "max_cost_usd": 35.0,
+            "pricing_version": "tinker.models.20260908.conservative-operation-reserves",
+            "pricing": {"input_usd_per_million":0.18,"output_usd_per_million":0.45,
+                "training_usd_per_million":0.396,"session_usd":0.25,"save_usd":0.25,"restore_usd":0.25}
         },
-        "credentialInputs": [],
-        "prerequisites": ["Optimizers sidecar", "authenticated sidecar capability projecting a signed slime-canary admission receipt"]
-    })
+        "parent_checkpoint": banking77_cispo_parent()?,
+        "dataset": {
+            "recipe_id": "banking77.cispo.nanoclassify.v1",
+            "split_strategy": "banking77.nanoclassify.v1",
+            "train_csv": sources.train_csv,
+            "heldout_csv": sources.heldout_csv,
+            "heldout_indices_json": heldout_indices,
+            "split_seed": 20260907,
+            "selection_seed": 20260908,
+            "heldout_seed": 20260906,
+            "dev_per_class": 10,
+            "selection_size": 400,
+            "heldout_size": 400,
+            "label_taxonomy": labels,
+            "system_prompt": format!(
+                "Classify the customer banking message. Return exactly one label from this list, with no explanation or punctuation:\n{}",
+                labels.join(", ")
+            ),
+            "scorer_version": "banking77.exact_label.v1",
+            "heldout_locked": true
+        },
+        "training": {
+            "updates": 50,
+            "group_size": 64,
+            "prompts_per_update": 3,
+            "max_sample_tokens": 24,
+            "temperature": 1.0,
+            "learning_rate": 0.000001,
+            "eps_clip": 1.0,
+            "eps_clip_high": 4.0,
+            "normalize_group_rewards": true,
+            "checkpoint_every_updates": 10
+        },
+        "reward": { "version": "banking77.exact_label.v1", "task": "banking77" },
+        "evaluation": {
+            "scorer_version": "banking77.exact_label.v1",
+            "heldout_locked": true,
+            "mode": "canonical",
+            "max_tokens": 64,
+            "confidence": 0.95,
+            "bootstrap_resamples": 4000,
+            "minimum_claim_uplift": 0.01,
+            "minimum_paired_examples": 400
+        }
+    }))
+}
+
+fn apply_hosted_cispo_bounds(config: &mut Value, plan: Option<&Value>) -> Result<()> {
+    let Some(plan) = plan.and_then(|value| value.get("cispo")) else { return Ok(()); };
+    let updates = plan.get("updates").and_then(Value::as_u64).unwrap_or(2);
+    let group = plan.get("groupSize").and_then(Value::as_u64).unwrap_or(8);
+    let tokens = plan.get("maxSampleTokens").and_then(Value::as_u64).unwrap_or(512);
+    let cap = plan.get("maxCostUsd").and_then(Value::as_f64).unwrap_or(5.0);
+    if !(1..=50).contains(&updates) || !(2..=64).contains(&group) || !(1..=2048).contains(&tokens)
+        || !cap.is_finite() || cap <= 0.0 || cap > 35.0 {
+        anyhow::bail!("CISPO requires 1–50 updates, 2–64 members per group, 1–2048 rollout tokens and a positive cap at most $35");
+    }
+    config["training"]["updates"] = json!(updates);
+    config["training"]["group_size"] = json!(group);
+    config["training"]["max_sample_tokens"] = json!(tokens);
+    config["training"]["checkpoint_every_updates"] = json!(updates.min(10));
+    config["budget"]["max_cost_usd"] = json!(cap);
+    Ok(())
 }
 
 pub async fn start(
@@ -78,7 +369,9 @@ pub async fn start(
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     match request.recipe_id.as_str() {
         LOCAL_MLX_CISPO_RECIPE => start_local(service, request).await,
-        HOSTED_CISPO_RECIPE => start_hosted(service, request).await,
+        id if super::sidecar_training::is_hosted_cispo_recipe(id) => {
+            start_hosted(service, request).await
+        }
         other => anyhow::bail!("unknown CISPO recipe: {other}"),
     }
 }
@@ -234,65 +527,94 @@ async fn start_hosted(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
-    let (bind, cispo) =
-        container_training::bind_cispo(service, request.container_id.as_deref()).await?;
+    super::cispo_client::CispoOptimizerClient::from_env()?;
+    let recipe_id = request.recipe_id.clone();
     let suffix = uuid::Uuid::new_v4().simple().to_string();
-    let run_id = format!("cispo_hosted_{}", &suffix[..12]);
-    let evaluation_plan = tunneled_evaluation_plan(
-        Some(cispo.rollout_url.clone()),
-        "SYNTH_OPTIMIZERS_CISPO_CONTAINER_URL",
-        "SYNTH_OPTIMIZERS_CISPO_CONTAINER_TOKEN",
-        1,
-        vec![1, 2],
-        EvaluationContract {
-            task: bind.task_id.clone(),
-            harness: cispo.harness.clone(),
-            plan_ref: cispo.plan_ref.clone(),
-            world_ref: cispo.heldout_world_ref.clone(),
-        },
-    );
-    let create = training_create_request(
+    let experiment_recipe = matches!(recipe_id.as_str(), "cispo.healthbench.container.v1" | "cispo.craftax.container.v1");
+    let config_json = if experiment_recipe {
+        if std::env::var("SYNTH_OPTIMIZERS_RL_EXPERIMENT_PREVIEW").as_deref() != Ok("1") {
+            anyhow::bail!("container experiment preview is disabled");
+        }
+        let spec = request.plan_override.clone().ok_or_else(|| anyhow::anyhow!("frozen experiment specification is required"))?;
+        let benchmark = if recipe_id == "cispo.healthbench.container.v1" { "healthbench" } else { "craftax" };
+        if spec.get("benchmark").and_then(Value::as_str) != Some(benchmark) {
+            anyhow::bail!("experiment benchmark must match its recipe");
+        }
+        let cap = spec.pointer("/run/budget/cap_usd").and_then(Value::as_f64).unwrap_or(f64::NAN);
+        if spec.get("updates").and_then(Value::as_u64).unwrap_or(50) > 50
+            || spec.pointer("/run/model/id").and_then(Value::as_str) != Some("openai/gpt-oss-20b")
+            || spec.pointer("/run/model/provider").and_then(Value::as_str) != Some("tinker") {
+            anyhow::bail!("preview admission is limited to Tinker gpt-oss-20b and 50 updates");
+        }
+        if spec.get("schema_version").and_then(Value::as_str) != Some("rl.experiment.v1") || !cap.is_finite() || cap <= 0.0 || cap > 35.0 {
+            anyhow::bail!("preview requires rl.experiment.v1 and an aggregate cap at most $35");
+        }
+        let client = super::cispo_client::CispoOptimizerClient::from_env()?;
+        if client.capabilities().await?.get("container_experiments").and_then(Value::as_bool) != Some(true) {
+            anyhow::bail!("service does not advertise container experiments");
+        }
+        spec
+    } else {
+        let mut config = hosted_cispo_config_json()?;
+        apply_hosted_cispo_bounds(&mut config, request.plan_override.as_ref())?;
+        config
+    };
+    let run_id = if experiment_recipe {
+        let id = config_json.get("experiment_id").and_then(Value::as_str).unwrap_or("");
+        if id.is_empty() || id.len() > 128 || !id.bytes().all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c)) {
+            anyhow::bail!("invalid experiment identity");
+        }
+        id.to_string()
+    } else { format!("cispo_hosted_{}", &suffix[..12]) };
+    let mut create = training_create_request(
         &run_id,
         "cispo",
-        "cispo-slime-hosted-v1",
-        "Hosted CISPO · slime.v1",
+        "cispo.tinker.v1",
+        "Hosted CISPO · Tinker",
         "hosted",
-        HOSTED_CISPO_RECIPE,
+        &recipe_id,
         &request,
         json!({
-            "recipeId": HOSTED_CISPO_RECIPE,
+            "recipeId": recipe_id,
+            "containerExperiment": experiment_recipe,
             "backend": "cispo.slime.v1",
+            "implementation": "slime-reference",
+            "implementationVersion": "cispo.slime.v1",
             "placement": PLACEMENT_TRAINING_CISPO_HOSTED,
             "trainingCursor": 0,
-            "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointEvery": 1, "transport": "tunnel", "metric": "reward" }
+            "evaluationPlan": {
+                "scorer_version": "banking77.exact_label.v1",
+                "heldout_locked": true,
+                "mode": "learning_signal"
+            }
         }),
         vec![OptimizerResourceRef {
             kind: "recipe".into(),
-            id: HOSTED_CISPO_RECIPE.into(),
+            id: recipe_id.clone(),
             digest: None,
             role: Some("configuration".into()),
             title: Some("Hosted CISPO slime".into()),
-            metadata: json!({"epsHigh": 4.0, "tinkerBound": 5.0}),
+            metadata: json!({
+                "epsHigh": 4.0,
+                "tinkerBound": 5.0,
+                "algorithmId": "cispo",
+                "implementation": "slime-reference",
+                "implementationVersion": "cispo.slime.v1"
+            }),
         }],
     );
+    if experiment_recipe {
+        if let Some(capabilities) = create.capabilities.as_mut() {
+            capabilities.pause = true;
+            capabilities.resume = true;
+        }
+    }
     super::sidecar_training::create_and_watch(
         service,
         request,
         create,
         PLACEMENT_TRAINING_CISPO_HOSTED,
-        json!({
-            "algorithm": "cispo",
-            "implementation": cispo.implementation,
-            "task": bind.task_id,
-            "eps_high": 4.0,
-            "evaluation": evaluation_plan,
-            "rollout": {
-                "url": cispo.rollout_url,
-                "reward_url": cispo.reward_url,
-                "train_world_ref": cispo.train_world_ref,
-                "heldout_world_ref": cispo.heldout_world_ref
-            }
-        }),
+        json!({ "config_json": config_json }),
     )
     .await
 }
@@ -308,11 +630,12 @@ pub async fn restore_mirrors(service: &OptimizerService) {
         return;
     };
     let registered: HashSet<String> = service.registered_local_recipes().await;
-    let Ok(client) = SidecarTrainingClient::from_manager(service.manager()).await else {
+    let Ok(client) = require_training_ready(service, PLACEMENT_TRAINING_CISPO_HOSTED).await else {
         return;
     };
     for run in runs.into_iter().filter(|run| {
-        !matches!(run.status.as_str(), "completed" | "failed" | "cancelled")
+        run.source == "hosted"
+            && !matches!(run.status.as_str(), "completed" | "failed" | "cancelled")
             && !registered.contains(&run.id)
     }) {
         let cursor = run
@@ -320,6 +643,25 @@ pub async fn restore_mirrors(service: &OptimizerService) {
             .get("trainingCursor")
             .and_then(Value::as_u64)
             .unwrap_or(0);
+        let recipe_id = run
+            .project_ref
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(HOSTED_CISPO_RECIPE);
+        if let Err(error) = client
+            .attach_existing_hosted_job(&run.id, PLACEMENT_TRAINING_CISPO_HOSTED, recipe_id)
+            .await
+        {
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!(
+                    "hosted CISPO mirror {} could not reattach: {error:#}",
+                    run.id
+                ),
+            );
+            continue;
+        }
         spawn_watch_worker(service, client.clone(), run.id, cursor).await;
     }
 }

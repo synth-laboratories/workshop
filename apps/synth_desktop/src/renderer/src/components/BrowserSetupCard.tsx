@@ -55,7 +55,7 @@ export function BrowserSetupCard() {
 			<span>{status?.detail ?? "Checking the local Playwright and Chromium runtime."}</span>
 		</div>
 		{status ? <div className="browser-runtime-checks" aria-label="Managed browser runtime checks">
-			{[["Backend", status.backendPresent], [status.nodeVersion ?? "Node", status.nodePresent], ["Playwright", status.playwrightPresent], ["Chromium", status.chromiumPresent]].map(([label, ready]) => <span key={String(label)} className={ready ? "ready" : "missing"}>{ready ? "✓" : "×"} {label}</span>)}
+			{[["Backend", status.backendPresent], [`${status.nodeVersion ?? "Node"} (${status.nodeSource})`, status.nodePresent], ["Playwright", status.playwrightPresent], ["Chromium", status.chromiumPresent]].map(([label, ready]) => <span key={String(label)} className={ready ? "ready" : "missing"}>{ready ? "✓" : "×"} {label}</span>)}
 		</div> : null}
 		<div className="browser-origin-policy">
 			<div><strong>Approved website origins</strong><span>Pages cannot add origins themselves. Localhost is allowed for development.</span></div>
@@ -65,7 +65,14 @@ export function BrowserSetupCard() {
 				<button type="submit" className="settings-secondary-btn" disabled={busy || !origin.trim()}>Approve origin</button>
 			</form>
 		</div>
-		{status ? <details className="browser-runtime-paths"><summary>Runtime paths</summary><code>{status.backendPath}</code><code>{status.profileRoot}</code></details> : null}
+		{status ? <details className="browser-runtime-paths"><summary>Runtime paths</summary>
+			<span>Runtime source: <strong>{status.runtimeSource}</strong>{status.playwrightVersion ? ` · Playwright ${status.playwrightVersion}` : ""}{status.nodeSource === "override" ? " · operator interpreter override" : ""}</span>
+			<code>{status.backendPath}</code>
+			{status.runtimeRoot ? <code>{status.runtimeRoot}</code> : null}
+			<code>{status.nodePath}</code>
+			{status.chromiumPath ? <code>{status.chromiumPath}</code> : null}
+			<code>{status.profileRoot}</code>
+		</details> : null}
 		{error ? <div className="model-locations-error" role="alert">{error}</div> : null}
 	</SettingsCard>;
 }

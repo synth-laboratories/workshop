@@ -16,42 +16,29 @@ const USAGE_EVENTS_PATH: &str = "/api/v1/product/usage-events";
 
 pub struct HttpSink {
     http: reqwest::Client,
-    /// Test seam: a pinned `(base_url, api_key)` endpoint. Production always
-    /// resolves from `synth_config` per flush.
-    fixed_endpoint: Option<(String, Option<String>)>,
 }
 
 impl HttpSink {
     pub fn new() -> Self {
         Self {
             http: crate::http::http_client(),
-            fixed_endpoint: None,
         }
-    }
-
-
-    fn endpoint(&self) -> Result<(String, Option<String>)> {
-        if let Some(fixed) = self.fixed_endpoint.clone() {
-            return Ok(fixed);
-        }
-        let resolved = crate::synth_config::resolve().context("resolve telemetry backend")?;
-        Ok((resolved.backend_url, resolved.api_key))
     }
 
     async fn post(&self, batch: &[Value]) -> Result<()> {
-        let (base_url, api_key) = self.endpoint()?;
+        let resolved = crate::synth_config::resolve().context("resolve telemetry backend")?;
         let mut request = self
             .http
             .post(format!(
                 "{}{USAGE_EVENTS_PATH}",
-                base_url.trim_end_matches('/')
+                resolved.backend_url.trim_end_matches('/')
             ))
             .json(&json!({
                 "schema_version": 1,
                 "product": "workshop",
                 "events": batch,
             }));
-        if let Some(key) = api_key.as_deref() {
+        if let Some(key) = resolved.api_key.as_deref() {
             request = request.bearer_auth(key);
         }
         let response = request
@@ -76,4 +63,3 @@ impl TelemetrySink for HttpSink {
         Box::pin(self.post(batch))
     }
 }
-

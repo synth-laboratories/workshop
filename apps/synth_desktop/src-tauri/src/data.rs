@@ -145,6 +145,14 @@ pub struct InspectedTrace {
     #[serde(alias = "digest", alias = "content_digest")]
     pub trace_digest: String,
     #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub trial_id: Option<String>,
+    #[serde(default)]
+    pub episode_id: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
     pub schema_version: Option<String>,
     #[serde(default, alias = "kind")]
     pub trace_kind: Option<String>,
@@ -169,7 +177,7 @@ pub struct InspectedTrace {
     #[serde(default)]
     pub task_id: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub seed: Option<i64>,
     #[serde(default)]
     pub terminal_reason: Option<String>,
@@ -182,29 +190,29 @@ pub struct InspectedTrace {
     #[serde(default)]
     pub cost_usd: Option<f64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub prompt_tokens: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub completion_tokens: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub span_count: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub event_count: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub tool_call_count: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub error_count: Option<i64>,
     #[serde(default)]
     pub started_at: Option<String>,
     #[serde(default)]
     pub ended_at: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub duration_ms: Option<i64>,
 }
 
@@ -220,13 +228,140 @@ pub struct InspectedAsset {
     pub semantic_digest: Option<String>,
     pub media_type: String,
     #[serde(alias = "size")]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub byte_size: Option<i64>,
     #[serde(default)]
     pub available: bool,
     #[serde(default)]
     pub verified: bool,
 }
+
+/// Media types declared by the sealed traces inside a trusted archive, keyed by
+/// the qualified digest of the artifact body.
+///
+/// Content addressing has no opinion about what a body is, so the bundle
+/// manifest types every CAS blob as `application/octet-stream`. Only the sealed
+/// Trace V5 document declares an artifact's `media_type` and `role`. Deriving
+/// media presence from the blob inventory alone therefore reports "no media"
+/// for every real capture whose frames live in the CAS, which silently hides
+/// those traces from the media filter and from media-bound visuals.
+fn declared_artifact_media(
+    archive: Option<&[u8]>,
+    assets: &[InspectedAsset],
+) -> Result<std::collections::HashMap<String, (String, Option<String>)>> {
+    let mut declared = std::collections::HashMap::new();
+    let Some(archive) = archive else {
+        return Ok(declared);
+    };
+    let sealed: Vec<String> = assets
+        .iter()
+        .filter(|asset| asset.available && asset.kind == "trace")
+        .map(|asset| asset.relative_path.clone())
+        .collect();
+    if sealed.is_empty() {
+        return Ok(declared);
+    }
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive))
+        .context("open trusted trace archive for artifact declarations")?;
+    for path in sealed {
+        let Ok(mut entry) = zip.by_name(&path) else {
+            continue;
+        };
+        if entry.size() > MAX_SEALED_TRACE_BYTES {
+            bail!("sealed trace {path} exceeds {MAX_SEALED_TRACE_BYTES} bytes");
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut bytes)?;
+        let document: Value = serde_json::from_slice(&bytes)
+            .with_context(|| format!("decode sealed trace {path}"))?;
+        let Some(artifacts) = document.get("artifacts").and_then(Value::as_array) else {
+            continue;
+        };
+        for artifact in artifacts {
+            let (Some(digest), Some(media_type)) = (
+                artifact.get("digest").and_then(Value::as_str),
+                artifact.get("media_type").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let role = artifact
+                .get("role")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            declared.insert(qualified_sha256(digest)?, (media_type.to_owned(), role));
+        }
+    }
+    Ok(declared)
+}
+
+/// Publish the sealed trace's own media bodies into Workshop's blob CAS.
+///
+/// A replayed visual resolves a frame by content digest. While media existed
+/// only in the live run relay, a sealed trace could name a frame it could not
+/// show, and a consumer had no honest choice but to fall back to the live
+/// latest-frame endpoint — which is exactly what replay must never do. The
+/// bodies are already verified inside the trusted archive, so republishing them
+/// under their own digest adds no new authority: it only makes the sealed
+/// bundle self-sufficient for offline replay.
+fn publish_declared_media(
+    content: &ContentStore,
+    archive: Option<&[u8]>,
+    assets: &[InspectedAsset],
+    declared: &std::collections::HashMap<String, (String, Option<String>)>,
+) -> Result<Vec<String>> {
+    let mut published = Vec::new();
+    let (Some(archive), false) = (archive, declared.is_empty()) else {
+        return Ok(published);
+    };
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive))
+        .context("open trusted trace archive for media publication")?;
+    for asset in assets {
+        if !asset.available || !asset.verified {
+            continue;
+        }
+        let Some(digest) = asset.bytes_digest.as_deref() else {
+            continue;
+        };
+        let qualified = qualified_sha256(digest)?;
+        let Some((media_type, _)) = declared.get(&qualified) else {
+            continue;
+        };
+        if !is_media_type(media_type) || content.exists("blobs", &qualified[7..]) {
+            continue;
+        }
+        let mut entry = match zip.by_name(&asset.relative_path) {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if entry.size() > MAX_MEDIA_OBJECT_BYTES {
+            bail!(
+                "sealed media {} exceeds {MAX_MEDIA_OBJECT_BYTES} bytes",
+                asset.relative_path
+            );
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut bytes)?;
+        let stored = content.put_bytes("blobs", &bytes)?;
+        if qualified_sha256(&stored)? != qualified {
+            bail!(
+                "sealed media {} did not hash to its declared digest",
+                asset.relative_path
+            );
+        }
+        published.push(qualified);
+    }
+    Ok(published)
+}
+
+const MAX_MEDIA_OBJECT_BYTES: u64 = 32 * 1024 * 1024;
+
+fn is_media_type(media_type: &str) -> bool {
+    media_type.starts_with("image/")
+        || media_type.starts_with("audio/")
+        || media_type.starts_with("video/")
+}
+
+const MAX_SEALED_TRACE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 pub struct InspectedProjection {
@@ -343,6 +478,16 @@ impl DataStore {
             .await
     }
 
+    pub async fn experiment_update(
+        &self,
+        request: crate::experiments::ExperimentUpdateRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::update(conn, request))
+            .await
+    }
+
     pub async fn experiment_finalize(
         &self,
         request: crate::experiments::ExperimentFinalizeRequest,
@@ -370,6 +515,33 @@ impl DataStore {
         self.db
             .clone()
             .run(move |conn| crate::experiments::get(conn, &id))
+            .await
+    }
+
+    pub async fn research_log_list(
+        &self,
+        query: Option<String>,
+        experiment_id: Option<String>,
+    ) -> Result<Vec<crate::experiments::ResearchJournalEntry>> {
+        self.db
+            .clone()
+            .run(move |conn| {
+                crate::experiments::research_log_list(
+                    conn,
+                    query.as_deref(),
+                    experiment_id.as_deref(),
+                )
+            })
+            .await
+    }
+
+    pub async fn research_log_append(
+        &self,
+        request: crate::experiments::ResearchJournalAppendRequest,
+    ) -> Result<crate::experiments::ResearchJournalEntry> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::research_log_append(conn, request))
             .await
     }
 
@@ -625,6 +797,26 @@ impl DataStore {
         Ok(snapshot)
     }
 
+    pub async fn research_query(&self, query: Value) -> Result<crate::trace_query::QuerySnapshot> {
+        let input = self.db.clone().run_transaction(move |conn| crate::trace_research::resolve_inputs(conn, &query)).await?;
+        let snapshot = crate::trace_research::execute(input, &self.content.root().join("trace-research")).await?;
+        let stored = snapshot.clone();
+        self.db.clone().run(move |conn| insert_query_snapshot(conn, &stored)).await?;
+        Ok(snapshot)
+    }
+
+    pub async fn research_source(&self, snapshot_id:String, result_id:String, selector:Option<Value>, offset:usize, limit:usize)->Result<Value>{
+        let snapshot=self.query_snapshot(snapshot_id).await?;
+        let i=snapshot.result_ids.iter().position(|id|id==&result_id).context("result ID is not in snapshot")?;
+        let row=snapshot.facets["rows"].get(i).context("snapshot row missing")?;
+        let selected=selector.unwrap_or_else(||row["selector"].clone());
+        let allowed=selected==row["selector"]||selected==row["relatedSelector"]||row["evidence"].as_array().is_some_and(|items|items.contains(&selected));
+        anyhow::ensure!(!selected.is_null()&&allowed,"selector must be one of this result's citations");
+        let td=row["traceDigest"].as_str().context("select a trace result, not an aggregate")?.to_string();
+        let path=self.db.clone().run(move|conn|Ok(conn.query_row("SELECT path FROM traces WHERE digest=?1",[td],|r|r.get::<_,String>(0))?)).await?;
+        crate::trace_research::execute_value(json!({"operation":"source","archivePath":path,"selector":selected,"offset":offset,"limit":limit}),&self.content.root().join("trace-research")).await
+    }
+
     pub async fn query_snapshot(
         &self,
         snapshot_id: String,
@@ -698,6 +890,33 @@ impl DataStore {
             && inspected.inspection.archive_digest.is_some()
             && inspected.archive_bytes.is_some();
 
+        // A validated standalone V5 is already a sealed authority. Retain its
+        // bytes directly; do not mint a replacement capture just to obtain a ZIP.
+        if inspected.inspection.input_kind == "standalone_trace"
+            && inspected.inspection.trusted && validation_ok && accepted_compatibility
+        {
+            let trace = inspected.inspection.traces.first().context("standalone trace missing")?.clone();
+            let path = stored_import_path.clone().context("standalone bytes missing")?;
+            let digest = qualified_sha256(&trace.trace_digest)?;
+            let row_id = format!("tracev5_{}", &digest[7..31]);
+            let title = request.title.clone().unwrap_or_else(|| trace.trace_id.clone());
+            let metadata = json!({"schemaVersion":"synth.trace.v5","producerTraceId":trace.trace_id,
+                "storageKind":"standalone_trace","runId":trace.run_id,"trialId":trace.trial_id,
+                "episodeId":trace.episode_id,"effort":trace.effort,"model":trace.model,
+                "benchmark":trace.benchmark,"taskId":trace.task_id,"seed":trace.seed,
+                "captureStatus":trace.capture_status,"lifecycleStatus":trace.lifecycle_status});
+            let input = input_digest.clone();
+            let validation = inspected.inspection.validation.clone();
+            let compatibility = inspected.inspection.compatibility.clone();
+            let container = request.container_id.clone();
+            return self.db.clone().run_transaction(move |conn| {
+                let duplicate: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM traces WHERE digest=?1)", [&digest], |r| r.get(0))?;
+                conn.execute("INSERT INTO traces(id,digest,title,source,container_id,reward,metrics_json,path,metadata_json,created_at) VALUES(?1,?2,?3,'import',?4,?5,'[]',?6,?7,?8) ON CONFLICT(digest) DO UPDATE SET path=excluded.path,metadata_json=excluded.metadata_json,container_id=COALESCE(excluded.container_id,traces.container_id)", params![row_id,digest,title,container,trace.reward,path,metadata.to_string(),Utc::now().to_rfc3339()])?;
+                let record = load_trace(conn, &digest)?.context("imported standalone trace missing")?;
+                Ok((TraceBundleIngestResult { compatibility_level: compatibility, trusted:true, duplicate, input_digest:input, bundle_digest:None, archive_digest:None, traces:vec![record], validation }, None))
+            }).await;
+        }
+
         let mut archive_digest = None;
         let mut archive_path = None;
         let bundle_digest = inspected
@@ -729,6 +948,23 @@ impl DataStore {
             archive_digest = Some(qualified_stored);
         }
 
+        // Type the CAS blobs from the sealed traces, and publish their media
+        // bodies, before anything is written: the blob inventory alone cannot
+        // tell an observation frame from a log, and a replayed visual must be
+        // able to resolve that frame without the live run relay.
+        let declared_media = if trusted {
+            declared_artifact_media(inspected.archive_bytes.as_deref(), &inspected.inspection.assets)?
+        } else {
+            std::collections::HashMap::new()
+        };
+        let published_media = publish_declared_media(
+            &self.content,
+            inspected.archive_bytes.as_deref(),
+            &inspected.inspection.assets,
+            &declared_media,
+        )?;
+        debug_assert!(published_media.len() <= declared_media.len());
+
         let now = Utc::now().to_rfc3339();
         let source_uri = request
             .source_uri
@@ -740,6 +976,20 @@ impl DataStore {
             .unwrap_or_else(|| inspected.inspection.input_kind.clone());
         let compatibility = inspected.inspection.compatibility.clone();
         let validation_status = if validation_ok { "valid" } else { "invalid" }.to_string();
+        // The owning container is the immutable registry id, never a URL or a
+        // display name: `traces.container_id` references `containers(id)` and is
+        // what paid annotation names on its approval card.
+        let owning_container = request
+            .container_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
+        if let Some(id) = &owning_container {
+            if id.contains("://") || id.contains('/') {
+                bail!("owning container `{id}` must be the immutable container id from the registry, not a URL");
+            }
+        }
         let errors = inspected
             .inspection
             .validation
@@ -765,6 +1015,16 @@ impl DataStore {
         let return_validation = inspected.inspection.validation.clone();
         let db = self.db.clone();
         let result = db.run_transaction(move |conn| {
+            if let Some(container_id) = &owning_container {
+                let registered: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM containers WHERE id=?1)",
+                    params![container_id],
+                    |row| row.get(0),
+                )?;
+                if !registered {
+                    bail!("owning container `{container_id}` is not registered; import with the immutable container id from container_list");
+                }
+            }
             let duplicate: bool = if trusted {
                 conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM trace_bundles WHERE bundle_digest=?1 AND archive_digest=?2)",
@@ -810,11 +1070,18 @@ impl DataStore {
                     params![bundle_digest,archive_digest,archive_path,&compatibility,&validation_status,&source_kind,&source_uri,assets.len() as i64,archive_byte_size,&now,serde_json::to_string(&inspection_json)?],
                 )?;
 
+                let declared_for = |asset: &InspectedAsset| {
+                    asset
+                        .bytes_digest
+                        .as_deref()
+                        .and_then(|digest| qualified_sha256(digest).ok())
+                        .and_then(|digest| declared_media.get(&digest))
+                };
                 let has_media = assets.iter().any(|asset| {
                     asset.available
-                        && (asset.media_type.starts_with("image/")
-                            || asset.media_type.starts_with("audio/")
-                            || asset.media_type.starts_with("video/"))
+                        && (is_media_type(&asset.media_type)
+                            || declared_for(asset)
+                                .is_some_and(|(media_type, _)| is_media_type(media_type)))
                 });
                 let has_evidence = assets
                     .iter()
@@ -840,6 +1107,10 @@ impl DataStore {
                         // reconciliation can validate the sealed bundle without
                         // comparing a rollout-owned id to `tracev5_...`.
                         "producerTraceId": trace.trace_id,
+                        "runId": trace.run_id,
+                        "trialId": trace.trial_id,
+                        "episodeId": trace.episode_id,
+                        "effort": trace.effort,
                         "bundleDigest": bundle_digest,
                         "archiveDigest": archive_digest,
                         "compatibilityLevel": compatibility,
@@ -867,10 +1138,10 @@ impl DataStore {
                         "hasEvidence": has_evidence,
                     });
                     conn.execute(
-                        "INSERT INTO traces(id,digest,title,source,reward,metrics_json,path,metadata_json,created_at)
-                         VALUES(?1,?2,?3,'import',?4,'[]',?5,?6,?7)
-                         ON CONFLICT(digest) DO UPDATE SET path=excluded.path,metadata_json=excluded.metadata_json",
-                        params![&row_id,&trace_digest,&title,trace.reward,archive_path,serde_json::to_string(&metadata)?,&now],
+                        "INSERT INTO traces(id,digest,title,source,container_id,reward,metrics_json,path,metadata_json,created_at)
+                         VALUES(?1,?2,?3,'import',?4,?5,'[]',?6,?7,?8)
+                         ON CONFLICT(digest) DO UPDATE SET container_id=COALESCE(excluded.container_id,traces.container_id),path=excluded.path,metadata_json=excluded.metadata_json",
+                        params![&row_id,&trace_digest,&title,&owning_container,trace.reward,archive_path,serde_json::to_string(&metadata)?,&now],
                     )?;
                     conn.execute(
                         "INSERT INTO trace_bundle_members(bundle_digest,trace_row_id,trace_digest,trace_id,capture_id,binding_digest,sealed_path)
@@ -888,7 +1159,7 @@ impl DataStore {
                     conn.execute(
                         "INSERT INTO trace_index(trace_digest,projector_version,trace_kind,producer,model,provider,harness,benchmark,task_id,seed,terminal_reason,lifecycle_status,capture_status,reward,cost_usd,prompt_tokens,completion_tokens,span_count,event_count,tool_call_count,error_count,started_at,ended_at,duration_ms,has_media,has_evidence,search_text)
                          VALUES(?1,'synth.trace-inspection.v1',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)
-                         ON CONFLICT(trace_digest) DO UPDATE SET projector_version=excluded.projector_version,trace_kind=excluded.trace_kind,producer=excluded.producer,model=excluded.model,provider=excluded.provider,harness=excluded.harness,benchmark=excluded.benchmark,task_id=excluded.task_id,seed=excluded.seed,terminal_reason=excluded.terminal_reason,lifecycle_status=excluded.lifecycle_status,capture_status=excluded.capture_status,reward=excluded.reward,cost_usd=excluded.cost_usd,prompt_tokens=excluded.prompt_tokens,completion_tokens=excluded.completion_tokens,span_count=excluded.span_count,event_count=excluded.event_count,tool_call_count=excluded.tool_call_count,error_count=excluded.error_count,started_at=excluded.started_at,ended_at=excluded.ended_at,duration_ms=excluded.duration_ms,search_text=excluded.search_text",
+                         ON CONFLICT(trace_digest) DO UPDATE SET projector_version=excluded.projector_version,trace_kind=excluded.trace_kind,producer=excluded.producer,model=excluded.model,provider=excluded.provider,harness=excluded.harness,benchmark=excluded.benchmark,task_id=excluded.task_id,seed=excluded.seed,terminal_reason=excluded.terminal_reason,lifecycle_status=excluded.lifecycle_status,capture_status=excluded.capture_status,reward=excluded.reward,cost_usd=excluded.cost_usd,prompt_tokens=excluded.prompt_tokens,completion_tokens=excluded.completion_tokens,span_count=excluded.span_count,event_count=excluded.event_count,tool_call_count=excluded.tool_call_count,error_count=excluded.error_count,started_at=excluded.started_at,ended_at=excluded.ended_at,duration_ms=excluded.duration_ms,has_media=excluded.has_media,has_evidence=excluded.has_evidence,search_text=excluded.search_text",
                         params![&trace_digest,&trace.trace_kind,&trace.producer,&trace.model,&trace.provider,&trace.harness,&trace.benchmark,&trace.task_id,trace.seed,&trace.terminal_reason,&trace.lifecycle_status,&trace.capture_status,trace.reward,trace.cost_usd,trace.prompt_tokens,trace.completion_tokens,trace.span_count.unwrap_or(0),trace.event_count.unwrap_or(0),trace.tool_call_count.unwrap_or(0),trace.error_count.unwrap_or(0),&trace.started_at,&trace.ended_at,trace.duration_ms,has_media as i64,has_evidence as i64,&search_text],
                     )?;
                     records.push(load_trace(conn, &row_id)?.context("load imported trace")?);
@@ -896,11 +1167,21 @@ impl DataStore {
 
                 for asset in &assets {
                     let Some(bytes_digest) = asset.bytes_digest.as_deref() else { continue; };
+                    // A blob the sealed trace declares keeps that declaration, so a
+                    // consumer can find an observation frame without reopening the
+                    // archive. Anything the manifest already typed is left alone.
+                    let (media_type, role) = match declared_for(asset) {
+                        Some((declared, declared_role)) if !is_media_type(&asset.media_type) => (
+                            declared.as_str(),
+                            declared_role.as_deref().or(asset.role.as_deref()),
+                        ),
+                        _ => (asset.media_type.as_str(), asset.role.as_deref()),
+                    };
                     conn.execute(
                         "INSERT INTO trace_assets(bundle_digest,relative_path,kind,role,bytes_digest,semantic_digest,media_type,byte_size,availability)
                          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
                          ON CONFLICT(bundle_digest,relative_path) DO UPDATE SET kind=excluded.kind,role=excluded.role,bytes_digest=excluded.bytes_digest,semantic_digest=excluded.semantic_digest,media_type=excluded.media_type,byte_size=excluded.byte_size,availability=excluded.availability",
-                        params![bundle_digest,&asset.relative_path,&asset.kind,&asset.role,qualified_sha256(bytes_digest)?,asset.semantic_digest.as_deref().map(qualified_sha256).transpose()?,&asset.media_type,asset.byte_size.unwrap_or(0),if asset.available && asset.verified {"verified"} else if asset.available {"available"} else {"missing"}],
+                        params![bundle_digest,&asset.relative_path,&asset.kind,role,qualified_sha256(bytes_digest)?,asset.semantic_digest.as_deref().map(qualified_sha256).transpose()?,media_type,asset.byte_size.unwrap_or(0),if asset.available && asset.verified {"verified"} else if asset.available {"available"} else {"missing"}],
                     )?;
                 }
 
@@ -949,6 +1230,18 @@ impl DataStore {
             Ok((records,event,duplicate))
         }).await?;
 
+        if trusted {
+            for trace in &result.0 {
+                let digest=trace.digest.clone();
+                let count=self.db.clone().run(move |c| Ok(c.query_row("SELECT event_count FROM trace_index WHERE trace_digest=?1",params![digest],|r|r.get::<_,i64>(0)).optional()?.unwrap_or(0))).await?;
+                if count >= 1000 {
+                    if let Err(error)=self.prepare_trace_windows(trace.digest.clone()).await {
+                        crate::platform::logging::report("trace", "replay_index", format!("Replay index unavailable for {}: {error}",trace.digest));
+                    }
+                }
+            }
+        }
+
         Ok((
             TraceBundleIngestResult {
                 compatibility_level: return_compatibility,
@@ -974,7 +1267,7 @@ impl DataStore {
         let lookup_digest = trace_digest.clone();
         let resolved = self.db.clone().run(move |conn| {
             conn.query_row(
-                "SELECT tpc.projection_schema,tpc.payload_digest,tb.archive_path,ta.relative_path
+                "SELECT tpc.projection_schema,tpc.payload_digest,tb.archive_digest,ta.relative_path
                  FROM trace_projection_cache tpc
                  JOIN trace_bundle_members tbm ON tbm.trace_digest=tpc.trace_digest
                  JOIN trace_bundles tb ON tb.bundle_digest=tbm.bundle_digest
@@ -985,7 +1278,7 @@ impl DataStore {
                 |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?)),
             ).optional().map_err(Into::into)
         }).await?;
-        let Some((projection_schema, payload_digest, archive_path, relative_path)) = resolved
+        let Some((projection_schema, payload_digest, archive_digest, relative_path)) = resolved
         else {
             let lookup_digest = trace_digest.clone();
             let archive_path = self.db.clone().run(move |conn| {
@@ -1017,13 +1310,15 @@ impl DataStore {
                 payload: derived.payload,
             });
         };
-        let archive_path = std::path::PathBuf::from(archive_path);
+        let content = self.content.clone();
         let entry_path = relative_path.clone();
         let payload = tokio::task::spawn_blocking(move || -> Result<Value> {
-            let file = std::fs::File::open(&archive_path).with_context(|| {
-                format!("open trusted trace archive {}", archive_path.display())
-            })?;
-            let mut archive = zip::ZipArchive::new(file).context("open trusted trace ZIP")?;
+            // Import-time trust does not authorize changed bytes. Parse the
+            // exact buffer CAS verified, not a path reopened after validation.
+            let digest = qualified_sha256(&archive_digest)?;
+            let bytes = content.get_bytes("traces", &digest[7..])?;
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+                .context("open verified trace ZIP")?;
             let mut entry = archive.by_name(&entry_path).with_context(|| {
                 format!("projection asset missing from trusted archive: {entry_path}")
             })?;
@@ -1048,6 +1343,87 @@ impl DataStore {
         })
     }
 
+    /// Build a rebuildable replay index once; only bounded pages reach consumers.
+    pub async fn prepare_trace_windows(&self, trace_digest: String) -> Result<String> {
+        let trace_digest = qualified_sha256(&trace_digest)?;
+        let lookup = trace_digest.clone();
+        let cached = self.db.clone().run(move |c| {
+            c.query_row("SELECT payload_digest FROM trace_projection_cache WHERE trace_digest=?1 AND projection_kind='rollout-inspector-windows' AND projector_version='workshop.windows.v2'",params![lookup],|r|r.get::<_,String>(0)).optional().map_err(Into::into)
+        }).await?;
+        if let Some(digest) = cached { return Ok(digest); }
+        let projection = self.resolve_trace_projection(trace_digest.clone(), "rollout-inspector".into()).await?;
+        let content = self.content.clone();
+        let digest = tokio::task::spawn_blocking(move || build_trace_windows(&content, projection)).await??;
+        let stored = digest.clone();
+        self.db.clone().run(move |c| {
+            c.execute("INSERT INTO trace_projection_cache(trace_digest,projection_kind,projection_schema,projector_version,source_digest,payload_digest,created_at) VALUES(?1,'rollout-inspector-windows','synth.trace-window-index.v2','workshop.windows.v2',?1,?2,?3) ON CONFLICT(trace_digest,projection_kind,projector_version) DO UPDATE SET payload_digest=excluded.payload_digest",params![trace_digest,stored,Utc::now().to_rfc3339()])?;Ok(())
+        }).await?;
+        Ok(digest)
+    }
+
+    pub async fn trace_view_window(&self, trace_digest: String, snapshot_digest: Option<String>, offset: usize, limit: usize) -> Result<Value> {
+        let trace_digest=qualified_sha256(&trace_digest)?;
+        if !(1..=200).contains(&limit) { bail!("trace window limit must be 1..200"); }
+        let refresh_annotations = snapshot_digest.is_none();
+        let mut snapshot=match snapshot_digest {Some(value)=>qualified_sha256(&value)?,None=>self.prepare_trace_windows(trace_digest.clone()).await?};
+        let content=self.content.clone();
+        let mut parsed:Value=serde_json::from_slice(&content.get_bytes_bounded("trace_views",snapshot.trim_start_matches("sha256:"),64*1024*1024)?)?;
+        if parsed["schemaVersion"] != "synth.trace-window-index.v2" {
+            return self.legacy_trace_view_window(trace_digest,Some(snapshot),offset,limit).await;
+        }
+        if refresh_annotations {
+            let overlay = self.db.with_conn(|c| trace_annotation_overlay(c, &trace_digest))?;
+            parsed["header"]["annotation_view"] = overlay;
+            snapshot = format!("sha256:{}", content.put_bytes("trace_views", &serde_json::to_vec(&parsed)?)?);
+        }
+        tokio::task::spawn_blocking(move || read_trace_window(&content,parsed,&trace_digest,&snapshot,offset,limit)).await?
+    }
+
+    /// A bounded consumer view pinned to the verified full projection in CAS.
+    /// The window is explicitly a view, never a newly sealed trace/projection.
+    async fn legacy_trace_view_window(&self, trace_digest: String, snapshot_digest: Option<String>, offset: usize, limit: usize) -> Result<Value> {
+        let trace_digest = qualified_sha256(&trace_digest)?;
+        if !(1..=200).contains(&limit) { bail!("trace window limit must be 1..200"); }
+        let (projection, snapshot) = if let Some(snapshot) = snapshot_digest {
+            let snapshot = qualified_sha256(&snapshot)?;
+            let bytes = self.content.get_bytes_bounded("trace_views", snapshot.trim_start_matches("sha256:"),64*1024*1024)?;
+            (serde_json::from_slice::<ResolvedTraceProjection>(&bytes)?, snapshot)
+        } else {
+            let projection = self.resolve_trace_projection(trace_digest.clone(), "rollout-inspector".into()).await?;
+            static CACHE_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let snapshot = {
+                let _guard = CACHE_WRITE.lock().map_err(|_| anyhow!("trace view cache lock unavailable"))?;
+                self.content.put_bytes("trace_views", &serde_json::to_vec(&projection)?)?
+            };
+            (projection, format!("sha256:{snapshot}"))
+        };
+        if projection.trace_digest != trace_digest || projection.projection_kind != "rollout-inspector" {
+            bail!("trace window snapshot belongs to a different trace or projection");
+        }
+        let mut payload = projection.payload;
+        let items = payload.pointer_mut("/visual/items").context("projection has no visual items")?;
+        let all = items.as_array_mut().context("projection items must be an array")?;
+        let total = all.len();
+        if offset > total { bail!("trace window offset exceeds retained items"); }
+        let end = offset.saturating_add(limit).min(total);
+        let mut window = all[offset..end].to_vec();
+        for item in &mut window {
+            if let Some(detail) = item.get_mut("detail") {
+                let text = serde_json::to_string(detail)?;
+                if text.len() > 16_000 {
+                    *detail = json!({"preview":text.chars().take(4000).collect::<String>(),"payloadTruncated":true,"sourceSelectorRetained":true});
+                }
+            }
+        }
+        *items = Value::Array(window);
+        payload["schema_version"] = json!("synth.trace-projection.rollout-inspector-window.v1");
+        if let Some(object) = payload.as_object_mut() { object.remove("content_digest"); }
+        if let Some(object) = payload.get_mut("visual").and_then(Value::as_object_mut) { object.remove("content_digest"); }
+        payload["view_window"] = json!({"schemaVersion":"synth.trace-view-window.v1","snapshotDigest":snapshot,"sourceProjectionDigest":projection.payload_digest,"offset":offset,"limit":limit,"total":total,"nextOffset":if end<total {Some(end)} else {None}});
+        if serde_json::to_vec(&payload)?.len() > 4*1024*1024 { bail!("trace window exceeds 4 MiB; reduce its limit"); }
+        Ok(payload)
+    }
+
     pub async fn list_usage(&self, limit: i64) -> Result<Vec<UsageEntry>> {
         self.db
             .clone()
@@ -1069,6 +1445,76 @@ impl DataStore {
             })
             .await
     }
+}
+
+/// Independent findings are a view overlay, never mutations of sealed trace bytes.
+fn trace_annotation_overlay(c: &Connection, trace: &str) -> Result<Value> {
+    let mut stmt=c.prepare("SELECT f.finding_id,f.annotator_id,f.taxonomy_label,f.target_selector_json,f.evidence_selectors_json,f.payload_json,f.status,(SELECT decision FROM annotation_reviews r WHERE r.finding_id=f.finding_id AND r.evidence_head_digest=f.evidence_head_digest ORDER BY r.created_at DESC,r.review_id DESC LIMIT 1) FROM annotation_findings f JOIN annotation_evidence_heads h ON h.digest=f.evidence_head_digest WHERE h.trace_digest=?1 ORDER BY f.finding_id LIMIT 201")?;
+    let rows=stmt.query_map([trace],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,Option<String>>(7)?)))?;
+    let mut records=vec![];let mut bytes=0;let mut truncated=false;
+    for row in rows {
+        let (id,author,label,target,evidence,payload,status,review)=row?;
+        let payload:Value=serde_json::from_str(&payload)?;
+        let canonical=payload.get("sourceAnnotation").unwrap_or(&payload);
+        let body=canonical.get("rationale").or_else(||canonical.get("summary")).and_then(Value::as_str).unwrap_or("");
+        let record=json!({"id":id,"target":serde_json::from_str::<Value>(&target)?,"evidence":serde_json::from_str::<Value>(&evidence)?,"body":body,"labels":canonical.get("labels").cloned().unwrap_or(json!(label.into_iter().collect::<Vec<_>>())) ,"author":author,"reviewState":review.map(Value::String).unwrap_or_else(||canonical.get("review_state").cloned().unwrap_or(json!(status))),"supersedesId":canonical.get("supersedes_id"),"grounding":canonical.get("grounding")});
+        let size=serde_json::to_vec(&record)?.len();
+        if records.len()>=200 || bytes+size>256*1024 {truncated=true;break;}
+        bytes+=size;records.push(record);
+    }
+    Ok(json!({"schemaVersion":"synth.trace-annotation-view.v1","records":records,"truncated":truncated,"scope":"independent annotations pinned when this view opened"}))
+}
+
+fn build_trace_windows(content: &ContentStore, projection: ResolvedTraceProjection) -> Result<String> {
+    static WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard=WRITE.lock().map_err(|_|anyhow!("trace page cache lock unavailable"))?;
+    let mut header=projection.payload;
+    let items=header.pointer_mut("/visual/items").context("projection has no visual items")?;
+    let Value::Array(mut all)=std::mem::take(items) else {bail!("projection items must be an array");};
+    let total=all.len();
+    for item in &mut all {
+        if let Some(detail)=item.get_mut("detail") {
+            let raw=serde_json::to_string(detail)?;
+            if raw.len()>16_000 {*detail=json!({"preview":raw.chars().take(4000).collect::<String>(),"payloadTruncated":true,"sourceSelectorRetained":true});}
+        }
+    }
+    let mut chunks=Vec::new();
+    for page in all.chunks(200) {
+        let bytes=serde_json::to_vec(page)?;
+        if bytes.len()>4*1024*1024 {bail!("trace page exceeds 4 MiB");}
+        chunks.push(content.put_bytes("trace_views",&bytes)?);
+    }
+    if let Some(object)=header.as_object_mut() {object.remove("content_digest");}
+    if let Some(object)=header.get_mut("visual").and_then(Value::as_object_mut) {object.remove("content_digest");}
+    header["schema_version"]=json!("synth.trace-projection.rollout-inspector-window.v1");
+    let index=json!({"schemaVersion":"synth.trace-window-index.v2","traceDigest":projection.trace_digest,"sourceProjectionDigest":projection.payload_digest,"header":header,"total":total,"chunks":chunks});
+    let bytes=serde_json::to_vec(&index)?;
+    if bytes.len()>4*1024*1024 {bail!("trace window index exceeds 4 MiB");}
+    Ok(format!("sha256:{}",content.put_bytes("trace_views",&bytes)?))
+}
+
+fn read_trace_window(content: &ContentStore,index: Value,trace: &str,snapshot: &str,offset: usize,limit: usize) -> Result<Value> {
+    if index["traceDigest"] != trace {bail!("trace window snapshot belongs to a different trace");}
+    let total=index["total"].as_u64().context("invalid trace window total")? as usize;
+    if offset>total {bail!("trace window offset exceeds retained items");}
+    let end=offset.saturating_add(limit).min(total);
+    let mut items=Vec::new();
+    if end>offset {
+        for page in offset/200..=(end-1)/200 {
+            let digest=index["chunks"][page].as_str().context("trace page missing")?;
+            let rows:Vec<Value>=serde_json::from_slice(&content.get_bytes_bounded("trace_views",digest,4*1024*1024)?)?;
+            let start=offset.saturating_sub(page*200);
+            let finish=(end-page*200).min(rows.len());
+            if start>finish || rows.len()>200 {bail!("invalid trace page range");}
+            items.extend_from_slice(&rows[start..finish]);
+        }
+    }
+    if items.len()!=end-offset {bail!("trace window is incomplete");}
+    let mut payload=index["header"].clone();
+    payload["visual"]["items"]=json!(items);
+    payload["view_window"]=json!({"schemaVersion":"synth.trace-view-window.v1","snapshotDigest":snapshot,"sourceProjectionDigest":index["sourceProjectionDigest"],"offset":offset,"limit":limit,"total":total,"nextOffset":if end<total {Some(end)} else {None}});
+    if serde_json::to_vec(&payload)?.len()>4*1024*1024 {bail!("trace window exceeds 4 MiB");}
+    Ok(payload)
 }
 
 fn sha256_qualified(bytes: &[u8]) -> String {
@@ -1251,7 +1697,7 @@ fn load_query_snapshot(
         [snapshot_id],
         |row| {
             Ok(crate::trace_query::QuerySnapshot {
-                schema_version: crate::trace_query::TRACE_QUERY_RESULT_SCHEMA.into(),
+                schema_version: if row.get::<_, String>(2)? == crate::trace_research::SCHEMA { "synth.trace-query-result.v2".into() } else { crate::trace_query::TRACE_QUERY_RESULT_SCHEMA.into() },
                 snapshot_id: row.get(0)?,
                 domain: row.get(1)?,
                 query_schema_version: row.get(2)?,

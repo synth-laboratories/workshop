@@ -1,0 +1,67 @@
+name: Publish accepted desktop
+
+# Release the bytes already exercised on a native Mac, never a fresh tag rebuild.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Desktop package run accepted on a native Mac
+        required: true
+      source_commit:
+        description: Full accepted source SHA (tag target and current main tree)
+        required: true
+      archive_sha256:
+        description: SHA256 of the exact native-accepted distribution ZIP
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-accepted-desktop
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ inputs.run_id }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Verify source and successful package run
+        shell: bash
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          git merge-base --is-ancestor "$SOURCE_COMMIT" HEAD
+          git diff --exit-code "$SOURCE_COMMIT" HEAD
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID" > package-run.json
+          jq -e --arg source "$SOURCE_COMMIT" '
+            .head_sha == $source and .conclusion == "success" and
+            .path == ".github/workflows/desktop-package.yml"
+          ' package-run.json
+          gh run download "$RUN_ID" --name workshop-macos-arm64 --dir dist
+      - name: Validate accepted archive and existing tag
+        shell: bash
+        run: |
+          python3 scripts/verify-accepted-desktop.py dist "$SOURCE_COMMIT" "$ARCHIVE_SHA256"
+          version="$(node -p "require('./apps/synth_desktop/package.json').version")"
+          tag="v$version"
+          [[ "$(git rev-parse "$tag^{commit}")" == "$SOURCE_COMMIT" ]]
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+      - name: Publish exact accepted bytes without replacement
+        shell: bash
+        run: |
+          gh release create "$RELEASE_TAG" dist/Synth-Workshop-* --verify-tag \
+            --title "Workshop $RELEASE_TAG" \
+            --notes 'Apple Silicon macOS 14+. This app is ad-hoc signed and NOT Apple-notarized. Verify the included SHA-256 checksum before opening. These are the exact native-accepted CI bytes, not a tag rebuild. Source builds are supported with scripts/install.sh and scripts/workshop.sh build-and-run. No Apple Developer credentials or TBLite installation are required. See the repository README for prerequisites and first-launch guidance.'

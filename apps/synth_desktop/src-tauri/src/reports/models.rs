@@ -248,7 +248,7 @@ pub struct ExperimentRecord {
     pub experiment_id: String,
     #[serde(default)]
     pub report_id: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     #[serde(default)]
     pub revision: Option<i64>,
     pub title: String,
@@ -351,7 +351,7 @@ pub struct ReportUpload {
     pub receipt_digest: String,
     pub collection_id: Option<String>,
     pub publication_id: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub publication_revision: Option<i64>,
     pub state: String,
     pub committed_url: Option<String>,
@@ -453,7 +453,7 @@ pub struct ReportCreateRequest {
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportUpdateRequest {
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     #[serde(default)]
     pub expected_revision: Option<i64>,
     pub title: Option<String>,
@@ -471,7 +471,7 @@ pub struct ReportUpdateRequest {
 pub struct ReportQuery {
     pub status: Option<String>,
     pub search: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub limit: Option<i64>,
     #[serde(default)]
     pub include_archived: bool,

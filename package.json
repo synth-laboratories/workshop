@@ -2,7 +2,6 @@
   "name": "synth-workshop",
   "private": true,
   "version": "0.1.0",
-  "license": "Apache-2.0",
   "packageManager": "npm@11.17.0",
   "workspaces": [
     "apps/*",
@@ -36,6 +35,7 @@
     "legacy-runtime:dev": "PYTHONPATH=services/local-runtime/src python3 -m synth_local_runtime --port 8765",
     "legacy-runtime:stop": "PYTHONPATH=services/local-runtime/src python3 -m synth_local_runtime --stop",
     "legacy-dogfood:models": "PYTHONPATH=services/local-runtime/src python3 scripts/dogfood_models.py",
+    "workshop": "cargo run --manifest-path apps/synth_desktop/src-tauri/Cargo.toml --bin workshop --",
     "mcp:visuals": "cargo run --manifest-path apps/synth_desktop/src-tauri/Cargo.toml --bin synth-visuals-mcp",
     "laguna:setup": "./scripts/laguna/setup.sh",
     "laguna:serve": "./scripts/laguna/serve.sh",

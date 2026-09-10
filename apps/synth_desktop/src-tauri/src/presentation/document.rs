@@ -4,7 +4,7 @@
 //! A trace is an immutable sealed archive, so its pane's identity is its
 //! digest. A document is a mutable place on disk, so its pane's identity is its
 //! **canonical path**. That divergence is the point of this module existing
-//! beside [`super::trace`] rather than as a parameterization of it: the host
+//! beside the trace presentation functions rather than parameterizing them: the host
 //! vocabulary — presentability, deterministic identity, a declared binding, one
 //! show event — held without change, while everything domain-shaped underneath
 //! it moved.
@@ -40,14 +40,8 @@ pub const DOCUMENT_PROJECTION_SCHEMA: &str = documents::DOCUMENT_SCHEMA;
 /// session roots on every call rather than trusting the declaration. A binding
 /// is what the pane is *allowed to ask for*, never what it is handed.
 ///
-/// **Not yet admitted.** The binding vocabulary is shared by two readers, and
-/// `visuals/tests/binding_envelope_contract.test.mjs` enforces that they agree:
-/// the kind must be added to `visuals::models::VISUAL_BINDING_KINDS`,
-/// `visuals/runtime/types.ts`'s `VisualBindingKind`, and `visuals/runtime/
-/// bind.ts` in one change, or a visual persists that the renderer cannot read.
-/// Until that lands, [`ensure_document_viewer`] fails at create with
-/// `unsupported visual binding kind: workspace_file` — deliberately, rather
-/// than smuggling the path through `metadata` where nothing validates it.
+/// Both binding vocabularies admit this kind. Generic template loaders refuse
+/// it: only DocumentPane reads its bytes through session-scoped host commands.
 pub const WORKSPACE_FILE_BINDING_KIND: &str = "workspace_file";
 
 /// The binding input name. One input, so the pane cannot silently address a
