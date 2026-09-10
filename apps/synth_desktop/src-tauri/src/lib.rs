@@ -5363,7 +5363,7 @@ async fn codex_approval_resolve(
 ) -> Result<(), AppError> {
     if approvals.is_pending(&request.approval_id).await {
         let decision = approvals
-            .decision_from_shell(&request.approval_id, &request.decision)
+            .decision_from_view(&request.approval_id, &request.decision, request.approval_digest.as_deref())
             .await
             .map_err(AppError::from)?;
         approvals

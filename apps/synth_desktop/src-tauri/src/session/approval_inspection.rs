@@ -24,6 +24,36 @@ fn preparation_digest(kind: &ApprovalKind) -> Option<&str> {
 }
 
 impl ApprovalBroker {
+    /// Resolve only the proposal displayed by the caller. A rejection needs
+    /// no digest, so a stale/incomplete card can always be dismissed.
+    pub(crate) async fn decision_from_view(
+        &self,
+        id: &str,
+        requested: &str,
+        viewed_digest: Option<&str>,
+    ) -> Result<ApprovalDecision> {
+        let kind = self
+            .pending_kind(id)
+            .await
+            .ok_or_else(|| anyhow!("approval is no longer pending: {id}"))?;
+        if requested != "reject" {
+            match (preparation_digest(&kind), viewed_digest) {
+                (Some(actual), Some(viewed)) if actual == viewed => {}
+                (Some(_), None) => {
+                    return Err(anyhow!(
+                        "paid-compute approval requires the active proposal digest"
+                    ))
+                }
+                (Some(_), Some(_)) => return Err(anyhow!("approval digest mismatch")),
+                (None, Some(_)) => {
+                    return Err(anyhow!("approval is not bound to a proposal digest"))
+                }
+                (None, None) => {}
+            }
+        }
+        self.decision_from_shell(id, requested).await
+    }
+
     pub(crate) async fn pending_snapshot(&self) -> Vec<PendingApprovalView> {
         let entries = self
             .pending

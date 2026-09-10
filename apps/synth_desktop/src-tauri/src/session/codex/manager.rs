@@ -1454,7 +1454,7 @@ impl CodexManager {
     ) -> Result<()> {
         let decision = self
             .approvals
-            .decision_from_shell(&request.approval_id, &request.decision)
+            .decision_from_view(&request.approval_id, &request.decision, request.approval_digest.as_deref())
             .await?;
         self.approvals
             .resolve(&app, &request.session_id, &request.approval_id, decision)

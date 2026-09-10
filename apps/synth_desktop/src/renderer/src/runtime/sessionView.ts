@@ -1751,6 +1751,7 @@ export function eventsToLocalActivity(
 			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "container_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "visual_template_persist" || approvalKind === "computer_use"
 				? approvalKind : "permission",
 			approvalPayload: event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? {
+				approvalDigest: typeof payload.approvalDigest === "string" ? payload.approvalDigest : typeof payload.preparationDigest === "string" ? payload.preparationDigest : undefined,
 				operation: typeof payload.operation === "string" ? payload.operation : undefined,
 				parameters: payload.parameters && typeof payload.parameters === "object" && !Array.isArray(payload.parameters) ? payload.parameters as Record<string, unknown> : undefined,
 				estimatedCostUsdMicros: typeof payload.estimatedCostUsdMicros === "number" ? payload.estimatedCostUsdMicros : undefined,

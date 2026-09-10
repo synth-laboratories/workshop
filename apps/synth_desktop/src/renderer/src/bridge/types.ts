@@ -525,7 +525,7 @@ export type CodexBridge = {
 	listThreadItems?(sessionId: string, threadId: string, cursor?: string, limit?: number): Promise<unknown>;
 	/** Mid-turn user input via Codex `turn/steer`. Optional on browser fixtures without a native runtime. */
 	steerTurn?(sessionId: string, text: string): Promise<void>;
-	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject" | "remember-locator" | "register-source"): Promise<void>;
+	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject" | "remember-locator" | "register-source", approvalDigest?: string): Promise<void>;
 	close(sessionId: string): Promise<void>;
 	onEvent(listener: (event: CodexEvent) => void): () => void;
 };

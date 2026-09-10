@@ -59343,6 +59343,16 @@
               },
               "decision": {
                 "type": "string"
+              },
+              "approvalDigest": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
               }
             },
             "required": [
