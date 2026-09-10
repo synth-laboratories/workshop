@@ -52,6 +52,7 @@ mod model_catalog;
 mod optimizers;
 mod platform;
 mod plugins;
+mod project_sources;
 pub mod presentation;
 pub mod recovery;
 mod reports;

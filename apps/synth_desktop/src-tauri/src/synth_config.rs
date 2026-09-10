@@ -7,6 +7,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[path = "synth_config/project_sources.rs"]
+mod project_sources;
+pub use project_sources::{
+    forget_project_source, merge_project_source, project_source_settings, ProjectSourceEntry,
+    ProjectSourceSettings,
+};
+
 const DEFAULT_PROFILE: &str = "prod";
 const DEFAULT_API_KEY_ENV: &str = "SYNTH_API_KEY";
 const DEFAULT_WORKER_KEY_ENV: &str = "SMR_WORKER_API_KEY";
