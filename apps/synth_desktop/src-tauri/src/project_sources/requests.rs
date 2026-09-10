@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-pub(super) static RESOLUTION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static RESOLUTION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub(super) async fn audit(
     db: &Arc<Database>,

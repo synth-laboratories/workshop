@@ -704,16 +704,14 @@ pub fn find_recipe(workspace: &Path, recipe_id: &str) -> Result<WorkspaceRecipe>
         })
 }
 
-/// Resolve a workspace recipe from every repository the conversation has
-/// explicitly approved. The working workspace remains first, followed by
-/// user-attached folders. Container declarations already use this authority;
-/// recipe discovery must not silently apply a narrower boundary.
+/// Resolve recipes only from executable project sources with recipe capability.
+/// Conversation file attachments do not grant execution authority.
 pub fn find_session_recipe(
-    db: &crate::storage::Database,
-    session_id: &str,
+    _db: &crate::storage::Database,
+    _session_id: &str,
     recipe_id: &str,
 ) -> Result<(PathBuf, WorkspaceRecipe)> {
-    let roots = session_search_roots(db, session_id)?;
+    let roots = crate::project_sources::discovery_roots(crate::project_sources::Capability::Recipes)?;
     let mut matches = Vec::new();
     for root in roots {
         for path in recipe_paths(&root)? {
@@ -729,11 +727,11 @@ pub fn find_session_recipe(
     }
     match matches.len() {
         0 => Err(anyhow!(
-            "workspace recipe `{recipe_id}` is not declared in any approved workspace or attached folder"
+            "workspace recipe `{recipe_id}` is not declared in any approved recipe source"
         )),
         1 => Ok(matches.remove(0)),
         _ => Err(anyhow!(
-            "workspace recipe `{recipe_id}` is declared in more than one approved workspace or attached folder"
+            "workspace recipe `{recipe_id}` is declared in more than one approved recipe source"
         )),
     }
 }
@@ -742,11 +740,11 @@ pub fn find_session_recipe(
 /// ids are retained here so start can reject the ambiguity instead of the
 /// catalog silently choosing one source.
 pub fn load_session_recipes(
-    db: &crate::storage::Database,
-    session_id: &str,
+    _db: &crate::storage::Database,
+    _session_id: &str,
 ) -> Result<Vec<WorkspaceRecipe>> {
     let mut recipes = Vec::new();
-    for root in session_search_roots(db, session_id)? {
+    for root in crate::project_sources::discovery_roots(crate::project_sources::Capability::Recipes)? {
         for path in recipe_paths(&root)? {
             if let Ok(recipe) = parse_recipe(&path) {
                 recipes.push(recipe);
@@ -973,10 +971,10 @@ pub fn resolve_container_spec(
 }
 
 pub fn session_search_roots(
-    db: &crate::storage::Database,
-    session_id: &str,
+    _db: &crate::storage::Database,
+    _session_id: &str,
 ) -> Result<Vec<PathBuf>> {
-    crate::workspace_scope::approved_search_roots(db, session_id)
+    crate::project_sources::discovery_roots(crate::project_sources::Capability::Containers)
 }
 
 pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
@@ -2182,7 +2180,7 @@ max_total_rollouts = 2
     }
 
     #[tokio::test]
-    async fn attached_repository_recipes_are_cataloged_and_resolved_for_execution() {
+    async fn attachments_require_separate_recipe_grants_for_catalog_and_execution() {
         let root = tempdir().unwrap();
         let primary = root.path().join("primary");
         let attached = root.path().join("attached");
@@ -2248,6 +2246,17 @@ max_total_rollouts = 1
         .await
         .unwrap();
 
+        assert!(load_session_recipes(storage.database(), "attached-session").unwrap().is_empty());
+        assert!(find_session_recipe(storage.database(), "attached-session", "eval.attached.v1").is_err());
+        let config = data.path().join("sources.toml");
+        crate::project_sources::test_grant(&config, &attached, true, false);
+        crate::project_sources::TEST_SOURCE_CONFIG.sync_scope(config.clone(), || {
+            assert!(load_session_recipes(storage.database(), "attached-session").unwrap().is_empty());
+            assert_eq!(session_search_roots(storage.database(), "attached-session").unwrap(), vec![attached.canonicalize().unwrap()]);
+        });
+        crate::project_sources::test_grant(&config, &attached, false, true);
+        crate::project_sources::test_grant(&config, &primary, false, true);
+        crate::project_sources::TEST_SOURCE_CONFIG.sync_scope(config.clone(), || {
         let catalog = load_session_recipes(storage.database(), "attached-session").unwrap();
         assert!(catalog.iter().any(|recipe| recipe.id == "eval.attached.v1"));
         let (source_root, recipe) =
@@ -2258,6 +2267,9 @@ max_total_rollouts = 1
         let error = find_session_recipe(storage.database(), "attached-session", "gepa.stale.v1")
             .unwrap_err();
         assert!(error.to_string().contains("exceeds product cap"));
+        crate::synth_config::forget_project_source_at(&config, attached.to_str().unwrap()).unwrap();
+        assert!(find_session_recipe(storage.database(), "attached-session", "eval.attached.v1").is_err());
+        });
     }
 
     #[test]

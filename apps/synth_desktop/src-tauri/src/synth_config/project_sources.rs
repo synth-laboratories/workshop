@@ -26,7 +26,7 @@ pub fn project_source_settings() -> Result<ProjectSourceSettings> {
     settings_at(&config_path())
 }
 
-fn settings_at(path: &Path) -> Result<ProjectSourceSettings> {
+pub(crate) fn settings_at(path: &Path) -> Result<ProjectSourceSettings> {
     Ok(ProjectSourceSettings {
         config_path: path.display().to_string(),
         entries: entries_from_document(&read_toml(path)?)?,
@@ -48,7 +48,7 @@ pub fn forget_project_source(path: &str) -> Result<ProjectSourceSettings> {
     forget_at(&config_path(), path)
 }
 
-fn forget_at(config: &Path, path: &str) -> Result<ProjectSourceSettings> {
+pub(crate) fn forget_at(config: &Path, path: &str) -> Result<ProjectSourceSettings> {
     // Do not canonicalize: a deleted/unmounted source must still be revocable.
     let path = path.trim();
     mutate_at(config, |entries| {
