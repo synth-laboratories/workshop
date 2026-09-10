@@ -155,6 +155,16 @@ fn validate_root(root: &Path, home: Option<&Path>) -> Result<()> {
 }
 
 pub fn resolve_roots(capability: Capability) -> Result<Vec<ResolvedRoot>> {
+    #[cfg(test)]
+    {
+        // Tests supply real, isolated config files. Never inherit operator grants
+        // or environment roots, and never replace the production root predicate.
+        let entries = TEST_SOURCE_CONFIG.try_with(|path| synth_config::project_source_settings_at(path))
+            .ok().transpose()?.map(|settings| settings.entries).unwrap_or_default();
+        resolve_entries(&entries, capability, &[])
+    }
+    #[cfg(not(test))]
+    {
     let settings = synth_config::project_source_settings()?;
     let containers = env::var_os("SYNTH_CONTAINER_SOURCE_ROOTS");
     let roots = match capability {
@@ -170,6 +180,17 @@ pub fn resolve_roots(capability: Capability) -> Result<Vec<ResolvedRoot>> {
         .filter(|path| !path.as_os_str().is_empty())
         .collect();
     resolve_entries(&settings.entries, capability, &environment)
+    }
+}
+
+#[cfg(test)]
+tokio::task_local! { pub(crate) static TEST_SOURCE_CONFIG: PathBuf; }
+
+#[cfg(test)]
+pub(crate) fn test_grant(config: &Path, root: &Path, containers: bool, recipes: bool) {
+    synth_config::begin_project_source_grant_at(config, ProjectSourceEntry {
+        path: root.display().to_string(), containers, recipes,
+    }).unwrap();
 }
 
 fn resolve_entries(

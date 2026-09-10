@@ -11,6 +11,8 @@ use std::{
 mod project_sources;
 #[cfg(test)]
 pub(crate) use project_sources::begin_project_source_grant_at;
+#[cfg(test)]
+pub(crate) use project_sources::{settings_at as project_source_settings_at, forget_at as forget_project_source_at};
 pub(crate) use project_sources::{begin_project_source_grant, ProjectSourceChange};
 pub use project_sources::{
     forget_project_source, merge_project_source, project_source_settings, ProjectSourceEntry,

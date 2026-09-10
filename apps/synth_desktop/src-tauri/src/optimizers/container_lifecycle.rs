@@ -226,6 +226,7 @@ pub fn resolve_declared_spec(
             "launch_declaration_missing: container `{container_id}` has no persisted declaration origin"
         )
     })?;
+    crate::project_sources::require_manifest(&stored.manifest_path, crate::project_sources::Capability::Containers)?;
     workspace_recipe::load_container_specs_from_manifest(&stored.manifest_path)?
         .into_iter()
         .find(|candidate| candidate.id == spec_id)
@@ -284,6 +285,7 @@ pub async fn ensure_from_session(
 }
 
 pub async fn ensure_spec(db: &Arc<Database>, spec: &ContainerSpec) -> Result<EnsuredContainer> {
+    require_source_grant(spec)?;
     let broker_secret = new_broker_secret();
     let (base_url, launch) = if let Some(url) = spec.url.as_deref() {
         let base = url.trim_end_matches('/').to_string();
@@ -292,7 +294,7 @@ pub async fn ensure_spec(db: &Arc<Database>, spec: &ContainerSpec) -> Result<Ens
         } else if healthy_now(&base, &spec.health, spec).await? {
             None
         } else {
-            Some(start_command(spec, Some(&broker_secret))?)
+            Some(start_with_source_grant(spec, Some(&broker_secret)).await?)
         };
         (base, launch)
     } else {
@@ -302,6 +304,10 @@ pub async fn ensure_spec(db: &Arc<Database>, spec: &ContainerSpec) -> Result<Ens
         );
     };
     wait_healthy(&base_url, &spec.health, spec).await?;
+    // Serialize the final check/registry commit with native grant revocation.
+    // Do not hold this lock during readiness: revocation must remain available.
+    let _resolution = crate::project_sources::requests::RESOLUTION.lock().await;
+    require_source_grant(spec)?;
     let launched = launch.is_some();
     let process = launch.as_ref().map(LaunchedCommand::receipt);
     let container_id = upsert_ready(db, spec, &base_url, process).await?;
@@ -329,6 +335,7 @@ pub async fn replace_declared(
     db: &Arc<Database>,
     spec: &ContainerSpec,
 ) -> Result<EnsuredContainer> {
+    require_source_grant(spec)?;
     let base_url = spec
         .url
         .as_deref()
@@ -337,8 +344,10 @@ pub async fn replace_declared(
         .map(|value| value.trim_end_matches('/').to_string())
         .ok_or_else(|| anyhow!("container `{}` must declare url", spec.id))?;
     let broker_secret = new_broker_secret();
-    let launch = start_command(spec, Some(&broker_secret))?;
+    let launch = start_with_source_grant(spec, Some(&broker_secret)).await?;
     wait_healthy(&base_url, &spec.health, spec).await?;
+    let _resolution = crate::project_sources::requests::RESOLUTION.lock().await;
+    require_source_grant(spec)?;
     let process = launch.receipt();
     let container_id = upsert_ready(db, spec, &base_url, Some(process)).await?;
     store_broker_secret(db, &container_id, &broker_secret).await?;
@@ -368,7 +377,18 @@ async fn store_broker_secret(db: &Arc<Database>, container_id: &str, secret: &st
     .await
 }
 
+fn require_source_grant(spec: &ContainerSpec) -> Result<()> {
+    crate::project_sources::require_manifest(&spec.origin.manifest_path, crate::project_sources::Capability::Containers)?;
+    Ok(())
+}
+
+async fn start_with_source_grant(spec: &ContainerSpec, broker_secret: Option<&str>) -> Result<LaunchedCommand> {
+    let _resolution = crate::project_sources::requests::RESOLUTION.lock().await;
+    start_command(spec, broker_secret)
+}
+
 fn start_command(spec: &ContainerSpec, broker_secret: Option<&str>) -> Result<LaunchedCommand> {
+    require_source_grant(spec)?;
     let source_root = spec
         .origin
         .source_root
@@ -1260,6 +1280,9 @@ include = ["launch-a.sh", "launch-b.sh"]
         let db = Arc::new(Database::open(dir.path().join("state.sqlite3")).unwrap());
         register_declared(&db, &root, &initial, "unhealthy");
 
+        let config = dir.path().join("sources.toml");
+        crate::project_sources::test_grant(&config, &root, true, false);
+        crate::project_sources::TEST_SOURCE_CONFIG.sync_scope(config, || {
         let validated = reconcile_declaration(&db, "session", "ctr_fixture").unwrap();
         assert_eq!(
             approval_declaration_digest(&validated).unwrap(),
@@ -1276,6 +1299,7 @@ include = ["launch-a.sh", "launch-b.sh"]
             approved_digest,
             "the complete validated declaration, not only its optional source digest, is approval-bound"
         );
+        });
     }
 
     #[tokio::test]
@@ -1357,8 +1381,10 @@ include = ["launch-a.sh", "launch-b.sh"]
 
         let mut continuation =
             ContainerReplacementContinuation::new(Ok("approval-once".into()), digest);
-        let outcome = continuation
-            .consume(&db, "session", "ctr_fixture", &spec)
+        let config = dir.path().join("sources.toml");
+        crate::project_sources::test_grant(&config, &root, true, false);
+        let outcome = crate::project_sources::TEST_SOURCE_CONFIG.scope(config, continuation
+            .consume(&db, "session", "ctr_fixture", &spec))
             .await
             .unwrap();
         let marker = root.join("launch-marker");
@@ -1424,7 +1450,9 @@ include = ["launch-a.sh", "launch-b.sh"]
         spec.launch.readiness_timeout_seconds = 4;
         let db = Arc::new(Database::open(dir.path().join("state.sqlite3")).unwrap());
 
-        let ensured = ensure_spec(&db, &spec).await.unwrap();
+        let config = dir.path().join("sources.toml");
+        crate::project_sources::test_grant(&config, &root, true, false);
+        let ensured = crate::project_sources::TEST_SOURCE_CONFIG.scope(config, ensure_spec(&db, &spec)).await.unwrap();
         assert!(
             marker.exists(),
             "old health must not let ensure return before the declared replacement is live"
@@ -1451,7 +1479,9 @@ include = ["launch-a.sh", "launch-b.sh"]
         spec.launch.shutdown_grace_seconds = 1;
         let db = Arc::new(Database::open(dir.path().join("state.sqlite3")).unwrap());
 
-        let error = ensure_spec(&db, &spec).await.unwrap_err().to_string();
+        let config = dir.path().join("sources.toml");
+        crate::project_sources::test_grant(&config, &root, true, false);
+        let error = crate::project_sources::TEST_SOURCE_CONFIG.scope(config, ensure_spec(&db, &spec)).await.unwrap_err().to_string();
         assert!(error.contains("readiness_timeout"), "{error}");
         tokio::time::sleep(Duration::from_millis(1_250)).await;
         assert!(
@@ -1470,12 +1500,14 @@ include = ["launch-a.sh", "launch-b.sh"]
         write_manifest(&root, "launch-a.sh", 31999, "fixture-target");
         let spec = workspace_recipe::find_container_spec(&root, "fixture-container").unwrap();
 
-        let cancelled = tokio::time::timeout(Duration::from_millis(150), async {
+        let config = dir.path().join("sources.toml");
+        crate::project_sources::test_grant(&config, &root, true, false);
+        let cancelled = crate::project_sources::TEST_SOURCE_CONFIG.scope(config, tokio::time::timeout(Duration::from_millis(150), async {
             let launch = start_command(&spec, None)?;
             wait_healthy("http://127.0.0.1:31999", "/health", &spec).await?;
             launch.commit();
             Ok::<_, anyhow::Error>(())
-        })
+        }))
         .await;
         assert!(
             cancelled.is_err(),
@@ -1486,5 +1518,46 @@ include = ["launch-a.sh", "launch-b.sh"]
             !root.join("launch-marker").exists(),
             "cancelling ensure must reap the launcher and its delayed children"
         );
+    }
+
+    #[tokio::test]
+    async fn revoked_source_cannot_launch_replace_or_register_ready() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("source");
+        fs::create_dir_all(&root).unwrap();
+        write_launcher(&root.join("launch-a.sh"));
+        write_launcher(&root.join("launch-b.sh"));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let live = Arc::new(AtomicBool::new(true));
+        let server = serve_health(listener, "fixture-target".into(), live.clone());
+        write_manifest(&root, "launch-a.sh", port, "fixture-target");
+        let mut spec = workspace_recipe::find_container_spec(&root, "fixture-container").unwrap();
+        let db = Arc::new(Database::open(dir.path().join("state.sqlite3")).unwrap());
+        let config = dir.path().join("sources.toml");
+        crate::project_sources::test_grant(&config, &root, false, true);
+        crate::project_sources::TEST_SOURCE_CONFIG.scope(config.clone(), async {
+            assert!(ensure_spec(&db, &spec).await.unwrap_err().to_string().contains("launch_source_root_not_approved"));
+            assert!(replace_declared(&db, &spec).await.unwrap_err().to_string().contains("launch_source_root_not_approved"));
+            assert!(!root.join("launch-marker").exists());
+            crate::project_sources::test_grant(&config, &root, true, false);
+            // An externally served endpoint still requires authority at final
+            // registration. Revoke while ensure waits for the commit lock.
+            spec.command.clear();
+            let guard = crate::project_sources::requests::RESOLUTION.lock().await;
+            let ensure = ensure_spec(&db, &spec);
+            let revoke = async {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                crate::synth_config::forget_project_source_at(&config, root.to_str().unwrap()).unwrap();
+                drop(guard);
+            };
+            let (result, ()) = tokio::join!(ensure, revoke);
+            assert!(result.unwrap_err().to_string().contains("launch_source_root_not_approved"));
+            let count: i64 = db.with_conn(|conn| Ok(conn.query_row("SELECT count(*) FROM containers", [], |row| row.get(0))?)).unwrap();
+            assert_eq!(count, 0, "revocation must prevent a ready registry record");
+            assert!(start_command(&spec, None).err().unwrap().to_string().contains("launch_source_root_not_approved"));
+        }).await;
+        live.store(false, Ordering::Release);
+        server.join().unwrap();
     }
 }
