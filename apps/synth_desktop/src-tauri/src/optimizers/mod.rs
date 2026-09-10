@@ -37,6 +37,8 @@ mod normalize;
 mod recipes;
 mod results;
 mod service;
+mod snapshot;
+pub use snapshot::{OptimizerSnapshotImportRequest, OptimizerSnapshotReceipt};
 mod sft_client;
 mod sft_recipes;
 mod sft_result;

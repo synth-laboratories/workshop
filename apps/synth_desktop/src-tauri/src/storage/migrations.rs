@@ -79,6 +79,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_74,
     MIGRATION_75,
     MIGRATION_76,
+    MIGRATION_77,
 ];
 
 const MIGRATION_70: &str = r#"
@@ -246,6 +247,7 @@ CREATE TABLE IF NOT EXISTS optimizer_evidence_amendments (
 "#;
 
 const REQUIRED_TABLES: &[(&str, &str)] = &[
+    ("optimizer_snapshots", MIGRATION_77),
     ("optimizer_terminal_manifests", MIGRATION_23),
     ("secret_refs", MIGRATION_25),
     ("credential_locators", CREDENTIAL_LOCATORS_TABLE_DDL),
@@ -5769,6 +5771,24 @@ CREATE TABLE visual_corpus_details (
  FOREIGN KEY(visual_id,visual_revision,corpus_id,corpus_revision,row_id)
  REFERENCES visual_corpus_rows(visual_id,visual_revision,corpus_id,corpus_revision,row_id)
 );
+"#;
+
+const MIGRATION_77: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    content_digest TEXT NOT NULL UNIQUE,
+    source_instance_id TEXT NOT NULL,
+    source_run_id TEXT NOT NULL,
+    terminal_status TEXT,
+    terminal_cursor INTEGER NOT NULL,
+    sealed INTEGER NOT NULL CHECK(sealed IN (0,1)),
+    captured_at TEXT NOT NULL,
+    imported_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS optimizer_snapshots_source_run
+ON optimizer_snapshots(source_instance_id, source_run_id, captured_at DESC);
 "#;
 
 const MIGRATION_76: &str = r#"

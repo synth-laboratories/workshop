@@ -4003,6 +4003,18 @@ pub(crate) async fn dispatch_optimizer(
 ) -> Result<Value> {
     let optimizers = core.optimizers();
     match (method, path) {
+        ("POST", "/v1/optimizers/snapshots/import") => {
+            let receipt = optimizers.import_snapshot(serde_json::from_value(body)?).await?;
+            Ok(json!({"receipt": receipt}))
+        }
+        ("GET", path) if path.starts_with("/v1/optimizers/snapshots/") => {
+            optimizers.get_snapshot(path.trim_start_matches("/v1/optimizers/snapshots/").to_owned()).await
+        }
+        ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/snapshot") => {
+            let id = path.trim_start_matches("/v1/optimizers/runs/").trim_end_matches("/snapshot");
+            let receipt = optimizers.export_snapshot(id.to_owned()).await?;
+            Ok(json!({"receipt": receipt}))
+        }
         ("GET", "/v1/optimizers/algorithms") => {
             Ok(json!({ "algorithms": optimizers.list_algorithms() }))
         }

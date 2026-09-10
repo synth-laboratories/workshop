@@ -1837,6 +1837,59 @@ impl OptimizerService {
         .await
     }
 
+    pub async fn export_snapshot(
+        &self,
+        optimizer_run_id: String,
+    ) -> Result<super::OptimizerSnapshotReceipt> {
+        let db = self.db.clone();
+        let content = self.content().clone();
+        let source_instance_id = crate::instance::name().unwrap_or_else(|| "canonical".into());
+        let source_bundle_id = crate::instance::bundle_id().unwrap_or_else(|| "unknown".into());
+        tokio::task::spawn_blocking(move || {
+            // One WAL snapshot owns the run, result, manifest and event cursor.
+            // Independent reads can straddle a concurrent terminal append.
+            let snapshot = db.read_transaction(|conn| {
+                let mut run = load_run(conn, &optimizer_run_id)?;
+                let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
+                    .context("optimizer run has no saved kernel projection")?;
+                if OptimizerRunStatus::str_is_terminal(&run.status) {
+                    rewrite_terminal_summary_progress(&mut run, &state);
+                }
+                let manifest = terminal::load(conn, &optimizer_run_id)?;
+                let settled = super::kernel::settle_result(&state).map_err(|error| anyhow!("{error}"))?;
+                let result = results::from_kernel(&run, &state, settled, manifest.as_ref())?;
+                let events = load_events_upto(conn, &optimizer_run_id, run.cursor_seq)?;
+                Ok(super::snapshot::OptimizerRunSnapshot {
+                    schema_version: super::snapshot::OPTIMIZER_SNAPSHOT_SCHEMA.into(),
+                    source_instance_id, source_bundle_id, source_run_id: optimizer_run_id,
+                    captured_at: Utc::now().to_rfc3339(), terminal_cursor: run.cursor_seq,
+                    sealed: manifest.is_some(), run, result, terminal_manifest: manifest, events,
+                })
+            })?;
+            super::snapshot::persist(db, &content, &snapshot)
+        }).await.context("optimizer snapshot export worker failed")?
+    }
+
+    pub async fn import_snapshot(
+        &self,
+        request: super::OptimizerSnapshotImportRequest,
+    ) -> Result<super::OptimizerSnapshotReceipt> {
+        let db = self.db.clone();
+        let content = self.content().clone();
+        tokio::task::spawn_blocking(move || super::snapshot::import_path(db, &content, request))
+            .await.context("optimizer snapshot import worker failed")?
+    }
+
+    pub async fn get_snapshot(&self, snapshot_id: String) -> Result<Value> {
+        let db = self.db.clone();
+        let content = self.content().clone();
+        tokio::task::spawn_blocking(move || {
+            let (snapshot, receipt) = super::snapshot::load(db, &content, &snapshot_id)?;
+            let evidence_summary = super::snapshot::evidence_summary(&snapshot);
+            Ok(json!({"snapshot": snapshot, "receipt": receipt, "evidenceSummary": evidence_summary}))
+        }).await.context("optimizer snapshot read worker failed")?
+    }
+
     pub async fn create(
         &self,
         request: OptimizerCreateRequest,
@@ -8270,6 +8323,31 @@ pub(in crate::optimizers) mod tests {
         assert_eq!(result["trials"]["succeeded"], json!(1));
         assert_eq!(result["finalCursor"], json!(4));
         assert!(result.get("selectedCandidate").is_none());
+    }
+
+    #[tokio::test]
+    async fn optimizer_snapshot_roundtrip_preserves_kernel_result_across_instances() {
+        let (svc, _source_dir, _) = service().await;
+        let run = eval_run(&svc, "opt_snapshot_result", "chat_snapshot").await;
+        svc.append_event_payloads(run.id.clone(), vec![
+            draft("optimizer.run.started"),
+            draft("eval.run.planned").snapshot(Map::from_iter([("planned_trials".into(), json!(1))])),
+            measured_eval_trial("t1", 1.0),
+            draft("optimizer.run.completed"),
+        ]).await.unwrap();
+        let expected = svc.get_result(run.id.clone()).await.unwrap();
+        let receipt = svc.export_snapshot(run.id.clone()).await.unwrap();
+        let target_dir = tempdir().unwrap();
+        let target = reopen(&target_dir).await;
+        let imported = target.import_snapshot(super::super::OptimizerSnapshotImportRequest {
+            path: receipt.artifact_path, expected_digest: Some(receipt.content_digest.clone()),
+        }).await.unwrap();
+        let loaded = target.get_snapshot(imported.snapshot_id).await.unwrap();
+        assert_eq!(loaded["snapshot"]["result"], expected);
+        assert_eq!(loaded["snapshot"]["events"].as_array().unwrap().len(), 4);
+        assert_eq!(loaded["receipt"]["terminalStatus"], "completed");
+        assert_eq!(loaded["receipt"]["contentDigest"], receipt.content_digest);
+        assert!(target.get(run.id).await.is_err(), "imported evidence must not become an executable run");
     }
 
     /// GEPA, eval, and SFT settle into their own typed results. A shared
