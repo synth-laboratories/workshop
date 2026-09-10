@@ -66333,6 +66333,149 @@
       "_meta": {
         "workshop/operationId": "desktop.visuals_template_validate.v1"
       }
+    },
+    {
+      "name": "approvals_pending",
+      "description": "Workshop approvals pending. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/T1"
+            }
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "approvalId": {
+                "type": "string"
+              },
+              "sessionId": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "requiresHuman": {
+                "type": "boolean"
+              },
+              "preparationDigest": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "approvalId",
+              "sessionId",
+              "kind",
+              "requiresHuman",
+              "preparationDigest"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.approvals_pending.v1"
+      }
+    },
+    {
+      "name": "approvals_approve_digest",
+      "description": "Workshop approvals approve digest. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "executionSpecDigest": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "executionSpecDigest"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "approvalId": {
+                "type": "string"
+              },
+              "alreadySettled": {
+                "type": "boolean"
+              },
+              "executionSpecDigest": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "approvalId",
+              "alreadySettled",
+              "executionSpecDigest"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.approvals_approve_digest.v1"
+      }
     }
   ]
 }

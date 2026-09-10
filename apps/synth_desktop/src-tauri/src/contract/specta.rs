@@ -453,6 +453,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::visuals::user_templates::visuals_template_save,
             crate::visuals::user_templates::visuals_template_create,
             crate::visuals::user_templates::visuals_template_validate,
+            crate::session::approval::inspection::approvals_pending,
+            crate::session::approval::inspection::approvals_approve_digest,
         ])
 }
 
@@ -612,8 +614,9 @@ mod tests {
         // 348 → 351: consent, recent telemetry, and flush commands.
         // 351 → 354: scoped workspace read/list and document presentation.
         // 354 → 358: user-template source, approved save/fork and validation.
+        // 358 → 360: approval inbox and human-only digest resolution.
         assert_eq!(
-            exported, 358,
+            exported, 360,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

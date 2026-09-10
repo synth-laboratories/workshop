@@ -21,6 +21,7 @@ pub fn human_surface(name: &str) -> Option<&'static str> {
         "context_mcp_group_update"
         | "desktop_state_commit"
         | "codex_approval_resolve"
+        | "approvals_approve_digest"
         | "workspace_scope_approve_request"
         | "workspace_scope_deny_request"
         | "desktop_permissions_update"
@@ -62,6 +63,8 @@ mod tests {
     fn evidence_and_consent_cannot_be_invoked_as_agent_actions() {
         assert!(super::internal("visuals_observation_report"));
         assert!(super::human_surface("codex_approval_resolve").is_some());
+        assert!(super::human_surface("approvals_approve_digest").is_some());
+        assert!(super::human_surface("approvals_pending").is_none());
         assert!(super::human_surface("secrets_grant_use").is_some());
         assert!(super::human_surface("human_annotation_submit").is_some());
         assert!(!super::internal("visuals_render"));

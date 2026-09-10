@@ -361,6 +361,8 @@ pub const NAMES: &[&str] = &[
     "visuals_template_save",
     "visuals_template_create",
     "visuals_template_validate",
+    "approvals_pending",
+    "approvals_approve_digest",
 ];
 
 type Reply<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send + 'a>>;
@@ -724,6 +726,8 @@ pub fn invoke<'a>(app: &'a tauri::AppHandle, name: &str, args: Value) -> Reply<'
         "visuals_template_save" => operation_355(app, args),
         "visuals_template_create" => operation_356(app, args),
         "visuals_template_validate" => operation_357(app, args),
+        "approvals_pending" => operation_358(app, args),
+        "approvals_approve_digest" => operation_359(app, args),
         _ => Box::pin(async { anyhow::bail!("unknown desktop operation") }),
     }
 }
@@ -4662,6 +4666,28 @@ fn operation_357(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
             let allowed: &[&str] = &["templateId"];
             anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
             let result = crate::visuals::user_templates::visuals_template_validate(serde_json::from_value(args.get("templateId").cloned().unwrap_or(Value::Null)).context("invalid templateId")?).map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_358(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/session/approval_inspection.rs
+            let allowed: &[&str] = &[];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::session::approval::inspection::approvals_pending(app.try_state().context("runtime service is unavailable")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_359(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/session/approval_inspection.rs
+            let allowed: &[&str] = &["request"];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::session::approval::inspection::approvals_approve_digest(app.clone(), app.try_state().context("runtime service is unavailable")?, serde_json::from_value(args.get("request").cloned().unwrap_or(Value::Null)).context("invalid request")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
             Ok(json!({"result": result}))
     })
 }
