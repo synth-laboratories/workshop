@@ -2,7 +2,7 @@ name: Desktop package
 
 on:
   push:
-    branches: [codex/v010-public-source]
+    branches: [codex/v010-public-source, codex/consolidate-public-v0101-20260910]
   workflow_dispatch:
 
 permissions:

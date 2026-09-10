@@ -258,6 +258,7 @@ pub fn projection_payload(conn: &Connection, kind: &str, digest: &str) -> Result
                 "kind": kind,
                 "digest": row.digest,
                 "payload": row.summary,
+                "reviews": list_reviews_for_head(conn, digest)?,
             }))
         }
         "verifier_result_v2" => {
@@ -1402,6 +1403,28 @@ pub fn list_findings_for_trace(conn: &Connection, trace_digest: &str) -> Result<
     Ok(rows)
 }
 
+fn list_reviews_for_head(conn: &Connection, digest: &str) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT review_id, finding_id, decision, reviewer, rationale, created_at
+         FROM annotation_reviews
+         WHERE evidence_head_digest = ?1
+         ORDER BY rowid ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![digest], |row| {
+            Ok(json!({
+                "reviewId": row.get::<_, String>(0)?,
+                "findingId": row.get::<_, Option<String>>(1)?,
+                "decision": row.get::<_, String>(2)?,
+                "reviewer": row.get::<_, Option<String>>(3)?,
+                "rationale": row.get::<_, Option<String>>(4)?,
+                "createdAt": row.get::<_, String>(5)?,
+            }))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 pub fn record_local_review(
     conn: &Connection,
     finding_id: &str,
@@ -1410,7 +1433,7 @@ pub fn record_local_review(
     reviewer: &str,
     rationale: &str,
 ) -> Result<String> {
-    let review_id = format!("arev_{}", chrono::Utc::now().timestamp_millis());
+    let review_id = format!("arev_{}", uuid::Uuid::new_v4().simple());
     conn.execute(
         "INSERT INTO annotation_reviews(
             review_id, finding_id, evidence_head_digest, decision, reviewer, rationale, created_at
