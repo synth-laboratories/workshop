@@ -1,5 +1,6 @@
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { readReportDraft, writeReportDraft, type ReportDraft } from "../runtime/reportDrafts";
 import { bridges } from "../runtime/desktopBridge";
 import TraceInspector from "@synth/visual-templates/analysis/trace.rollout_inspector.v1/shell";
 import type {
@@ -238,21 +239,31 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 	const [audienceStatus, setAudienceStatus] = useState<string | null>(null);
 	const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
 
-	async function load(reportId?: string | null) {
+	const loadGeneration = useRef(0);
+	const activeDraft = useRef({ reportId: selectedId, dirty: false });
+	const loadInFlight = useRef(false);
+	const saveInFlight = useRef(false);
+
+	async function load(reportId?: string | null, background = false) {
+		if (background && (loadInFlight.current || saveInFlight.current)) return;
+		const generation = ++loadGeneration.current;
+		loadInFlight.current = true;
 		const bridge = bridges.reports;
 		if (!bridge) {
 			setError("Report registry requires Synth Desktop");
 			setReports([]);
+			setLoading(false);
+			loadInFlight.current = false;
 			return;
 		}
 		setLoading(true);
 		try {
 			const rows = await bridge.list({ search: search.trim() || undefined, includeArchived: true });
 			const sealedRows = await bridge.listSeals();
+			if (generation !== loadGeneration.current) return;
 			setReports(rows);
 			setSeals(sealedRows);
-			const nextId = reportId ?? selectedId ?? rows[0]?.id ?? null;
-			setSelectedId(nextId);
+			const nextId = reportId ?? (background ? activeDraft.current.reportId : selectedId) ?? rows[0]?.id ?? null;
 			if (nextId) {
 				const [nextRevision, nextExperiments, nextLog, nextVisibilityRequests, nextValidation] = await Promise.all([
 					bridge.getRevision(nextId),
@@ -261,24 +272,31 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 					bridge.listVisibilityRequests(nextId),
 					bridge.validate(nextId)
 				]);
-				setRevision(nextRevision);
+				if (generation !== loadGeneration.current) return;
+				// A refresh must not replace edits or their optimistic-concurrency baseline.
+				if (background && (activeDraft.current.reportId !== nextId || activeDraft.current.dirty)) return;
+				setSelectedId(nextId);
+				const recovered = readReportDraft(nextId);
+				setRevision(recovered?.base ?? nextRevision);
 				setExperiments(nextExperiments);
 				setLog(nextLog);
 				setVisibilityRequests(nextVisibilityRequests);
 				setValidation(nextValidation);
-				setDraftTitle(nextRevision.title);
+				setDraftTitle(recovered?.title ?? nextRevision.title);
 				setPublicSlug(reportSlug(nextRevision.title));
 				setPromotion(null);
-				setDraftSummary(nextRevision.summary ?? "");
+				setDraftSummary(recovered?.summary ?? nextRevision.summary ?? "");
 				const findings = nextRevision.blocks.find((block) => block.anchor === "findings");
 				const methods = nextRevision.blocks.find((block) => block.anchor === "methods");
-				setDraftFindings(typeof findings?.payload?.markdown === "string" ? findings.payload.markdown : "");
-				setDraftMethods(typeof methods?.payload?.markdown === "string" ? methods.payload.markdown : "");
+				setDraftFindings(recovered?.findings ?? (typeof findings?.payload?.markdown === "string" ? findings.payload.markdown : ""));
+				setDraftMethods(recovered?.methods ?? (typeof methods?.payload?.markdown === "string" ? methods.payload.markdown : ""));
 				const nextComments = await bridge.listComments(nextId, nextRevision.revision);
+				if (generation !== loadGeneration.current) return;
 				setComments(nextComments);
 				const latestSeal = sealedRows.find((seal) => seal.reportId === nextId);
 				if (latestSeal) {
 					const upload = await bridge.uploadStatus(latestSeal.receiptDigest);
+					if (generation !== loadGeneration.current) return;
 					setShareUpload(upload);
 				}
 			} else {
@@ -289,19 +307,23 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			setError(null);
 			setSaveStatus("saved");
 		} catch (reason) {
+			if (generation !== loadGeneration.current) return;
 			setError(reportSurfaceError(reason));
 			setSaveStatus("error");
 		} finally {
-			setLoading(false);
+			if (generation === loadGeneration.current) {
+				loadInFlight.current = false;
+				setLoading(false);
+			}
 		}
 	}
 
 	useEffect(() => {
 		void load(initialReportId);
 		const unlisten = bridges.reports?.onEvent?.((event) => {
-			if (event.kind.startsWith("report.")) void load();
+			if (event.kind.startsWith("report.")) void load(null, true);
 		});
-		return () => unlisten?.();
+		return () => { ++loadGeneration.current; loadInFlight.current = false; unlisten?.(); };
 	}, [initialReportId, search]);
 
 	const filtered = useMemo(() => {
@@ -314,7 +336,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 		});
 	}, [reports, tab]);
 
-	const selected = filtered.find((report) => report.id === selectedId) ?? filtered[0] ?? null;
+	const selected = reports.find((report) => report.id === selectedId) ?? null;
 	const selectedExperiment =
 		experiments.find((row) => row.experimentId === selectedExperimentId) ?? experiments[0] ?? null;
 	const selectedLog = log.find((row) => row.entryId === selectedLogId) ?? log[0] ?? null;
@@ -328,6 +350,16 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 		)
 	);
 
+	activeDraft.current = { reportId: selectedId, dirty };
+
+	function editDraft(field: "title" | "summary" | "findings" | "methods", value: string) {
+		if (!revision || !selectedId) return;
+		const next: ReportDraft = { base: revision, title: draftTitle, summary: draftSummary, findings: draftFindings, methods: draftMethods, [field]: value };
+		writeReportDraft(selectedId, next);
+		activeDraft.current.dirty = true;
+		({ title: setDraftTitle, summary: setDraftSummary, findings: setDraftFindings, methods: setDraftMethods })[field](value);
+	}
+
 	async function createReport() {
 		try {
 			const created = await bridges.reports!.create({ title: "Untitled report" });
@@ -340,7 +372,8 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 	}
 
 	async function saveDraft() {
-		if (!selected || !revision) return;
+		if (!selected || !revision || saveInFlight.current) return null;
+		saveInFlight.current = true;
 		const blocks: ReportBlock[] = revision.blocks.map((block) => {
 			if (block.anchor === "findings") {
 				return { ...block, payload: { ...block.payload, markdown: draftFindings } };
@@ -352,24 +385,33 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 		});
 		setSaveStatus("saving");
 		try {
-			await bridges.reports!.update(selected.id, {
+			const saved = await bridges.reports!.update(selected.id, {
 				expectedRevision: revision.revision,
 				title: draftTitle,
 				summary: draftSummary,
 				blocks
 			});
-			await load(selected.id);
+			const pending = readReportDraft(selected.id);
+			const hasNewEdits = pending && (pending.title !== draftTitle || pending.summary !== draftSummary || pending.findings !== draftFindings || pending.methods !== draftMethods);
+			writeReportDraft(selected.id, hasNewEdits ? { ...pending, base: { ...revision, revision: saved.currentRevision, title: draftTitle, summary: draftSummary, blocks } } : null);
+			if (activeDraft.current.reportId === saved.id) await load(saved.id);
+			return saved;
 		} catch (reason) {
 			setSaveStatus("error");
 			setError(reportSurfaceError(reason));
+			return null;
+		} finally {
+			saveInFlight.current = false;
 		}
 	}
 
 	async function sealReport() {
 		if (!selected || !revision) return;
 		try {
-			await saveDraft();
-			const seal = await bridges.reports!.seal(selected.id, revision.revision);
+			const saved = await saveDraft();
+			if (!saved) return;
+			if (readReportDraft(saved.id)) throw new Error("New edits arrived during saving. Save them before sealing.");
+			const seal = await bridges.reports!.seal(saved.id, saved.currentRevision);
 			setSealedBundle(await bridges.reports!.getSeal(seal.receiptDigest));
 			setCompareBundle(null);
 			await load(selected.id);
@@ -759,7 +801,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 								<input
 									className="reports-title-input"
 									value={draftTitle}
-									onChange={(event) => setDraftTitle(event.target.value)}
+									onChange={(event) => editDraft("title", event.target.value)}
 									aria-label="Report title"
 									disabled={Boolean(sealedBundle)}
 								/>
@@ -932,7 +974,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 							Summary
 							<textarea
 								value={draftSummary}
-								onChange={(event) => setDraftSummary(event.target.value)}
+								onChange={(event) => editDraft("summary", event.target.value)}
 								disabled={Boolean(sealedBundle)}
 							/>
 						</label>
@@ -941,7 +983,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 							<textarea
 								data-testid="reports-findings"
 								value={draftFindings}
-								onChange={(event) => setDraftFindings(event.target.value)}
+								onChange={(event) => editDraft("findings", event.target.value)}
 								disabled={Boolean(sealedBundle)}
 							/>
 						</section>
@@ -950,7 +992,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 							<textarea
 								data-testid="reports-methods"
 								value={draftMethods}
-								onChange={(event) => setDraftMethods(event.target.value)}
+								onChange={(event) => editDraft("methods", event.target.value)}
 								disabled={Boolean(sealedBundle)}
 							/>
 						</section>
