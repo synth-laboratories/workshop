@@ -66486,6 +66486,657 @@
       "_meta": {
         "workshop/operationId": "desktop.approvals_approve_digest.v1"
       }
+    },
+    {
+      "name": "project_sources_get",
+      "description": "Workshop project sources get. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "configPath": {
+                "type": "string"
+              },
+              "sources": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T2"
+                }
+              },
+              "implicitRoots": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T2"
+                }
+              }
+            },
+            "required": [
+              "configPath",
+              "sources",
+              "implicitRoots"
+            ],
+            "additionalProperties": false
+          },
+          "T2": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "containers": {
+                "type": "boolean"
+              },
+              "recipes": {
+                "type": "boolean"
+              },
+              "origin": {
+                "anyOf": [
+                  {
+                    "const": "configured"
+                  },
+                  {
+                    "const": "environment"
+                  }
+                ]
+              },
+              "inspection": {
+                "$ref": "#/$defs/T3"
+              },
+              "lastScannedAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "containers",
+              "recipes",
+              "origin",
+              "inspection",
+              "lastScannedAt"
+            ],
+            "additionalProperties": false
+          },
+          "T3": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "code": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "message": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "containers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "recipes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "path",
+              "status",
+              "code",
+              "message",
+              "containers",
+              "recipes"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.project_sources_get.v1"
+      }
+    },
+    {
+      "name": "project_sources_refresh",
+      "description": "Workshop project sources refresh. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "configPath": {
+                "type": "string"
+              },
+              "sources": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T2"
+                }
+              },
+              "implicitRoots": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T2"
+                }
+              }
+            },
+            "required": [
+              "configPath",
+              "sources",
+              "implicitRoots"
+            ],
+            "additionalProperties": false
+          },
+          "T2": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "containers": {
+                "type": "boolean"
+              },
+              "recipes": {
+                "type": "boolean"
+              },
+              "origin": {
+                "anyOf": [
+                  {
+                    "const": "configured"
+                  },
+                  {
+                    "const": "environment"
+                  }
+                ]
+              },
+              "inspection": {
+                "$ref": "#/$defs/T3"
+              },
+              "lastScannedAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "containers",
+              "recipes",
+              "origin",
+              "inspection",
+              "lastScannedAt"
+            ],
+            "additionalProperties": false
+          },
+          "T3": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "code": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "message": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "containers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "recipes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "path",
+              "status",
+              "code",
+              "message",
+              "containers",
+              "recipes"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.project_sources_refresh.v1"
+      }
+    },
+    {
+      "name": "project_source_add",
+      "description": "Workshop project source add. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "containers": {
+            "type": "boolean"
+          },
+          "recipes": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "containers",
+          "recipes"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/T1"
+              }
+            ]
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "configPath": {
+                "type": "string"
+              },
+              "sources": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T2"
+                }
+              },
+              "implicitRoots": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T2"
+                }
+              }
+            },
+            "required": [
+              "configPath",
+              "sources",
+              "implicitRoots"
+            ],
+            "additionalProperties": false
+          },
+          "T2": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "containers": {
+                "type": "boolean"
+              },
+              "recipes": {
+                "type": "boolean"
+              },
+              "origin": {
+                "anyOf": [
+                  {
+                    "const": "configured"
+                  },
+                  {
+                    "const": "environment"
+                  }
+                ]
+              },
+              "inspection": {
+                "$ref": "#/$defs/T3"
+              },
+              "lastScannedAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "containers",
+              "recipes",
+              "origin",
+              "inspection",
+              "lastScannedAt"
+            ],
+            "additionalProperties": false
+          },
+          "T3": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "code": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "message": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "containers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "recipes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "path",
+              "status",
+              "code",
+              "message",
+              "containers",
+              "recipes"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.project_source_add.v1"
+      }
+    },
+    {
+      "name": "project_source_remove",
+      "description": "Workshop project source remove. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "configPath": {
+                "type": "string"
+              },
+              "sources": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T2"
+                }
+              },
+              "implicitRoots": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T2"
+                }
+              }
+            },
+            "required": [
+              "configPath",
+              "sources",
+              "implicitRoots"
+            ],
+            "additionalProperties": false
+          },
+          "T2": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "containers": {
+                "type": "boolean"
+              },
+              "recipes": {
+                "type": "boolean"
+              },
+              "origin": {
+                "anyOf": [
+                  {
+                    "const": "configured"
+                  },
+                  {
+                    "const": "environment"
+                  }
+                ]
+              },
+              "inspection": {
+                "$ref": "#/$defs/T3"
+              },
+              "lastScannedAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "containers",
+              "recipes",
+              "origin",
+              "inspection",
+              "lastScannedAt"
+            ],
+            "additionalProperties": false
+          },
+          "T3": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "code": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "message": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "containers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "recipes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "path",
+              "status",
+              "code",
+              "message",
+              "containers",
+              "recipes"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.project_source_remove.v1"
+      }
     }
   ]
 }

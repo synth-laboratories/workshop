@@ -647,11 +647,22 @@ pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
 
 fn recipe_paths(workspace: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
+    let canonical_root = workspace.canonicalize().context("recipe source is unavailable")?;
+    let contained = |path: &Path| -> Result<PathBuf> {
+        let canonical = path.canonicalize().context("recipe declaration is unavailable")?;
+        if !canonical.starts_with(&canonical_root) {
+            bail!("recipe_source_root_not_approved: {} escapes its source", path.display());
+        }
+        Ok(canonical)
+    };
     let root_file = workspace.join(RECIPE_FILE);
-    if root_file.is_file() {
-        paths.push(root_file);
+    if root_file.exists() || root_file.is_symlink() {
+        paths.push(contained(&root_file)?);
     }
     let recipes_dir = workspace.join(RECIPES_DIR);
+    if recipes_dir.exists() || recipes_dir.is_symlink() {
+        contained(&recipes_dir)?;
+    }
     if recipes_dir.is_dir() {
         let mut entries: Vec<PathBuf> = fs::read_dir(&recipes_dir)
             .with_context(|| format!("read {}", recipes_dir.display()))?
@@ -663,7 +674,7 @@ fn recipe_paths(workspace: &Path) -> Result<Vec<PathBuf>> {
             })
             .collect();
         entries.sort();
-        paths.extend(entries);
+        for entry in entries { paths.push(contained(&entry)?); }
     }
     Ok(paths)
 }
@@ -2037,6 +2048,31 @@ pub fn refuse_loopback(url: &str) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    #[test]
+    fn recipe_discovery_refuses_symlinked_files_and_directories_outside_source() {
+        use std::os::unix::fs::symlink;
+        let directory = tempdir().unwrap();
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let target = outside.join("recipe.toml");
+        fs::write(&target, "invalid outside fixture").unwrap();
+        for mode in ["root-file", "directory", "nested-file"] {
+            let root = directory.path().join(mode);
+            fs::create_dir(&root).unwrap();
+            match mode {
+                "root-file" => symlink(&target, root.join(RECIPE_FILE)).unwrap(),
+                "directory" => symlink(&outside, root.join(RECIPES_DIR)).unwrap(),
+                _ => {
+                    fs::create_dir(root.join(RECIPES_DIR)).unwrap();
+                    symlink(&target, root.join(RECIPES_DIR).join("escape.toml")).unwrap();
+                }
+            }
+            let error = load_recipes(&root).unwrap_err().to_string();
+            assert!(error.contains("recipe_source_root_not_approved"), "{mode}: {error}");
+        }
+    }
 
     #[cfg(unix)]
     #[test]

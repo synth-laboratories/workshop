@@ -729,6 +729,14 @@ export const commands = {
 	 *  legacy alreadySettled field is false, not a promise of durable idempotence.
 	 */
 	approvalsApproveDigest: (request: ApproveDigestRequest) => typedError<ApproveDigestOutcome, AppError_Serialize>(__TAURI_INVOKE("approvals_approve_digest", { request })),
+	projectSourcesGet: () => typedError<ProjectSourceCatalog, AppError_Serialize>(__TAURI_INVOKE("project_sources_get")),
+	projectSourcesRefresh: () => typedError<ProjectSourceCatalog, AppError_Serialize>(__TAURI_INVOKE("project_sources_refresh")),
+	projectSourceAdd: (containers: boolean, recipes: boolean) => typedError<{
+	configPath: string,
+	sources: ProjectSourceRow[],
+	implicitRoots: ProjectSourceRow[],
+} | null, AppError_Serialize>(__TAURI_INVOKE("project_source_add", { containers, recipes })),
+	projectSourceRemove: (path: string) => typedError<ProjectSourceCatalog, AppError_Serialize>(__TAURI_INVOKE("project_source_remove", { path })),
 };
 
 /* Types */
@@ -3554,6 +3562,30 @@ export type PluginStatus = {
 	detail?: string | null,
 };
 
+export type ProjectSourceCatalog = {
+	configPath: string,
+	sources: ProjectSourceRow[],
+	implicitRoots: ProjectSourceRow[],
+};
+
+export type ProjectSourceInspection = {
+	path: string,
+	status: string,
+	code: string | null,
+	message: string | null,
+	containers: string[],
+	recipes: string[],
+};
+
+export type ProjectSourceRow = {
+	path: string,
+	containers: boolean,
+	recipes: boolean,
+	origin: RootOrigin,
+	inspection: ProjectSourceInspection,
+	lastScannedAt: string | null,
+};
+
 export type ProviderUsePolicy = {
 	operations: string[],
 	models: string[],
@@ -3985,6 +4017,8 @@ export type RolloutEvidenceEntry = {
  *  rollout was open, partially sealed, aborted, or never produced evidence.
  */
 export type RolloutEvidenceState = "open" | "sealed_complete" | "sealed_partial" | "aborted" | "missing";
+
+export type RootOrigin = "configured" | "environment";
 
 export type RunCollection = "candidates" | "rollouts" | "evaluations" | "metric_points" | "proposer_calls" | "artifacts" | "evidence_refs";
 

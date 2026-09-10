@@ -10,6 +10,36 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod commands;
+mod inspection;
+pub use inspection::{catalog, ProjectSourceCatalog};
+
+fn admit_picked_root(path: &str, containers: bool, recipes: bool) -> Result<ProjectSourceCatalog> {
+    if !containers && !recipes {
+        bail!("choose containers, recipes, or both");
+    }
+    let root = canonical_project_root(path)?;
+    let inspection = inspection::inspect(&root);
+    if inspection.status != "valid" {
+        bail!(
+            "{}: {}",
+            inspection.code.as_deref().unwrap_or("source_invalid"),
+            inspection.message.as_deref().unwrap_or("invalid source")
+        );
+    }
+    synth_config::merge_project_source(ProjectSourceEntry {
+        path: root.display().to_string(),
+        containers,
+        recipes,
+    })?;
+    catalog()
+}
+
+fn remove_root(path: &str) -> Result<ProjectSourceCatalog> {
+    synth_config::forget_project_source(path)?;
+    catalog()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Capability {
     Containers,
