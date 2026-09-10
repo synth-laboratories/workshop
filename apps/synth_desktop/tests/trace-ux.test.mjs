@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 
 test('citation selection reveals filtered annotations and comparison needs one actor', async () => {
   const root = fileURLToPath(new URL('../../..', import.meta.url));
+  const css = await readFile(new URL('../src/renderer/src/styles/app.css', import.meta.url), 'utf8');
   const result = await build({ absWorkingDir: root, bundle:true, write:false, format:'iife', jsx:'automatic',
     stdin:{ resolveDir:root, loader:'tsx', contents:`
       import React,{useState} from 'react';
@@ -20,7 +22,7 @@ test('citation selection reveals filtered annotations and comparison needs one a
       createRoot(document.getElementById('root')).render(<App/>);
     `}
   });
-  const server=createServer((req,res)=>{res.setHeader('Content-Type',req.url==='/bundle.js'?'text/javascript':'text/html');res.end(req.url==='/bundle.js'?result.outputFiles[0].text:'<div id="root"></div><script src="/bundle.js"></script>');});
+  const server=createServer((req,res)=>{res.setHeader('Content-Type',req.url==='/bundle.js'?'text/javascript':'text/html');res.end(req.url==='/bundle.js'?result.outputFiles[0].text:`<style>${css}</style><div class="reports-preview"><section class="reports-section"><div class="reports-trace-inspector"><section><div id="root"></div></section></div></section></div><script src="/bundle.js"></script>`);});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const browser=await chromium.launch({headless:true});
   try {
@@ -41,6 +43,10 @@ test('citation selection reveals filtered annotations and comparison needs one a
     for(const width of [960,1280,1440]) {
       await page.setViewportSize({width,height:840});
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    }
+    for (const width of [420, 540, 720]) {
+      await page.locator('.reports-preview').evaluate((element, width) => { element.style.width = width + 'px'; }, width);
+      assert.equal(await page.locator('.reports-preview').evaluate(element => element.scrollWidth <= element.clientWidth + 1), true, `nested report preview fits ${width}px`);
     }
   } finally { await browser.close(); await new Promise(resolve=>server.close(resolve)); }
 });
