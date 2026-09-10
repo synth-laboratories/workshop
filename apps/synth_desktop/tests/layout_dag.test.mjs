@@ -14,6 +14,28 @@ const compiled = join(compiledDir, "layoutDag.mjs");
 writeFileSync(compiled, transformSync(readFileSync(source, "utf8"), { loader: "ts", format: "esm", target: "es2022", sourcefile: source }).code);
 const { NODE_HEIGHT, NODE_WIDTH, fitRankedToViewport, rankDag } = await import(pathToFileURL(compiled).href);
 
+const orderSource = join(renderer, "lineage/orderLineageNodes.ts");
+const orderCompiled = join(compiledDir, "orderLineageNodes.mjs");
+writeFileSync(orderCompiled, transformSync(readFileSync(orderSource, "utf8"), { loader: "ts", format: "esm", target: "es2022" }).code);
+const { orderLineageNodes } = await import(pathToFileURL(orderCompiled).href);
+
+test("indexed lineage ordering preserves branches, cycles, missing targets and disconnected nodes", () => {
+	const nodes = ["a", "b", "c", "d"].map(id => ({ id }));
+	const edge = (sourceNodeId, targetNodeId) => ({ sourceNodeId, targetNodeId });
+	for (const [edges, expected] of [
+		[[], ["a", "b", "c", "d"]],
+		[[edge("a", "c"), edge("a", "b")], ["a", "c", "b", "d"]],
+		[[edge("a", "b"), edge("b", "a"), edge("c", "d"), edge("d", "c")], ["a", "b", "c", "d"]],
+		[[edge("a", "missing")], ["a", "b", "c", "d"]],
+		[[edge("d", "c"), edge("c", "b"), edge("b", "a")], ["d", "c", "b", "a"]],
+	]) {
+		const result = orderLineageNodes(nodes, edges);
+		assert.deepEqual(result.map(node => node.id), expected);
+		for (const node of result) assert.equal(node, nodes.find(item => item.id === node.id));
+	}
+	assert.deepEqual(orderLineageNodes([], []), []);
+});
+
 const read = (rel) => readFileSync(join(renderer, rel), "utf8");
 
 function assertInside(ranked, view, viewport) {

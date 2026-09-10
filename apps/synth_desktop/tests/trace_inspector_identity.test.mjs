@@ -116,3 +116,15 @@ test("each unavailable trace keeps an honest, visible label", () => {
 		{ eligible: false, label: "Unsupported" }
 	);
 });
+
+test("persisted input bindings resolve the same sealed trace as legacy slots", () => {
+	const visual = inspectorVisual("sha256:aaaa1111", {
+		bindings: {
+			schemaVersion: "synth.visual-bindings.v1",
+			inputs: [{ input: "projection", kind: "trace_v5", source: "sha256:aaaa1111" }],
+		},
+	});
+	assert.equal(traceDigestBinding(visual), "sha256:aaaa1111");
+	assert.equal(findTraceInspectorVisual([visual], trace()), visual);
+	assert.equal(findTraceInspectorVisual([visual], trace({ digest: "sha256:different" })), undefined);
+});
