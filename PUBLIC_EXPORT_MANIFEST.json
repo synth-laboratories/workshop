@@ -6973,6 +6973,12 @@
       "sha256": "3077e9ff7f710add160baab1c55df15c6f023069be25736229ddb44d993da52f"
     },
     {
+      "bytes": 105,
+      "mode": "100644",
+      "path": "runtime-distributions/.gitignore",
+      "sha256": "90442aa9aa9f601d48768617a0d6eb2d48e00d28dd67d381194fbf8d44a781cf"
+    },
+    {
       "bytes": 51,
       "mode": "100644",
       "path": "rust-toolchain.toml",
@@ -7669,7 +7675,7 @@
       "sha256": "a45a6a8cc94c53e97bf2dc719e6172ad10ae9fea1091559456396e8fa1b244ea"
     }
   ],
-  "policySha256": "099bcf78a1b8cc0752cf21d40300ffe36f2470eef6f8b9a8a72cce8a74b64cd4",
+  "policySha256": "f04f1412ea5a409ba40a86a1711157f81a2ce7ec54faadc0410965173511791e",
   "schema": "workshop.public-export-manifest.v1",
   "source": {
     "commit": "81607fa7bb9d9cc6457995fb977ae660c64f82b1",
