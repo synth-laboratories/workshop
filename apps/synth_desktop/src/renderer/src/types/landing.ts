@@ -282,6 +282,7 @@ export type LocalActivityLine = {
 	// Mirrors `ApprovalKind::as_str` in src-tauri/src/session/approval.rs.
 	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "container_lifecycle" | "credential_access" | "plugin_lifecycle" | "visual_template_persist" | "computer_use" | "permission";
 	approvalPayload?: {
+		approvalDigest?: string;
 		operation?: string;
 		parameters?: Record<string, unknown>;
 		estimatedCostUsdMicros?: number;

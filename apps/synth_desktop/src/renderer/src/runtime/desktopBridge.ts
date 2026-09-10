@@ -855,7 +855,7 @@ window.synthWorkspaceScope ??= isTauri
 				fromGenerated(spectaCommands.codexThreadItemsList(wire({ sessionId, threadId, cursor: cursor ?? null, limit: limit ?? null }))),
 			steerTurn: (sessionId, text) =>
 				fromGenerated(spectaCommands.codexTurnSteer({ sessionId, text })),
-			resolveApproval: (sessionId, approvalId, decision) => fromGenerated(spectaCommands.codexApprovalResolve({ sessionId, approvalId, decision })),
+			resolveApproval: (sessionId, approvalId, decision, approvalDigest) => fromGenerated(spectaCommands.codexApprovalResolve({ sessionId, approvalId, decision, approvalDigest: approvalDigest ?? null })),
 			close: (sessionId) => fromGenerated(spectaCommands.codexSessionClose({ sessionId })),
 			onEvent(listener) {
 				let disposed = false;

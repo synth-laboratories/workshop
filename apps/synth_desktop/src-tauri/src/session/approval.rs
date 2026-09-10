@@ -434,6 +434,7 @@ impl ApprovalKind {
                 "timeoutSeconds": timeout_seconds,
                 "credentialNames": credential_names,
                 "preparationDigest": preparation_digest,
+                "approvalDigest": preparation_digest,
                 "alwaysSupported": false,
             }),
             Self::SidecarLifecycle { sidecar, action } => json!({
@@ -1898,6 +1899,27 @@ mod tests {
         assert!(broker.approve_digest(app.handle(), "sha256:spec").await.is_err());
         assert!(broker.approve_digest(app.handle(), " ").await.is_err());
         for rx in receivers { assert!(rx.await.unwrap().is_err()); }
+    }
+
+    #[tokio::test]
+    async fn viewed_proposal_digest_is_required_and_must_match_before_approval() {
+        let broker = ApprovalBroker::new(SessionPersistence::Null);
+        let app = tauri::test::mock_app();
+        let (resolver, rx) = HostDecisionResolver::pair();
+        let kind = openrouter_paid(Some(10_000));
+        assert_eq!(kind.safe_payload("test")["approvalDigest"], "sha256:spec");
+        let id = broker.request(app.handle(), ApprovalOrigin {
+            session_id: "viewed-session".into(), instance_id: "viewed-test".into(),
+        }, kind, resolver).await.unwrap();
+        assert!(broker.decision_from_view(&id, "once", None).await.is_err());
+        assert!(broker.decision_from_view(&id, "once", Some("sha256:other")).await.is_err());
+        assert!(matches!(broker.decision_from_view(&id, "reject", None).await.unwrap(), ApprovalDecision::Reject));
+        assert!(broker.is_pending(&id).await);
+        let decision = broker.decision_from_view(&id, "once", Some("sha256:spec")).await.unwrap();
+        broker.resolve(app.handle(), "viewed-session", &id, decision).await.unwrap();
+        assert!(matches!(rx.await.unwrap().unwrap(), ApprovalDecision::ApproveWithCap { cap }
+            if cap.max_cost_usd_micros == Some(10_000)));
+        assert!(broker.decision_from_view(&id, "once", Some("sha256:spec")).await.is_err());
     }
 
     fn openrouter_paid(max_cost_usd_micros: Option<u64>) -> ApprovalKind {
