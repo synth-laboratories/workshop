@@ -57,7 +57,7 @@ export function AgentTraceInspector({ projection, actorId, onActorChange, cursor
   const [view, setView] = useVisualState<string>(`${scope}.view`,initialView);
   const previousFilter=useRef(`${actor}:${section}:${query}`);
   useEffect(() => { const filter=`${actor}:${section}:${query}`;if(filter!==previousFilter.current){previousFilter.current=filter;setLimit(60);} }, [actor, section, query]);
-  useEffect(() => { if (selection) { setSection('rollout'); setQuery(''); setPin(''); } }, [selection?.itemId, selection?.revision]);
+  useEffect(() => { if (selection) { setSection('events'); setQuery(''); changeActor('all'); } }, [selection?.itemId, selection?.revision]);
   const filtered = useMemo(() => items.filter(item => {
     const family = eventFamily(item);
     const inSection = section === 'events' || (section === 'messages' ? family === 'message' : section === 'evidence' ? family === 'reward' || family === 'annotation' : family !== 'annotation');
@@ -92,11 +92,12 @@ export function AgentTraceInspector({ projection, actorId, onActorChange, cursor
     </div>
     <div className="ati-toolbar" aria-label="Agent roster">{agents.map(lane => <button key={lane.lane_id} style={{borderLeft:`4px solid ${lane.color ?? '#547c92'}`}} aria-pressed={actor === lane.actor_id} onClick={() => changeActor(lane.actor_id!)}>{agentName(lane.actor_id!)}</button>)}</div>
     <div className="ati-toolbar"><label>Agent <select aria-label="Trace agent" value={actor} onChange={e => { changeActor(e.target.value); }}><option value="all">All agents</option>{lanes.map(l => <option key={l.lane_id} value={l.actor_id ?? l.lane_id}>{l.display_name ?? l.lane_id} {l.role ? `· ${l.role}` : ''}</option>)}</select></label>
-      <label>Compare <select aria-label="Compare agent" value={pin} onChange={e => setPin(e.target.value)}><option value="">None</option>{lanes.filter(l => l.actor_id !== actor).map(l => <option key={l.lane_id} value={l.actor_id ?? l.lane_id}>{l.display_name ?? l.lane_id}</option>)}</select></label>
+      <label>Compare <select aria-label="Compare agent" disabled={actor === 'all'} title={actor === 'all' ? 'Select one agent before comparing' : 'Compare with another agent'} value={actor === 'all' ? '' : pin} onChange={e => setPin(e.target.value)}><option value="">None</option>{lanes.filter(l => l.actor_id !== actor).map(l => <option key={l.lane_id} value={l.actor_id ?? l.lane_id}>{l.display_name ?? l.lane_id}</option>)}</select></label>
+      {actor === 'all' ? <span className="ati-muted">Select one agent before comparing.</span> : null}
       <input aria-label="Search agent trace" placeholder="Search messages, tools, rewards…" value={query} onChange={e => setQuery(e.target.value)}/></div>
     <p className="ati-muted">{items.length} recorded items · {projection.state ?? 'Unknown state'}{cursorMs != null ? ` · replay ${time(cursorMs)}` : ''}. History retained while scrubbing.</p>
     {projection.losses?.length ? <details><summary>Capture coverage</summary>{projection.losses.map(loss => <p key={loss}>{loss}</p>)}</details> : null}
-    <div className={`ati-columns ${pin ? 'ati-compare' : ''}`}><div>{laneContent(actor)}</div>{pin && <div><strong>{lanes.find(l => l.actor_id === pin)?.display_name}</strong>{laneContent(pin)}</div>}</div>
+    <div className={`ati-columns ${pin && actor !== 'all' ? 'ati-compare' : ''}`}><div>{laneContent(actor)}</div>{pin && actor !== 'all' && <div><strong>{lanes.find(l => l.actor_id === pin)?.display_name}</strong>{laneContent(pin)}</div>}</div>
   </section>;
 }
 
