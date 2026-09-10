@@ -249,14 +249,25 @@ const unavailableLaguna: LagunaStatus = {
 	updatedAt: Date.now()
 };
 
+function overlayLocalReviews(row: { payload?: unknown; reviews?: unknown } | unknown): unknown {
+	if (!row || typeof row !== "object") return row;
+	const record = row as { payload?: unknown; reviews?: unknown };
+	const payload = "payload" in record ? record.payload ?? row : row;
+	if (!Array.isArray(record.reviews)) return payload;
+	if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+		return { reviews: record.reviews };
+	}
+	return { ...(payload as Record<string, unknown>), reviews: record.reviews };
+}
+
 /** Installs Rust-owned desktop bridges; HTTP runtime compatibility is browser-only. */
 export function installDesktopBridge(): void {
 	if (!isTauri && import.meta.env.DEV) window.synthRuntime ??= browserRuntimeBridge();
 	window.synthAnalysis ??= isTauri
 		? {
-			projection: (kind, digest) => bridgeResult<{ payload?: unknown }>(
+			projection: (kind, digest) => bridgeResult<{ payload?: unknown; reviews?: unknown }>(
 				fromGenerated(spectaCommands.analysisProjectionGet(kind, digest))
-			).then((row) => row?.payload ?? row),
+			).then(overlayLocalReviews),
 			findings: (traceDigest) => bridgeResult<{ findings: unknown[] }>(fromGenerated(spectaCommands.analysisFindingsList(traceDigest))),
 			campaigns: (evalRunId) => bridgeResult<{ campaigns: unknown[] }>(fromGenerated(spectaCommands.analysisCampaignsList(evalRunId))),
 			review: (input) => bridgeResult<unknown>(fromGenerated(spectaCommands.analysisReviewRecord(
@@ -267,9 +278,9 @@ export function installDesktopBridge(): void {
 			)))
 		} satisfies AnalysisBridge
 		: {
-			projection: (kind, digest) => window.synthRuntime!.request<{ payload?: unknown }>("/v1/analysis/projection", {
+			projection: (kind, digest) => window.synthRuntime!.request<{ payload?: unknown; reviews?: unknown }>("/v1/analysis/projection", {
 				method: "POST", body: { kind, digest }
-			}).then((row) => row?.payload ?? row),
+			}).then(overlayLocalReviews),
 			findings: (traceDigest) => window.synthRuntime!.request<{ findings: unknown[] }>("/v1/analysis/findings", {
 				method: "POST", body: { traceDigest }
 			}),
