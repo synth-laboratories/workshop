@@ -4477,10 +4477,10 @@
       "sha256": "0325855bfc97842a259690e0fa165372b7ada9572e923882b45c448164083a93"
     },
     {
-      "bytes": 6028,
+      "bytes": 6193,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/lineage/LineageCanvas.tsx",
-      "sha256": "ca1e4fcd588d076dbc8c142913d49f15d89e5ce470a3d377ba1e99524fd7f485"
+      "sha256": "1b04e14779128f644afba1950cbda2643c3373bfba4c49b7832f65907e4ad706"
     },
     {
       "bytes": 4426,
@@ -4489,10 +4489,10 @@
       "sha256": "d9297b9b9d3a6f7a166271c9d2ab4fdd7c64a660a2dfb10a00cead13663fbfe2"
     },
     {
-      "bytes": 792,
+      "bytes": 946,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/lineage/orderLineageNodes.ts",
-      "sha256": "e78e1ea806367f75f49baa5471ffaff8c7b254057b55e702477ed98caa0e2fcc"
+      "sha256": "52e307bcbe82fc9f2448fc6d622090eb286d29c74227f72cf5f1502e0ae3c07c"
     },
     {
       "bytes": 4430,
@@ -4927,10 +4927,10 @@
       "sha256": "96691c2e1878393f8b976800452b2c45b52cccf46612a1e33689d3a7ad3d8067"
     },
     {
-      "bytes": 3767,
+      "bytes": 3949,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/runtime/traceInspector.ts",
-      "sha256": "4f9303259d8bcedb47f7a9b50aa3daa1378f072fa0a02253bc753fcb38c7701d"
+      "sha256": "71f46bb2e6c07b97568af54a59957bccb7b76793a3e1cff8c2a05c04c4f69a4e"
     },
     {
       "bytes": 945,
@@ -7690,7 +7690,7 @@
   "policySha256": "f5ef8fbb4560ee9e401c26c94da6f6189732be76291915027bd7ee3f5f5684dd",
   "schema": "workshop.public-export-manifest.v1",
   "source": {
-    "commit": "543aec726c8d54565d82faaf9f35399e89e879d0",
-    "tree": "a7f439abe88e252972ccc0edd5d6784d3796c606"
+    "commit": "b39c7f686cb51522179a3c938d1ab7756026c89c",
+    "tree": "bb76f53df76aa90e60f8565b52d6e1700497b8f5"
   }
 }
