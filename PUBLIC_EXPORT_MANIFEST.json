@@ -67,10 +67,10 @@
       "sha256": "49898a5b3fba843f274e014e99a57fad372bb2cebf2f827a43d6dbb3420148d0"
     },
     {
-      "bytes": 20983,
+      "bytes": 7762,
       "mode": "100644",
       "path": "README.md",
-      "sha256": "bf96cffdd9974d1d47dff3a359a8a737418a52e110534aa7f1c19a5f1295dec0"
+      "sha256": "e6574f787ed372c9672520951a7bd7f33dfc2ce60f7e198370c8f2017e7afd0e"
     },
     {
       "bytes": 633,
@@ -175,10 +175,10 @@
       "sha256": "b1f277c58a5aef1bed50b786a0f8f477e0b954aa38af56dfbe7e6e7528dce2aa"
     },
     {
-      "bytes": 1494,
+      "bytes": 1265,
       "mode": "100644",
       "path": "apps/synth_desktop/package.json",
-      "sha256": "85ae96088e168e1f75602c87e8b3ef8a6f784aad340a0996b8680f4084ef9fdd"
+      "sha256": "61e4bfa8fb70f6820bc774b90892e4f21043016e5e106cc8406b777026081cfd"
     },
     {
       "bytes": 5897,
@@ -5257,10 +5257,10 @@
       "sha256": "7a61c13101ea4a20c8d4650182ce9401e6df9c3697daff44af4a8df557e2dee3"
     },
     {
-      "bytes": 2841,
+      "bytes": 1238,
       "mode": "100644",
       "path": "package.json",
-      "sha256": "4d311c3d880e81e96aa2cddd3b10fb4c4b07e6ab30173141bdb2f038696e202f"
+      "sha256": "fb38f8c061db2f13694328fae488ca01301f5b4adbcb7d91dddc9837d64816e2"
     },
     {
       "bytes": 190,
@@ -7675,7 +7675,7 @@
       "sha256": "a45a6a8cc94c53e97bf2dc719e6172ad10ae9fea1091559456396e8fa1b244ea"
     }
   ],
-  "policySha256": "f04f1412ea5a409ba40a86a1711157f81a2ce7ec54faadc0410965173511791e",
+  "policySha256": "f5ef8fbb4560ee9e401c26c94da6f6189732be76291915027bd7ee3f5f5684dd",
   "schema": "workshop.public-export-manifest.v1",
   "source": {
     "commit": "81607fa7bb9d9cc6457995fb977ae660c64f82b1",
