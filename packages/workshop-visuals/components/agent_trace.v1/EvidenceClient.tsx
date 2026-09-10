@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
 import type { TraceSelector, TraceVisual } from './model.ts';
 import type { TraceAnnotation } from './annotations.ts';
+import { evidenceEndpoint } from './evidenceEndpoint.ts';
 
 export type EvidenceService = { url: string; capability: string };
 function endpoint(service: EvidenceService, runId: string) {
-  // This capability is intentionally limited to the local demo evidence service.
-  if (service.url !== 'http://127.0.0.1:8118/annotations') throw new Error('Unsupported evidence service');
-  return `${service.url}?run=${encodeURIComponent(runId)}`;
+  return evidenceEndpoint(service.url, runId);
 }
 export function useTraceEvidence(service: EvidenceService | undefined, runId: string, fallback?: TraceVisual) {
   const [state, setState] = useState<{ runId: string; projection: TraceVisual; digest: string } | null>(null);

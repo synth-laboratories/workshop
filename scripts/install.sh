@@ -7,9 +7,10 @@ MODE="install"
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/install.sh [--check | --dry-run]
+Usage: ./scripts/install.sh [--bootstrap | --check | --dry-run]
 
   (no option)  Check prerequisites, create .env if absent, and run npm ci
+  --bootstrap  Install build tools (Homebrew/Rust), then perform normal installation
   --check      Check prerequisites only; do not change the checkout
   --dry-run    Check prerequisites and print planned changes without making them
 EOF
@@ -45,11 +46,18 @@ require_major() {
 case "${1:-}" in
   "") ;;
   --check) MODE="check" ;;
+  --bootstrap) MODE="bootstrap" ;;
   --dry-run) MODE="dry-run" ;;
   --help|-h) usage; exit 0 ;;
   *) usage >&2; fail "Unknown option: $1" ;;
 esac
 [[ $# -le 1 ]] || { usage >&2; fail "Expected at most one option."; }
+
+if [[ "$MODE" == bootstrap ]]; then
+  bash "$ROOT/scripts/bootstrap-deps.sh"
+fi
+source "$ROOT/scripts/local-toolchain-env.sh"
+cd "$ROOT"
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "Workshop development currently supports macOS only."
 [[ "$(uname -m)" == "arm64" ]] || fail "Workshop development currently supports Apple Silicon (arm64) only."
@@ -74,6 +82,7 @@ require_command node "Install Node.js 20 or newer."
 require_command npm "Install npm 10 or newer."
 require_command rustc "Install Rust from https://rustup.rs/."
 require_command cargo "Install Rust from https://rustup.rs/."
+require_command uv "Run ./scripts/install.sh --bootstrap to install uv and the other build tools."
 require_command python3 "Install Python 3.11 or newer (required by runtime staging)."
 require_command jq "Install jq (for example: brew install jq)."
 require_command rg "Install ripgrep (for example: brew install ripgrep)."
@@ -114,4 +123,4 @@ fi
 note "installing locked npm workspace dependencies"
 (cd "$ROOT" && npm ci)
 note "installation complete"
-note "configure .env if needed, then launch with: npm run desktop:dev"
+note "build and launch with: ./scripts/workshop.sh build-and-run"

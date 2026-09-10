@@ -288,6 +288,16 @@ fn candidates(configured: &[OpenRouterModelConfig]) -> Vec<Candidate> {
 fn builtin_candidates() -> Vec<Candidate> {
     vec![
         builtin(
+            "openrouter-astra", "openai/gpt-6-astra", "GPT-6 Astra",
+            ModelCatalogCapabilities {
+                input_modalities: vec!["text".into(), "image".into()],
+                output_modalities: vec!["text".into()], tools: true,
+                reasoning_control: ModelCatalogReasoningControl::Effort,
+                default_reasoning: Some("medium".into()),
+                max_context_tokens: Some(1_050_000.0), max_completion_tokens: Some(128_000.0),
+            },
+        ),
+        builtin(
             "openrouter-luna",
             "openai/gpt-5.6-luna",
             "GPT 5.6 Luna",

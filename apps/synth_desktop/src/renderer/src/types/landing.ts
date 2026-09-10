@@ -100,6 +100,11 @@ export function resolveDefaultTargetId(
 ): string {
 	const model = preference.model.toLowerCase();
 	for (const provider of preference.providers) {
+		if (provider === "chatgpt" && availability.chatgpt && model === CHATGPT_ASTRA_MODEL) return "chatgpt-astra";
+		if (provider === "openrouter" && availability.openrouter && model === CHATGPT_ASTRA_MODEL) {
+			const astra = targets.find(target => target.modelId === "openai/gpt-6-astra" && target.selectable !== false);
+			if (astra) return astra.id;
+		}
 		if (provider === "chatgpt" && availability.chatgpt && model === CHATGPT_LUNA_MODEL) return "chatgpt-luna";
 		if (provider === "openrouter" && availability.openrouter && model === CHATGPT_LUNA_MODEL) {
 			return targets.find((target) => target.modelId === "openai/gpt-5.6-luna" && target.selectable !== false)?.id ?? "local-laguna";
@@ -432,6 +437,7 @@ export const SYNTH_CLOUD_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
 export const CHATGPT_LUNA_MODEL = "gpt-5.6-luna";
 export const CHATGPT_SOL_MODEL = "gpt-5.6-sol";
 export const CHATGPT_TERRA_MODEL = "gpt-5.6-terra";
+export const CHATGPT_ASTRA_MODEL = "gpt-6-astra";
 
 export function isOpenRouterTargetId(id: string): boolean {
 	return id.startsWith("openrouter-") || id.startsWith("openrouter:");
@@ -444,6 +450,7 @@ const BUILTIN_EXECUTION_TARGETS: ExecutionTargetOption[] = [
 		description: "Local · MLX · Metal · usage tracked",
 		group: "local"
 	},
+	{ id: "chatgpt-astra", label: "GPT-6 Astra", description: "ChatGPT · Codex plan allowance · account access required", group: "subscription" },
 	{
 		id: "chatgpt-luna",
 		label: "GPT-5.6 Luna",

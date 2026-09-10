@@ -20,6 +20,10 @@ fn codex_child_path(binary: &Path, inherited: Option<&OsStr>) -> Result<Option<O
         return Ok(inherited.map(OsStr::to_os_string));
     };
     let mut entries = vec![parent.to_path_buf()];
+    if let Some(root) = parent.parent() {
+        let bundled_tools = root.join("codex-path");
+        if bundled_tools.is_dir() { entries.push(bundled_tools); }
+    }
     if let Some(inherited) = inherited {
         entries.extend(std::env::split_paths(inherited));
     }
@@ -144,6 +148,22 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
         request,
         persistent,
     } = spawn;
+    if matches!(request.model.as_str(), "gpt-6-astra" | "openai/gpt-6-astra") {
+        let mut probe = Command::new(binary);
+        probe.arg("--version").kill_on_drop(true);
+        if let Some(path) = codex_child_path(binary, std::env::var_os("PATH").as_deref())? {
+            probe.env("PATH", path);
+        }
+        let output = tokio::time::timeout(std::time::Duration::from_secs(20), probe.output())
+            .await.context("Codex runtime version check timed out; rebuild with the pinned runtime")??;
+        let version = String::from_utf8_lossy(&output.stdout);
+        let supported = version.split_whitespace().last().and_then(|v| {
+            let parts: Vec<u32> = v.split('.').map(str::parse).collect::<std::result::Result<_, _>>().ok()?;
+            Some(parts.as_slice() >= [0, 153, 0].as_slice())
+        }).unwrap_or(false);
+        anyhow::ensure!(output.status.success() && supported,
+            "Astra requires Codex 0.153.0 or newer. Rebuild Workshop or remove an outdated SYNTH_CODEX_BIN override; no alternate provider was used.");
+    }
     if persistent {
         return spawn_persistent_server(app, binary, session_id, home, request, pump).await;
     }
@@ -430,6 +450,18 @@ async fn read_stdout<R: tauri::Runtime, T: AsyncRead + Unpin>(
         let method = normalized_turn_method(raw_method, &params).to_owned();
         if persistence.codex_oauth && method == "turn/failed" {
             normalize_oauth_failure(&mut params);
+        }
+        if method == "turn/failed" {
+            if let Some(record) = persistence.records.read().await.get(&session_id) {
+                if let Some(object) = params.as_object_mut() {
+                    object.insert("provider".into(), json!(record.provider_title));
+                    object.insert("model".into(), json!(record.model));
+                    let message = object.get("message").and_then(Value::as_str)
+                        .or_else(|| object.get("error").and_then(|v| v.get("message")).and_then(Value::as_str))
+                        .unwrap_or("Request failed; inspect provider details.").to_owned();
+                    object.insert("message".into(), json!(format!("{} · {}: {}", record.provider_title, record.model, message)));
+                }
+            }
         }
         // Some app-server versions close the stream immediately after a
         // typed final agent message instead of sending `turn/completed`.
@@ -1019,10 +1051,17 @@ fn normalize_oauth_failure(params: &mut Value) {
                 "codex_oauth_reauth_required",
                 "Reconnect ChatGPT subscription in Settings → Models.",
             )
+        } else if lower.contains("model_not_found") || lower.contains("model_not_available")
+            || lower.contains("not supported") || lower.contains("does not have access") {
+            ("codex_oauth_model_unavailable", "This model is unavailable to your ChatGPT account or workspace. Choose another ChatGPT model or ask your workspace administrator. No API provider was substituted.")
         } else {
             return;
         };
-    *params = json!({"code": code, "message": message});
+    // Keep typed turn identifiers and retry/reset metadata for recovery.
+    if let Some(object) = params.as_object_mut() {
+        object.insert("code".into(), json!(code));
+        object.insert("message".into(), json!(message));
+    }
 }
 
 

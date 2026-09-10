@@ -78,6 +78,12 @@ const SERVICE_TIER_OPTIONS: ModelKnobOption[] = [
 
 const BUILTIN_MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 	{
+		targetId: "chatgpt-astra",
+		target: { kind: "remote", models: ["gpt-6-astra"] },
+		knobs: [{ id: "reasoning", label: "Thinking", testId: "reasoning-effort", storageKey: "synth.models.chatgpt-astra.reasoning", defaultValue: "medium", options: LUNA_EFFORT_OPTIONS, turnStartField: "effort" }],
+		reasoningDisplay: "summary", inputModalities: ["text", "image"], maxContextTokens: 1_050_000
+	},
+	{
 		targetId: "chatgpt-luna",
 		target: { kind: "remote", models: ["gpt-5.6-luna"] },
 		knobs: [

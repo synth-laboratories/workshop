@@ -915,7 +915,9 @@ pub(crate) fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
 }
 
 pub(crate) fn model_context_window(model: &str) -> u64 {
-    if model.to_ascii_lowercase().contains("laguna-xs") {
+    if matches!(model, "gpt-6-astra" | "openai/gpt-6-astra") {
+        1_050_000
+    } else if model.to_ascii_lowercase().contains("laguna-xs") {
         262_144
     } else if model.to_ascii_lowercase().contains("muse-spark-1.2") {
         1_048_576
@@ -932,6 +934,7 @@ pub(crate) fn auto_compact_token_limit(request: &CodexSessionStartRequest) -> u6
     let requested = request.auto_compact_token_limit.unwrap_or_else(|| {
         let model = request.model.to_ascii_lowercase();
         if model.contains("laguna-s-2.1")
+            || matches!(model.as_str(), "gpt-6-astra" | "openai/gpt-6-astra")
             || model.contains("gpt-5.6-luna")
             || model.contains("muse-spark-1.2")
         {

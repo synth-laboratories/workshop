@@ -36,6 +36,7 @@
     "playwright": "1.62.1"
   },
   "devDependencies": {
+    "@openai/codex": "0.153.0",
     "turbo": "^2.10.9"
   }
 }

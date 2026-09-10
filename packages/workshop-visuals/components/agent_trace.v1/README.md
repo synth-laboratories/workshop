@@ -20,6 +20,6 @@ The Codex view handles projected native app-server item payloads and existing pr
 
 RuneBench now registers its extension and supplies synchronized game context. `cursorMs` highlights recorded events and the Follow replay control governs scrolling. Common markers support failure/message/reward/tool/annotation navigation; unknown execution times remain unset.
 
-`useTraceEvidence` and `AnnotationEditor` connect the local demo to Containers' append-only evidence store. The client intentionally accepts only the local demo endpoint at port 8118. Writes require its bound capability and an expected evidence digest. Production remote transport, text-selection annotation authoring, and live stream assembly remain separate work.
+`useTraceEvidence` and `AnnotationEditor` connect the local demo to Containers' append-only evidence store. The client intentionally accepts only the exact loopback `/annotations` endpoints at ports 8118 (maintainer demo) and 8128 (portable RuneBench example). Writes require its bound capability and an expected evidence digest. Production remote transport, text-selection annotation authoring, and live stream assembly remain separate work.
 
 `craftaxTraceExtension` proves reuse on retained real frames/terminal summaries. It does not manufacture model/tool messages missing from that source.

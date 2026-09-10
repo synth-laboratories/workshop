@@ -102,7 +102,16 @@ impl CodexManager {
         approvals: Arc<ApprovalBroker>,
     ) -> Self {
         let root = codex_root();
-        let binary = PathBuf::from(env::var("SYNTH_CODEX_BIN").unwrap_or_else(|_| "codex".into()));
+        let binary = env::var_os("SYNTH_CODEX_BIN").map(PathBuf::from).unwrap_or_else(|| {
+            // Finder launches must not depend on a shell's npm/Node PATH.
+            let bundled = env::current_exe().ok().and_then(|exe| {
+                exe.parent()?.parent().map(|contents| contents.join("Resources/runtimes/codex/bin/codex"))
+            });
+            bundled.filter(|path| path.is_file()).unwrap_or_else(|| {
+                let local = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex");
+                if cfg!(debug_assertions) && local.is_file() { local } else { PathBuf::from("codex") }
+            })
+        });
         Self::with_paths_and_approvals(
             crate::session::SessionPersistence::from_core(core),
             root,

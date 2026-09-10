@@ -16,6 +16,7 @@ export const BROWSER_MODEL_CATALOG: ModelCatalog = {
 	generatedAt: "browser-fixture",
 	diagnostics: [],
 	entries: [
+		browserFixtureEntry("openrouter-astra", "openai/gpt-6-astra", "GPT-6 Astra", ["text", "image"], "effort", 1050000),
 		browserFixtureEntry("openrouter-luna", "openai/gpt-5.6-luna", "GPT 5.6 Luna", ["text", "image"], "effort", 272000),
 		browserFixtureEntry("openrouter-laguna-s", "poolside/laguna-s-2.1", "Laguna S 2.1", ["text"], "binary", 262144),
 		browserFixtureEntry("openrouter-muse-spark", "meta/muse-spark-1.2", "Muse Spark 1.2", ["text", "image"], "effort", 1048576),

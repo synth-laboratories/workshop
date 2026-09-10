@@ -30,8 +30,9 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' || {
   exit 1
 }
 
-# Shared packaged resources (same for every tier); stage once. Resolve the
-# MLX release checkout by the catalog revision, not by a historical name.
+# Shared packaged resources (same for every tier); stage once.
+bash "$ROOT/scripts/stage-codex-runtime.sh"
+# Resolve the MLX release checkout by the catalog revision, not a historical name.
 REPO_SIBLING_ROOT="$(dirname "$ROOT")"
 if [[ -z "${SYNTH_MLX_RL_PROJECT_ROOT:-}" ]]; then
   mlx_pin="$(rg -o 'MLX_RUNTIME_SOURCE_REVISION: &str = "([0-9a-f]{40})"' --replace '$1' -m1 \

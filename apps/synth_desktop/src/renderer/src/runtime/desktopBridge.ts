@@ -621,6 +621,10 @@ window.synthSecrets ??= isTauri
 	};
 window.synthConfig ??= isTauri
 		? {
+			chooseEnvFile: async () => {
+				const path = await open({ directory: false, multiple: false, title: "Choose a private OpenRouter env file" });
+				return typeof path === "string" ? path : null;
+			},
 			get: () => fromGenerated(spectaCommands.synthConfigGet()),
 			modelCatalog: () => fromGenerated(spectaCommands.modelCatalogGet()),
 			refreshModelCatalog: () => fromGenerated(spectaCommands.modelCatalogRefresh()),

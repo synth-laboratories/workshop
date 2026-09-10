@@ -2,6 +2,7 @@ import {
 	CHATGPT_LUNA_MODEL,
 	CHATGPT_SOL_MODEL,
 	CHATGPT_TERRA_MODEL,
+	CHATGPT_ASTRA_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
 	SYNTH_CLOUD_MUSE_SPARK_MODEL
 } from "../types/landing";
@@ -11,6 +12,7 @@ import { modelCatalogEntryForModel } from "./modelCatalog";
 export function performanceTargetId(summary: ModelPerformanceSummary): string | null {
 	if (summary.provider === "local-laguna") return "local-laguna";
 	if (summary.provider === "openai-codex-oauth") {
+		if (summary.modelId === CHATGPT_ASTRA_MODEL) return "chatgpt-astra";
 		if (summary.modelId === CHATGPT_LUNA_MODEL) return "chatgpt-luna";
 		if (summary.modelId === CHATGPT_SOL_MODEL) return "chatgpt-sol";
 		if (summary.modelId === CHATGPT_TERRA_MODEL) return "chatgpt-terra";

@@ -412,6 +412,7 @@ export type SynthBackendSettings = {
 };
 
 export type SynthConfigBridge = {
+	chooseEnvFile?(): Promise<string | null>;
 	get(): Promise<SynthBackendSettings>;
 	/** Rust-owned model projection; this never parses config.toml in the renderer. */
 	modelCatalog(): Promise<ModelCatalog>;

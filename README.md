@@ -6,6 +6,32 @@ artifacts, container evaluations, and optimization workflows.
 Official downloads and checksums: [usesynth.ai/download](https://www.usesynth.ai/download).
 Product documentation: [docs.usesynth.ai](https://docs.usesynth.ai).
 
+## ChatGPT, Astra, and OpenRouter
+
+After building, open **Settings → Models → ChatGPT subscription** and complete
+the browser login. If the callback port is occupied, paste the full redirect URL
+into the manual callback field. Cancel abandons that attempt. “Connected” means
+signed in, not guaranteed access to every model; reconnect if the session expires.
+
+Select **ChatGPT → GPT-6 Astra** (`gpt-6-astra`) to use your subscription.
+Alternatively, use **OpenRouter → API credits** in Settings to select an absolute
+path to a private env file containing `OPENROUTER_API_KEY=your-key`. Restrict it
+with `chmod 600 /absolute/path/to/private.env`; never commit it or paste the key
+into the path field. Preserve existing Synth variables: this env-file setting is
+shared. This setup does not import credentials into Keychain.
+
+Select OpenRouter Astra (`openai/gpt-6-astra`) explicitly. OpenRouter credits are
+separate from ChatGPT allowance; failed ChatGPT requests never automatically
+switch to a paid API. Key detection does not verify credit or model entitlement.
+Astra offers Low through Max reasoning (Medium default), text/image input, a
+1,050,000-token context, conservative 250,000-token auto-compaction, and Standard
+service. Access still depends on the chosen account/provider.
+
+Source builds bundle native Codex 0.153.0, with no global Codex or Node required
+when launching from Finder. Remove an obsolete `SYNTH_CODEX_BIN` override if the
+runtime check fails. These changes apply to builds from this source, not older
+downloaded binaries.
+
 ## Install or build locally
 
 The v0.10 macOS app is **ad-hoc signed and not Apple-notarized**. It does not
@@ -22,14 +48,20 @@ Cloud models and account features require network access and their own credentia
 From a source checkout on an Apple silicon Mac:
 
 ```bash
-./scripts/install.sh
-./scripts/workshop.sh build-and-run
+./scripts/install.sh --bootstrap && ./scripts/workshop.sh build-and-run
 ```
 
-Install `uv` and provide Python 3.11 or newer as `python3` on your PATH. Use the
-repository's pinned Node and Rust toolchains and the Xcode prerequisites checked
-by `./scripts/install.sh --check`. That check reports missing prerequisites
-without modifying local configuration.
+Bootstrap installs Homebrew if absent, Node 20/npm, Python 3.12, Rust stable,
+uv, jq, ripgrep, Git, and locked npm dependencies. Homebrew's
+[official interactive installer](https://brew.sh) may request administrator
+approval. Apple command-line tools must provide Swift 6+: if missing, the script
+opens Apple's installer and asks you to finish it and rerun. Older tools require
+an update or selecting Xcode 16+. Apple prompts/licenses are not automated.
+Existing `.env`, shell profiles, and the global Rust default are preserved;
+the build scripts locate the Homebrew tools without shell configuration.
+If prerequisites are already installed, use `./scripts/install.sh` instead.
+`./scripts/install.sh --check` checks prerequisites without changing local
+configuration; `--dry-run` previews project setup without installing anything.
 
 The build fetches exact public Containers, Optimizers, and MLX source revisions
 into `work/build-sources`. No sibling repositories or release credentials are
@@ -47,6 +79,23 @@ provider, model, limits, and cost controls before starting them.
 The supported source-build entrypoints are [install.sh](scripts/install.sh)
 and [workshop.sh](scripts/workshop.sh). Private release/test orchestration is not
 included in this public checkout.
+
+## Try four-agent review
+
+After installing dependencies, start with the bundled RuneBench recording:
+
+```bash
+bash examples/runebench/example.sh setup && bash examples/runebench/example.sh sample && bash examples/runebench/example.sh review
+```
+
+Open `http://127.0.0.1:8128/viewer`. Focus one agent, compare a teammate,
+inspect messages and unsuccessful actions, and follow source records and game
+frames. This recorded sample needs neither Docker nor AI credentials.
+The [example guide](examples/runebench/README.md) covers a fresh, free scripted
+run using Docker. Give Workshop the [starter prompt](examples/runebench/PROMPT.md)
+to guide setup and native visual review. These game-specific views are an
+example built with Workshop's shared inspector, not automatic interpretation
+of arbitrary logs.
 
 ## Connect an agent through MCP
 

@@ -6,8 +6,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="Synth Workshop Local.app"
 BUNDLE_ROOT="${CARGO_TARGET_DIR:-$ROOT/apps/synth_desktop/src-tauri/target}/release/bundle"
 APP_PATH="$BUNDLE_ROOT/macos/$APP"
-VERSION="$(node -p "require('$ROOT/apps/synth_desktop/package.json').version")"
-DMG_PATH="$BUNDLE_ROOT/dmg/Synth Workshop Local_${VERSION}_aarch64.dmg"
 
 usage() {
   cat <<'EOF'
@@ -28,7 +26,10 @@ fail() {
 }
 
 build() {
+  source "$ROOT/scripts/local-toolchain-env.sh"
   "$ROOT/scripts/install.sh" --check
+  VERSION="$(node -p 'require(process.argv[1]).version' "$ROOT/apps/synth_desktop/package.json")"
+  DMG_PATH="$BUNDLE_ROOT/dmg/Synth Workshop Local_${VERSION}_aarch64.dmg"
   command -v uv >/dev/null || fail "Install uv before building Workshop."
   [[ -d "$ROOT/node_modules" ]] || fail "Dependencies are not installed. Run: ./scripts/install.sh"
   printf '[workshop] building local app and DMG (no release credentials)\n'
