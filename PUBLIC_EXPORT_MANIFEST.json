@@ -13,10 +13,10 @@
       "sha256": "712abfc96740c8d66497fa49183bb7bcbcb06b6acd66c0e28ffcd21b5c1ea84e"
     },
     {
-      "bytes": 2178,
+      "bytes": 2219,
       "mode": "100644",
       "path": ".github/workflows/desktop-package.yml",
-      "sha256": "4c215532e2a2ee0600796cb20d58b66bcd75d639ab7bc383a90383141e7e9ead"
+      "sha256": "2335c482a102f91a9f82aed1d88995eb5807043dd1cd0ed60dc1c27ca0fcc304"
     },
     {
       "bytes": 2870,
@@ -178,7 +178,7 @@
       "bytes": 1265,
       "mode": "100644",
       "path": "apps/synth_desktop/package.json",
-      "sha256": "61e4bfa8fb70f6820bc774b90892e4f21043016e5e106cc8406b777026081cfd"
+      "sha256": "2a0574e2accb99724d48b2df707d5268d50e69d37d42a459cec6090eb0ad7e7b"
     },
     {
       "bytes": 5897,
@@ -592,13 +592,13 @@
       "bytes": 144084,
       "mode": "100644",
       "path": "apps/synth_desktop/src-tauri/Cargo.lock",
-      "sha256": "d1f26874225474bc3c53a31397e8c06e8512ca11a55422e216f48b85cab7b254"
+      "sha256": "e521c613df55f0cb6c6b7afd3a2f775320be2c14c78e86be0eefd958fbec0047"
     },
     {
       "bytes": 4988,
       "mode": "100644",
       "path": "apps/synth_desktop/src-tauri/Cargo.toml",
-      "sha256": "a074b17c0b220d3031e20b888964d0ef9c40aa8eae701ea478f77f53956294ec"
+      "sha256": "d4c0785a5a5c79a19d06e752ac20eea77d279608a05bedc98e4b511c10aa9c74"
     },
     {
       "bytes": 671,
@@ -2008,7 +2008,7 @@
       "bytes": 30757,
       "mode": "100644",
       "path": "apps/synth_desktop/src-tauri/src/optimizers/mlx_runtime.rs",
-      "sha256": "408006d4e9a4330e7f535ff5e64ba06ff7717c4c83305231d11e20dd1e1a2a7a"
+      "sha256": "51f458de9576f4e91aa2a793db5284253d6b300c4eef5e69212625c68276cb06"
     },
     {
       "bytes": 9464,
@@ -2563,10 +2563,10 @@
       "sha256": "00e9fad792e11b22762cff28f9cef49b31158ef36dc3eae70faf5cdef14433b8"
     },
     {
-      "bytes": 52506,
+      "bytes": 53402,
       "mode": "100644",
       "path": "apps/synth_desktop/src-tauri/src/session/annotation_projection.rs",
-      "sha256": "7bbe5bd23817f60aaf1cee01323a759e93f6c039118c9f98ee6b906b32f9a35d"
+      "sha256": "0a093f3ad3478595cdf9310f8f64194c92a60f75ef5e67c08ab3a65929852620"
     },
     {
       "bytes": 13992,
@@ -3028,7 +3028,7 @@
       "bytes": 1519,
       "mode": "100644",
       "path": "apps/synth_desktop/src-tauri/tauri.conf.json",
-      "sha256": "d8f3d7a517dff716060e7fc03e750ea8224ed1855c9e900507b3c2750fa80112"
+      "sha256": "18947baaa303134adcf757ce137867aef03d61333ff3c81b6cad5f67b2dec0a1"
     },
     {
       "bytes": 275,
@@ -3643,6 +3643,12 @@
       "sha256": "fb4bf89a12335db204865dcf8076eb2a5317668706581a5a42c71aea4679c6cd"
     },
     {
+      "bytes": 634,
+      "mode": "100644",
+      "path": "apps/synth_desktop/src/renderer/src/components/AppErrorBoundary.tsx",
+      "sha256": "bc14b44471e04879394ca639040361be14b8c24be3cf376e1178ae953e2ae7a1"
+    },
+    {
       "bytes": 1568,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/components/AppOverlays.tsx",
@@ -3997,10 +4003,10 @@
       "sha256": "f44aae70d7a18a2c5b0f90467951f611bc861ba228f32d56cbb1683c5e5facda"
     },
     {
-      "bytes": 54193,
+      "bytes": 56823,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/components/ReportsPage.tsx",
-      "sha256": "ab67b035211b6b46fc600369c142b58d55d6b20cbbb3569ccd970101c5f74f50"
+      "sha256": "b8f4bfe17d008d59227d1cde173f5d472bd8dc186ad64f9c2fa9bb0e4f2a2f48"
     },
     {
       "bytes": 4739,
@@ -4489,10 +4495,10 @@
       "sha256": "e78e1ea806367f75f49baa5471ffaff8c7b254057b55e702477ed98caa0e2fcc"
     },
     {
-      "bytes": 4327,
+      "bytes": 4430,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/main.tsx",
-      "sha256": "44215fad8d713eca448cad53129124a8ad89623e4bc88fe27cf08b71f7efab87"
+      "sha256": "79c00b084ff57a92d39e54cd6197b2fc2e5205339a5457d757dd02d0d9c392c2"
     },
     {
       "bytes": 8771,
@@ -4615,10 +4621,10 @@
       "sha256": "5393bae999969f16323f3ce32bda11c072ed32b909400cfc54fbc6b58b39f993"
     },
     {
-      "bytes": 70766,
+      "bytes": 71315,
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/runtime/desktopBridge.ts",
-      "sha256": "f93669bfd902082c63525eaed1cfb081f28a4b96e6c477d0119ef736b8d7aa35"
+      "sha256": "c070ead99014105ea85c73456304cbfa6d21b9e78af90bea11941a8623dbb79f"
     },
     {
       "bytes": 1117,
@@ -4739,6 +4745,12 @@
       "mode": "100644",
       "path": "apps/synth_desktop/src/renderer/src/runtime/publicError.ts",
       "sha256": "a0ebbd917c5b282b28f9343836bc79de717b6fc3f96a50a171cd7eb8cacd35c0"
+    },
+    {
+      "bytes": 1224,
+      "mode": "100644",
+      "path": "apps/synth_desktop/src/renderer/src/runtime/reportDrafts.ts",
+      "sha256": "e5191a3d7b89c236290bbd16d14e4b46d5debf2b219cf34dfaa7cc09c7a7203a"
     },
     {
       "bytes": 4384,
@@ -5254,7 +5266,7 @@
       "bytes": 108191,
       "mode": "100644",
       "path": "package-lock.json",
-      "sha256": "7a61c13101ea4a20c8d4650182ce9401e6df9c3697daff44af4a8df557e2dee3"
+      "sha256": "64e9ef6e12cf3a6019c8bad59bd65e45ad58ab3d033b079acf75baa3431fceab"
     },
     {
       "bytes": 1238,
@@ -5761,10 +5773,10 @@
       "sha256": "6daa79466324dd2d56ec2986b3e95c40e0375060483e59ad83c31cbc51a9544f"
     },
     {
-      "bytes": 24990,
+      "bytes": 27287,
       "mode": "100644",
       "path": "packages/workshop-visuals/families/analysis/analysis.annotation_workbench.v1/shell.tsx",
-      "sha256": "4c700c8f115a7a42c1fef16ab336809b19673da86d8195fa6279d1254b5190de"
+      "sha256": "00c3505609acc179f4df24121f81071afa42e648e98c05c60f65f99535fd17ed"
     },
     {
       "bytes": 2262,
@@ -7180,7 +7192,7 @@
       "bytes": 2055,
       "mode": "100644",
       "path": "scripts/prepare-build-sources.sh",
-      "sha256": "1b87dfb0fc42b9969dd6abd977844040d36bafa10931091fba17d39b1a8d7231"
+      "sha256": "51124c8885a57d559a44e2370f9d6938db98db276b9004d67b2a5d47fc190a10"
     },
     {
       "bytes": 3320,
@@ -7678,7 +7690,7 @@
   "policySha256": "f5ef8fbb4560ee9e401c26c94da6f6189732be76291915027bd7ee3f5f5684dd",
   "schema": "workshop.public-export-manifest.v1",
   "source": {
-    "commit": "81607fa7bb9d9cc6457995fb977ae660c64f82b1",
-    "tree": "275638dfd79c9356e19e302d37499130e8cadf98"
+    "commit": "005a84d4ff3ac2b12e288e735e911088b639127a",
+    "tree": "837e0769d96681a82cc9b0c5b181cdaf1796146d"
   }
 }

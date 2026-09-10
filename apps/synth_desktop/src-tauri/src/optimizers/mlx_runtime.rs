@@ -24,7 +24,7 @@ pub(super) const TRAINING_MODEL_ID: &str = "Qwen/Qwen3.5-2B";
 const HEALTH_TRIES: u32 = 480;
 const HEALTH_WAIT: Duration = Duration::from_millis(250);
 const MLX_RUNTIME_VERSION: &str = "0.6.0";
-const MLX_RUNTIME_SOURCE_REVISION: &str = "5d6db14330babcff170d2afbb8535de2138385a9";
+const MLX_RUNTIME_SOURCE_REVISION: &str = "99a87a650059fe0091f92d1dced955fb1ef32328";
 const MLX_RUNTIME_LOCK_SHA256: &str =
     "7f14b704ba9a6c30e6ced5cc88fc2ba6a58a936a9531cfaf168cbb664f83c420";
 pub const LOCAL_TRAINING_MAX_SEQ_LENGTH: u64 = 1024;
