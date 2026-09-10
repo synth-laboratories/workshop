@@ -4,6 +4,42 @@ use crate::storage::{ContentStore, persist_live_envelopes};
 fn binding() -> Value { json!({"slots":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/stream","poll_url":"http://127.0.0.1/events"}]}) }
 fn events() -> Vec<Value> { vec![json!({"rollout_id":"a","event_id":"1","kind":"frame"}), json!({"rollout_id":"b","event_id":"1","kind":"verifier","payload":{"reward.txt":0.75}})] }
 
+#[tokio::test]
+#[ignore = "requires an explicit captured archive and the packaged pinned synth-trace CLI"]
+async fn captured_trace_cli_import_seals_and_reopens_offline() {
+    let source_path = std::env::var("WORKSHOP_TRACE_ACCEPTANCE_SOURCE").expect("explicit captured archive path");
+    let dir = tempfile::tempdir().unwrap();
+    let storage = crate::storage::Storage::open(dir.path()).unwrap();
+    let content = ContentStore::new(storage.content_root());
+    let data = crate::data::DataStore::new(storage.database().clone(), content.clone());
+    let (imported, _) = data.ingest_trace_bundle(crate::trace_ingest::TraceBundleIngestRequest {
+        source_path, source_kind:Some("captured-acceptance".into()), title:None, source_uri:None, container_id:None
+    }).await.unwrap();
+    assert!(imported.trusted);
+    assert_eq!(imported.traces.len(), 1);
+    let digest = imported.traces[0].digest.clone();
+    let registry = crate::visuals::VisualRegistry::new(storage.database().clone(),
+        crate::storage::EventJournal::new(storage.database().clone()), content);
+    let request = serde_json::from_value(json!({"templateId":"trace.rollout_inspector.v1", "title":"Captured trace offline",
+        "bindings":{"slots":[{"input":"projection","kind":"trace_v5","source":digest,"projection":"rollout-inspector"}]},
+        "metadata":{"qualityGate":{"ready":true,"revision":1}}})).unwrap();
+    let (visual, _) = registry.create(request).await.unwrap();
+    let identity = registry.certification_identity(visual.id.clone()).await.unwrap();
+    let target = visual.id.clone();
+    // This tests the import/seal pipeline, not authoring or packaged CUA certification.
+    registry.db.run(move |conn| {
+        conn.execute("UPDATE visuals SET metadata_json=json_set(metadata_json,'$.qualityGate.certificationIdentity',json(?1)) WHERE id=?2",
+            rusqlite::params![identity.to_string(),target])?; Ok(())
+    }).await.unwrap();
+    let (seal, _) = registry.seal(visual.id, 1).await.unwrap();
+    let bundle = registry.get_seal(seal.receipt_digest).await.unwrap();
+    assert_eq!(bundle.data["bindings"]["inputs"][0]["evidence"]["origin"], "trace_inventory");
+    assert_eq!(bundle.data["projection"]["views"][0]["schema_version"], "synth.trace-projection.rollout-inspector.v1");
+    if let Some(path) = std::env::var_os("WORKSHOP_TEST_SEAL_EXPORT") {
+        std::fs::write(path, bundle.index_html).unwrap();
+    }
+}
+
 #[test]
 fn host_observation_freezes_without_caller_snapshot_and_preserves_lanes() {
     let dir = tempfile::tempdir().unwrap();

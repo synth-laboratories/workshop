@@ -2,6 +2,7 @@
 
 mod artifacts;
 mod seal_evidence;
+mod seal_template;
 mod backfill;
 pub mod cache_gc;
 

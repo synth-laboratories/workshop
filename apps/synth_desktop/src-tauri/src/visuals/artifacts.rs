@@ -201,6 +201,10 @@ impl VisualRegistry {
                 "views": views,
             });
         }
+        if let Some(source) = super::seal_template::embedded_source(&source.template_id,
+            visual.metadata.pointer("/qualityGate/certificationIdentity/templateDigest").and_then(Value::as_str))? {
+            data["template_source"] = source;
+        }
         scan_forbidden(&data, "$")?;
         let data_bytes = canonical_json(&data)?;
         let runtime_digest = hex_sha256(FROZEN_RUNTIME.as_bytes());
@@ -974,11 +978,18 @@ fn declared_limitations(value: &Value) -> Vec<String> {
     out
 }
 
-fn scan_forbidden(value: &Value, path: &str) -> Result<()> {
+pub(super) fn scan_forbidden(value: &Value, path: &str) -> Result<()> {
     match value {
         Value::Object(object) => {
             for (key, child) in object {
                 let normalized = key.to_ascii_lowercase().replace('-', "_");
+                // Trace V5 identifiers and boolean frame markers are not
+                // process-environment dumps. Keep scanning reference strings;
+                // objects and other environment-shaped keys remain forbidden.
+                let benign_environment_field = (normalized == "environment_ref" && child.is_string())
+                    || (normalized == "environment_frame" && child.is_boolean())
+                    || (normalized == "environment_events" && matches!(child.as_str(),
+                        Some("complete" | "partial" | "aggregate_only" | "unavailable" | "not_captured" | "unsupported")));
                 if [
                     "api_key",
                     "access_token",
@@ -996,7 +1007,7 @@ fn scan_forbidden(value: &Value, path: &str) -> Result<()> {
                     "object_key",
                 ]
                 .iter()
-                .any(|needle| normalized.contains(needle))
+                .any(|needle| normalized.contains(needle) && !(benign_environment_field && *needle == "environment"))
                 {
                     bail!("seal policy forbids {path}.{key}");
                 }
@@ -1022,7 +1033,9 @@ fn scan_forbidden(value: &Value, path: &str) -> Result<()> {
 }
 
 fn build_index_html(data: &Value, runtime_digest: &str) -> Result<String> {
-    let inline = serde_json::to_string(data)?.replace("</script", "<\\/script");
+    // HTML closes script elements case-insensitively, even for JSON data.
+    // Escape every '<' so source text and producer strings remain inert.
+    let inline = serde_json::to_string(data)?.replace('<', "\\u003c");
     let css = INSPECTOR_CSS.replace("</style", "<\\/style");
     Ok(format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none';"><title>Sealed Workshop visual</title><style>html{{font:14px system-ui;color:#20232a;background:#f7f7f5}}body{{margin:0}}#app{{max-width:1100px;margin:auto;padding:32px}}.kicker{{color:#6b7280}}h1{{font-size:30px}}.visual{{background:white;border:1px solid #ddd;border-radius:14px;padding:20px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}{css}</style></head><body><main id="app"></main><script id="synth-artifact-data" type="application/json">{inline}</script><script data-runtime-digest="{runtime_digest}">{FROZEN_RUNTIME}</script></body></html>"#
@@ -1198,7 +1211,21 @@ mod tests {
     #[test]
     fn redaction_and_network_policy_fail_closed() {
         assert!(scan_forbidden(&json!({"api_key":"nope"}), "$").is_err());
+        assert!(scan_forbidden(&json!({"environment_ref":"env:dungeongrid_gold"}), "$").is_ok());
+        assert!(scan_forbidden(&json!({"environment_frame":true}), "$").is_ok());
+        assert!(scan_forbidden(&json!({"environment_events":"partial"}), "$").is_ok());
+        assert!(scan_forbidden(&json!({"environment_events":"private arbitrary text"}), "$").is_err());
+        assert!(scan_forbidden(&json!({"environment_frame":{"secret":"nope"}}), "$").is_err());
+        assert!(scan_forbidden(&json!({"environment_ref":{"API_KEY":"nope"}}), "$").is_err());
+        assert!(scan_forbidden(&json!({"environment_ref":"s3://private/object"}), "$").is_err());
+        assert!(scan_forbidden(&json!({"environment":{"PATH":"private"}}), "$").is_err());
+        assert!(scan_forbidden(&json!({"kind":"inline","evidence":{"origin":"trace_inventory"},"data":{"api_key":"nope"}}), "$").is_err());
         assert!(refuse_network_html("<script>fetch('/x')</script>").is_err());
+        let data = json!({"text":"</SCRIPT><script>notExecutable()</script><!--"});
+        let html = build_index_html(&data, "fixture").unwrap();
+        assert!(!html.contains("</SCRIPT>"));
+        let encoded = html.split("type=\"application/json\">").nth(1).unwrap().split("</script>").next().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(encoded).unwrap(), data);
     }
 
     fn optimizer_view(visual_id: &str, lifecycle: &str, completeness: &str, role: &str) -> Value {
