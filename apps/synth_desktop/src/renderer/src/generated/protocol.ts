@@ -722,6 +722,13 @@ export const commands = {
 	visualsTemplateSave: (sessionId: string, templateId: string, manifest: string, source: string) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_template_save", { sessionId, templateId, manifest, source })),
 	visualsTemplateCreate: (sessionId: string, templateId: string, fromTemplateId: string, title: string | null) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_template_create", { sessionId, templateId, fromTemplateId, title })),
 	visualsTemplateValidate: (templateId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visuals_template_validate", { templateId })),
+	approvalsPending: () => typedError<PendingApprovalView[], AppError_Serialize>(__TAURI_INVOKE("approvals_pending")),
+	/**
+	 *  Human-only compatibility operation. Only a unique currently pending sheet
+	 *  may settle. As on the previous implementation, a replay fails closed; the
+	 *  legacy alreadySettled field is false, not a promise of durable idempotence.
+	 */
+	approvalsApproveDigest: (request: ApproveDigestRequest) => typedError<ApproveDigestOutcome, AppError_Serialize>(__TAURI_INVOKE("approvals_approve_digest", { request })),
 };
 
 /* Types */
@@ -870,6 +877,16 @@ export type AppEvent = {
 	remoteSequence?: number | null,
 	commandId?: string | null,
 	createdAt: string,
+};
+
+export type ApproveDigestOutcome = {
+	approvalId: string,
+	alreadySettled: boolean,
+	executionSpecDigest: string,
+};
+
+export type ApproveDigestRequest = {
+	executionSpecDigest: string,
 };
 
 export type ArtifactMutationReceipt = {
@@ -3465,6 +3482,14 @@ export type PaidComputeAutoApprovalSettings = {
 	maxRequestUsd: string,
 	maxConversationUsd: string,
 	providers: string[],
+};
+
+export type PendingApprovalView = {
+	approvalId: string,
+	sessionId: string,
+	kind: string,
+	requiresHuman: boolean,
+	preparationDigest: string | null,
 };
 
 export type PendingGrantSummary = {

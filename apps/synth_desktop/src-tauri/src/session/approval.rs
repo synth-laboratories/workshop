@@ -21,6 +21,9 @@ use std::{
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
+#[path = "approval_inspection.rs"]
+pub(crate) mod inspection;
+
 pub(crate) type ResolverFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ApprovalDelivery>> + Send + 'a>>;
 
@@ -1847,6 +1850,54 @@ mod tests {
             .await
             .unwrap_err();
         assert!(missing.to_string().contains("no longer pending"));
+    }
+
+    #[tokio::test]
+    async fn approval_inspection_reports_live_state_and_exact_resolution_preserves_cap() {
+        let broker = ApprovalBroker::new(SessionPersistence::Null);
+        let app = tauri::test::mock_app();
+        let (resolver, rx) = HostDecisionResolver::pair();
+        let id = broker.request(app.handle(), ApprovalOrigin {
+            session_id: "operator-session".into(), instance_id: "operator-test".into(),
+        }, openrouter_paid(Some(10_000)), resolver).await.unwrap();
+        let rows = broker.pending_snapshot().await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].approval_id, id);
+        assert_eq!(rows[0].session_id, "operator-session");
+        assert_eq!(rows[0].preparation_digest.as_deref(), Some("sha256:spec"));
+        assert!(rows[0].requires_human);
+        assert!(broker.approve_digest(app.handle(), "sha256:wrong").await.is_err());
+        let (first, second) = tokio::join!(
+            broker.approve_digest(app.handle(), "sha256:spec"),
+            broker.approve_digest(app.handle(), "sha256:spec"));
+        assert_ne!(first.is_ok(), second.is_ok());
+        assert!(matches!(rx.await.unwrap().unwrap(), ApprovalDecision::ApproveWithCap { cap }
+            if cap.max_cost_usd_micros == Some(10_000) && cap.max_rollouts == Some(8)));
+        assert!(broker.pending_snapshot().await.is_empty());
+        assert!(broker.approve_digest(app.handle(), "sha256:spec").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn approval_inspection_refuses_ambiguous_and_expired_digests() {
+        let broker = ApprovalBroker::new(SessionPersistence::Null);
+        let app = tauri::test::mock_app();
+        let mut receivers = Vec::new();
+        for session in ["first", "second"] {
+            let (resolver, rx) = HostDecisionResolver::pair();
+            receivers.push(rx);
+            broker.request(app.handle(), ApprovalOrigin { session_id: session.into(),
+                instance_id: "ambiguous-test".into() }, openrouter_paid(Some(10_000)), resolver).await.unwrap();
+        }
+        assert!(broker.approve_digest(app.handle(), "sha256:spec").await.unwrap_err().to_string().contains("multiple"));
+        assert_eq!(broker.pending_snapshot().await.len(), 2);
+        for session in ["first", "second"] {
+            broker.expire_origin(app.handle(), &ApprovalOrigin { session_id: session.into(),
+                instance_id: "ambiguous-test".into() }, "test-complete").await.unwrap();
+        }
+        assert!(broker.pending_snapshot().await.is_empty());
+        assert!(broker.approve_digest(app.handle(), "sha256:spec").await.is_err());
+        assert!(broker.approve_digest(app.handle(), " ").await.is_err());
+        for rx in receivers { assert!(rx.await.unwrap().is_err()); }
     }
 
     fn openrouter_paid(max_cost_usd_micros: Option<u64>) -> ApprovalKind {
