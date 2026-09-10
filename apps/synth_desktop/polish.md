@@ -393,6 +393,29 @@ Pick from debt flags or CUA; log when done.
 - **Refs:** `runtime/visualPresentation.ts`, `components/VisualsPage.tsx`, `styles/app.css`, `scripts/test-workshop-mcp.py`, and `docs/engineering/capability-migration-ledger.md`.
 
 
+## Reports and trace UX consolidation (2026-09-10)
+
+- **Implemented:** Retained-trace picker with bounded loading, empty/error copy,
+  duplicate digest filtering and accessible labels; previews mount only when
+  expanded. Trace attachment is fenced against duplicate clicks, navigation,
+  concurrent saves and draft edits; edits made during the write retain their
+  updated revision baseline. Save copy now distinguishes session drafts from
+  committed revisions. Blank comment/record/log actions are disabled.
+- **Trace:** Citation selection reveals annotation events across actor/search
+  filters. Comparison requires a specific actor. Empty annotation columns are
+  omitted. Existing useVisualState persistence and research snapshot/generation
+  safeguards remain intact; the older wholesale rewrites and orphan global
+  citation bridge are not adopted. Exact reward values remain unchanged.
+- **Verification:** Eight model-free tests pass, including actual React browser
+  interactions, navigation/reload/save races, attachment races, citation reveal
+  and overflow checks at 960/1280/1440px. Renderer typecheck and production
+  frontend build pass (existing chunk-size warnings).
+- **Still required before visual sign-off:** Native WebView CUA review and the
+  relevant installed-app acceptance. Browser fixtures are not native proof.
+  Published app binaries/tags were not changed. No paid/provider tests ran.
+- **Refs:** ReportsPage.tsx, AgentTraceInspector.tsx, TraceViews.tsx,
+  report-draft-recovery.test.mjs, reports_page.test.mjs, trace-ux.test.mjs.
+
 ## Hosted agents and attachable desktop (2026-09-07)
 
 - **Changed:** Settings → Context includes hosted ACP task creation, prompt sending, retained history, cancellation, explicit resume and one-time human permission controls. It uses existing Settings components and generated native commands.
