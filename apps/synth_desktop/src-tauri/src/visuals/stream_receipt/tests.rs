@@ -13,6 +13,31 @@ fn poll(id: &str, revision: i64, events: Value) -> StreamReceipt {
 }
 
 #[test]
+fn concurrent_poll_snapshots_pair_receipt_with_the_exact_retained_prefix() {
+    let id = id();
+    let writer_id = id.clone();
+    let writer = std::thread::spawn(move || {
+        for sequence in 1..=100 {
+            poll(&writer_id, 1, json!([{"sequence":sequence,"kind":"frame"}]));
+            std::thread::yield_now();
+        }
+    });
+    for _ in 0..100 {
+        let (receipt, events, truncated) = evidence_snapshot(&id, 1, &declared());
+        assert!(!truncated);
+        assert_eq!(receipt.recovered, events.len() as u64);
+        assert_eq!(receipt.streams[0].poll_responses, events.len() as u64);
+        std::thread::yield_now();
+    }
+    writer.join().unwrap();
+    let (receipt, events, truncated) = evidence_snapshot(&id, 1, &declared());
+    assert!(!truncated);
+    assert_eq!(receipt.recovered, 100);
+    assert_eq!(events.len(), 100);
+    assert_eq!(events.last().unwrap()["sequence"], 100);
+}
+
+#[test]
 fn folded_lanes_control_gaps_and_conflicts_remain_distinct() {
     let mut fold = LiveFold::default();
     let events = vec![json!({"rollout_id":"a","sequence":1,"kind":"frame"}),

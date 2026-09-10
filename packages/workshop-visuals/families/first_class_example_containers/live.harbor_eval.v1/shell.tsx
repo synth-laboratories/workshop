@@ -131,7 +131,7 @@ export function Shell(props: ShellProps) {
     [declaredStreamCount, stream.events]
   );
   const hasSource = declaredStreamCount > 0 || Boolean(stream.events);
-  const { events, state, error, ready } = useLiveEvalStream({
+  const { events, state, error, ready, hostEvidence } = useLiveEvalStream({
     replay: props.replay,
     fixtureEvents,
     replayMs: stream.replay_ms,
@@ -152,7 +152,10 @@ export function Shell(props: ShellProps) {
     selectedEventIndex != null && selectedEventIndex < visibleEvents.length
       ? visibleEvents[selectedEventIndex]
       : visibleEvents.at(-1);
-  const projection = projectLiveEval(visibleEvents);
+  // The host projection covers its whole observed prefix. A historical
+  // selection still needs the specialized view of that selected event cut.
+  const projection = eventCutoff == null && hostEvidence?.projection
+    ? hostEvidence.projection : projectLiveEval(visibleEvents);
   const trials = useMemo(() => foldTrials(visibleEvents), [visibleEvents]);
   const skills = useMemo(() => harborSkillProgress(visibleEvents), [visibleEvents]);
   const status = [...visibleEvents].reverse().find((event) => event.kind === "status");
