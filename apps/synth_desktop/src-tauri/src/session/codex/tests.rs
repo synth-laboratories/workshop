@@ -668,6 +668,21 @@ async fn interrupt_terminates_non_cooperative_tool_tree_and_allows_a_new_turn() 
         .unwrap()
         .unwrap();
     assert_eq!(first_run.outcome.unwrap()["reason"], "operator_cancelled");
+    let usage_turn = first_turn.clone();
+    let usage = core.storage().database().run(move |conn| {
+        Ok(conn.query_row(
+            "SELECT status, input_tokens, output_tokens FROM usage_records WHERE request_id = ?1",
+            [usage_turn], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, Option<i64>>(2)?))
+        )?)
+    }).await.unwrap();
+    assert_eq!(usage, ("interrupted".into(), None, None),
+        "Stop must persist interrupted usage without stale or late token counts");
+    let after_stop = core.journal().session_events_after(request.session_id.clone(), 0, 200)
+        .await.unwrap();
+    assert!(!after_stop.iter().any(|event| event.payload.to_string().contains("LATE_CANCEL_SENTINEL")),
+        "late output must not enter durable history after Stop");
+    assert!(!after_stop.iter().any(|event| event.kind == "turn/completed"),
+        "late provider completion must not overwrite cancellation");
     let cancelled = core
         .journal()
         .session_events_after(request.session_id.clone(), 0, 200)
