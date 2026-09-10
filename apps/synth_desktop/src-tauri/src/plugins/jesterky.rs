@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const VERSION: &str = "0.1.3";
+pub const VERSION: &str = "0.1.4";
 pub const ID: &str = "jesterky";
 /// Saved independently of the removable runtime; changing scope never starts work.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, specta::Type, PartialEq)]
