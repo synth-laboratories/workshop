@@ -795,6 +795,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/traces") {
         return dispatch_traces(method, path, json_body, core).await;
     }
+    if path == "/v1/documents" || path.starts_with("/v1/documents/") {
+        return crate::documents::ipc::dispatch_documents(method, path, json_body, core).await;
+    }
     if path.starts_with("/v1/analysis") {
         return dispatch_analysis(method, path, json_body, core).await;
     }

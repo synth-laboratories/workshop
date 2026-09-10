@@ -52,6 +52,9 @@ impl Commands {
     pub const MODEL_MULTI_AGENT_LIST: &'static str = "model_multi_agent_list";
     pub const MODEL_MULTI_AGENT_UPDATE: &'static str = "model_multi_agent_update";
     pub const WORKSPACE_ACCESS_GET: &'static str = "workspace_access_get";
+    pub const WORKSPACE_READ_FILE: &'static str = "workspace_read_file";
+    pub const WORKSPACE_LIST_DIR: &'static str = "workspace_list_dir";
+    pub const DOCUMENT_SHOW: &'static str = "document_show";
     pub const WORKSPACE_ACCESS_UPDATE: &'static str = "workspace_access_update";
     pub const WORKSPACE_SCOPE_GET: &'static str = "workspace_scope_get";
     pub const WORKSPACE_SCOPE_CHOOSE_AND_ATTACH: &'static str = "workspace_scope_choose_and_attach";

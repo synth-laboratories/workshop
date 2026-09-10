@@ -16,6 +16,7 @@ import type {
 	ReportVisibilityRequest,
 	ResearchLogEntry
 } from "../bridge";
+import { Markdown } from "../documents/DocumentContent";
 import { toPublicError } from "../runtime/publicError";
 import { formatVisualAdmissionIdentity } from "../types/landing";
 
@@ -102,7 +103,15 @@ function CompareStory({ payload }: { payload: Record<string, unknown> }) {
 function ReportEvidence({ block }: { block: ReportBlock }) {
 	if (block.accessState === "missing") return <p className="reports-missing">{MISSING}</p>;
 	if (block.kind === "report.prose.v1" || typeof block.payload.markdown === "string") {
-		return <p className="reports-prose">{String(block.payload.markdown || "")}</p>;
+		// Report prose is markdown and always was; rendering it inside a single
+		// `<p>` printed the source — headings, lists and fences as literal
+		// characters — which is why a sealed report read worse than its own
+		// draft box. The document pane's renderer is the one markdown reader.
+		return (
+			<div className="reports-prose">
+				<Markdown source={String(block.payload.markdown || "")} />
+			</div>
+		);
 	}
 	if (block.kind === "report.result.v1" && block.payload.schema_version === "craftax.compare-story.v1") {
 		return <CompareStory payload={block.payload} />;

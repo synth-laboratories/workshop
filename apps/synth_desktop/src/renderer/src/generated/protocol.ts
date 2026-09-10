@@ -694,6 +694,30 @@ export const commands = {
 	 *  without current consent it ships nothing and reports zero.
 	 */
 	productTelemetryFlushNow: () => typedError<number, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_flush_now")),
+	/**
+	 *  Read one workspace document for display.
+	 *
+	 *  Refuses with `document_outside_workspace` for a path outside every session
+	 *  root, and with `document_unavailable` plus the named reason for a path that
+	 *  is in scope but cannot be typeset. Neither is an empty string.
+	 */
+	workspaceReadFile: (sessionId: string, path: string) => typedError<WorkspaceDocument, AppError_Serialize>(__TAURI_INVOKE("workspace_read_file", { sessionId, path })),
+	/**
+	 *  List one workspace directory — the breadcrumb's and the file picker's data.
+	 *
+	 *  Rows that cannot be opened are listed with the reason rather than filtered
+	 *  out, so a folder of binaries reads as a folder of binaries and not as empty.
+	 */
+	workspaceListDir: (sessionId: string, path: string) => typedError<WorkspaceDirectory, AppError_Serialize>(__TAURI_INVOKE("workspace_list_dir", { sessionId, path })),
+	/**
+	 *  Open one workspace document in the right panel.
+	 *
+	 *  The same rail a visual takes: resolve or create the deterministic pane
+	 *  record, emit the durable `visual.show` event, and let the panel's existing
+	 *  listener open it. The renderer does not open the pane itself, so a document
+	 *  the agent shows and a document the reader clicks arrive by one path.
+	 */
+	documentShow: (sessionId: string, path: string) => typedError<DocumentShown_Serialize, AppError_Serialize>(__TAURI_INVOKE("document_show", { sessionId, path })),
 };
 
 /* Types */
@@ -909,6 +933,12 @@ export type BeginResult = {
 };
 
 export type BillingAction = "upgrade" | "manage";
+
+export type Breadcrumb = {
+	label: string,
+	path: string,
+	isDirectory: boolean,
+};
 
 export type BrowserRuntimeStatus = {
 	phase: string,
@@ -1404,6 +1434,67 @@ export type DiagnosticReportRequest = {
 	optimizerRunId?: string | null,
 	traceId?: string | null,
 	details?: unknown,
+};
+
+/**  One directory row. Rows that cannot be opened are listed with the reason. */
+export type DirectoryEntry = {
+	name: string,
+	path: string,
+	kind: DocumentKind,
+	language: string,
+	byteSize: number,
+	modifiedAt: string | null,
+	/**  Whether opening this row lands on a document. */
+	openable: boolean,
+	/**
+	 *  Why it does not, when it does not. Never `None` while `openable` is
+	 *  false: a row the user cannot act on still owes them a sentence.
+	 */
+	reason: string | null,
+};
+
+/**  What kind of surface a path is, as far as the pane is concerned. */
+export type DocumentKind =
+/**  Typeset by default, with a View source toggle. */
+"markdown" |
+/**  Syntax highlighted, with a language badge. */
+"code" |
+/**  Monospaced, unhighlighted. */
+"plain_text" |
+/**  A folder. Presentable as a listing, never as a document. */
+"directory";
+
+/**
+ *  What the pane receives when a document is opened: the durable pane record
+ *  and the first read, in one round trip.
+ *
+ *  Two calls would let the pane render a viewer whose document then refuses,
+ *  and the reader would watch an empty pane appear before the reason arrived.
+ */
+export type DocumentShown = DocumentShown_Serialize | DocumentShown_Deserialize;
+
+/**
+ *  What the pane receives when a document is opened: the durable pane record
+ *  and the first read, in one round trip.
+ *
+ *  Two calls would let the pane render a viewer whose document then refuses,
+ *  and the reader would watch an empty pane appear before the reason arrived.
+ */
+export type DocumentShown_Deserialize = {
+	visual: VisualRecord_Deserialize,
+	document: WorkspaceDocument,
+};
+
+/**
+ *  What the pane receives when a document is opened: the durable pane record
+ *  and the first read, in one round trip.
+ *
+ *  Two calls would let the pane render a viewer whose document then refuses,
+ *  and the reader would watch an empty pane appear before the reason arrived.
+ */
+export type DocumentShown_Serialize = {
+	visual: VisualRecord_Serialize,
+	document: WorkspaceDocument,
 };
 
 /**
@@ -4995,6 +5086,42 @@ export type WorkspaceAttachment = {
 	access: WorkspaceAccessMode,
 	source: AttachmentSource,
 	createdAt: string,
+};
+
+export type WorkspaceDirectory = {
+	schemaVersion: string,
+	path: string,
+	root: string,
+	relativePath: string,
+	entries: DirectoryEntry[],
+	truncated: boolean,
+	breadcrumbs: Breadcrumb[],
+};
+
+/**  One read document, as the pane receives it. */
+export type WorkspaceDocument = {
+	schemaVersion: string,
+	path: string,
+	root: string,
+	relativePath: string,
+	name: string,
+	kind: DocumentKind,
+	language: string,
+	text: string,
+	/**  Size of the file on disk, not of `text`. */
+	byteSize: number,
+	/**
+	 *  True when `text` is a prefix. The pane says which prefix rather than
+	 *  pretending the file ended.
+	 */
+	truncated: boolean,
+	/**
+	 *  sha256 of the returned bytes. When `truncated`, it names the prefix that
+	 *  was rendered — not the file — which is the only claim it can honestly make.
+	 */
+	contentDigest: string,
+	modifiedAt: string | null,
+	breadcrumbs: Breadcrumb[],
 };
 
 export type WorkspaceGrantRequest = {
