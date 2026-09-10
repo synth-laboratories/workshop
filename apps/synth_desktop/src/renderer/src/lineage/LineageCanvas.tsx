@@ -26,6 +26,11 @@ export function LineageCanvas({
 	label: string;
 }) {
 	const ranked = useMemo(() => rankDag(nodes, edges), [nodes, edges]);
+	const rankedById = useMemo(() => {
+		const byId = new Map<string, (typeof ranked)[number]>();
+		for (const node of ranked) if (!byId.has(node.id)) byId.set(node.id, node);
+		return byId;
+	}, [ranked]);
 	const ordered = useMemo(() => rankedOrder(ranked), [ranked]);
 	const [view, setView] = useState<ViewTransform>({ x: 0, y: 0, scale: 1 });
 	const drag = useRef<{ x: number; y: number; originX: number; originY: number } | null>(null);
@@ -141,8 +146,8 @@ export function LineageCanvas({
 				>
 					<svg className="lineage-links" width={width} height={height} aria-hidden>
 						{edges.map((edge) => {
-							const source = ranked.find((node) => node.id === edge.sourceId);
-							const target = ranked.find((node) => node.id === edge.targetId);
+							const source = rankedById.get(edge.sourceId);
+							const target = rankedById.get(edge.targetId);
 							if (!source || !target) return null;
 							const x1 = source.x + NODE_WIDTH / 2;
 							const y1 = source.y + NODE_HEIGHT;

@@ -42,11 +42,15 @@ export function traceInspectability(trace: TraceV5Record): TraceInspectability {
 	return { eligible: true, label: "Inspect" };
 }
 
-/** The digest a visual's projection slot is bound to, or null if it is not a trace inspector. */
+/** The digest bound to the projection input (or legacy slot), or null for other visuals. */
 export function traceDigestBinding(visual: VisualRecord): string | null {
 	if (visual.templateId !== TRACE_INSPECTOR_TEMPLATE) return null;
-	const bindings = visual.bindings as { slots?: Array<{ slot?: string; kind?: string; source?: string }> };
-	const projection = bindings?.slots?.find((slot) => slot.slot === "projection" && slot.kind === "trace_v5");
+	const bindings = visual.bindings as {
+		inputs?: Array<{ input?: string; kind?: string; source?: string }>;
+		slots?: Array<{ slot?: string; kind?: string; source?: string }>;
+	};
+	const projection = bindings?.inputs?.find((binding) => binding.input === "projection" && binding.kind === "trace_v5")
+		?? bindings?.slots?.find((binding) => binding.slot === "projection" && binding.kind === "trace_v5");
 	return typeof projection?.source === "string" ? projection.source : null;
 }
 
