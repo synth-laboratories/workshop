@@ -54,6 +54,10 @@ pub struct TemplateReadinessContract {
     #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub minimum_semantic_event_count: u64,
+    /// Distinct non-control transport envelopes required from the host receipt.
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub minimum_transport_envelope_count: u64,
     #[serde(default)]
     pub require_terminal: bool,
     /// Which evidence affordances this surface actually offers, out of

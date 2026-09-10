@@ -30010,12 +30010,422 @@
       "outputSchema": {
         "type": "object",
         "properties": {
-          "result": {}
+          "result": {
+            "$ref": "#/$defs/T1"
+          }
         },
         "required": [
           "result"
         ],
-        "$defs": {}
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "string"
+              },
+              "events": {},
+              "cursor": {
+                "$ref": "#/$defs/T2"
+              },
+              "projection": {},
+              "evidenceTruncated": {
+                "type": "boolean"
+              },
+              "receipt": {
+                "$ref": "#/$defs/T3"
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "events",
+              "cursor",
+              "projection",
+              "evidenceTruncated",
+              "receipt"
+            ],
+            "additionalProperties": false
+          },
+          "T2": {
+            "type": "object",
+            "properties": {
+              "next": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "high_water": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "has_more": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "const": false
+                  },
+                  {
+                    "const": true
+                  }
+                ]
+              },
+              "closed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "closed"
+            ],
+            "additionalProperties": false
+          },
+          "T3": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "string"
+              },
+              "visualId": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "number"
+              },
+              "state": {
+                "anyOf": [
+                  {
+                    "const": "terminal"
+                  },
+                  {
+                    "const": "declared"
+                  },
+                  {
+                    "const": "idle"
+                  },
+                  {
+                    "const": "replaying"
+                  },
+                  {
+                    "const": "live"
+                  },
+                  {
+                    "const": "error"
+                  }
+                ]
+              },
+              "timeInStateMs": {
+                "type": "number"
+              },
+              "observed": {
+                "type": "boolean"
+              },
+              "everLeftDeclared": {
+                "type": "boolean"
+              },
+              "declaredStreamCount": {
+                "type": "number"
+              },
+              "respondingStreamCount": {
+                "type": "number"
+              },
+              "closedStreamCount": {
+                "type": "number"
+              },
+              "streamsMissingTransport": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "streams": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T4"
+                }
+              },
+              "gaps": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T6"
+                }
+              },
+              "conflicts": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T7"
+                }
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "recovered": {
+                "type": "number"
+              },
+              "envelopeCount": {
+                "type": "number"
+              },
+              "nonControlEnvelopeCount": {
+                "type": "number"
+              },
+              "envelopesByKind": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T8"
+                }
+              },
+              "trackingTruncated": {
+                "type": "boolean"
+              },
+              "firstObservedAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "lastObservedAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "visualId",
+              "revision",
+              "state",
+              "timeInStateMs",
+              "observed",
+              "everLeftDeclared",
+              "declaredStreamCount",
+              "respondingStreamCount",
+              "closedStreamCount",
+              "streamsMissingTransport",
+              "streams",
+              "gaps",
+              "conflicts",
+              "ready",
+              "recovered",
+              "envelopeCount",
+              "nonControlEnvelopeCount",
+              "envelopesByKind",
+              "trackingTruncated",
+              "firstObservedAt",
+              "lastObservedAt"
+            ],
+            "additionalProperties": false
+          },
+          "T4": {
+            "type": "object",
+            "properties": {
+              "streamId": {
+                "type": "string"
+              },
+              "declaredSource": {
+                "type": "string"
+              },
+              "sseSource": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "pollAttempts": {
+                "type": "number"
+              },
+              "pollResponses": {
+                "type": "number"
+              },
+              "pollFailures": {
+                "type": "number"
+              },
+              "firstResponseLatencyMs": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "lastSequence": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "cursorNext": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "envelopeCount": {
+                "type": "number"
+              },
+              "distinctEnvelopeCount": {
+                "type": "number"
+              },
+              "closed": {
+                "type": "boolean"
+              },
+              "lastFailure": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/T5"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "streamId",
+              "declaredSource",
+              "sseSource",
+              "pollAttempts",
+              "pollResponses",
+              "pollFailures",
+              "firstResponseLatencyMs",
+              "lastSequence",
+              "cursorNext",
+              "envelopeCount",
+              "distinctEnvelopeCount",
+              "closed",
+              "lastFailure"
+            ],
+            "additionalProperties": false
+          },
+          "T5": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "observedAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "status",
+              "retryable",
+              "observedAt"
+            ],
+            "additionalProperties": false
+          },
+          "T6": {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "string"
+              },
+              "after": {
+                "type": "number"
+              },
+              "before": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "scope",
+              "after",
+              "before"
+            ],
+            "additionalProperties": false
+          },
+          "T7": {
+            "type": "object",
+            "properties": {
+              "identity": {
+                "type": "string"
+              },
+              "scope": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "identity",
+              "scope",
+              "message"
+            ],
+            "additionalProperties": false
+          },
+          "T8": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "count": {
+                "type": "number"
+              },
+              "control": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "count",
+              "control"
+            ],
+            "additionalProperties": false
+          }
+        }
       },
       "annotations": {
         "readOnlyHint": false,
@@ -31199,6 +31609,13 @@
                   }
                 ]
               },
+              "minimumTransportEnvelopeCount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
               "requireTerminal": {
                 "anyOf": [
                   {
@@ -31469,6 +31886,13 @@
                   }
                 ]
               },
+              "minimumTransportEnvelopeCount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
               "requireTerminal": {
                 "anyOf": [
                   {
@@ -31661,10 +32085,10 @@
                     "const": "failed"
                   },
                   {
-                    "const": "draft"
+                    "const": "live"
                   },
                   {
-                    "const": "live"
+                    "const": "draft"
                   },
                   {
                     "const": "saved"
@@ -31906,10 +32330,10 @@
                     "const": "failed"
                   },
                   {
-                    "const": "draft"
+                    "const": "live"
                   },
                   {
-                    "const": "live"
+                    "const": "draft"
                   },
                   {
                     "const": "saved"
@@ -33635,10 +34059,10 @@
                     "const": "failed"
                   },
                   {
-                    "const": "draft"
+                    "const": "live"
                   },
                   {
-                    "const": "live"
+                    "const": "draft"
                   },
                   {
                     "const": "saved"
@@ -33824,10 +34248,10 @@
                     "const": "failed"
                   },
                   {
-                    "const": "draft"
+                    "const": "live"
                   },
                   {
-                    "const": "live"
+                    "const": "draft"
                   },
                   {
                     "const": "saved"
@@ -34050,10 +34474,10 @@
                     "const": "failed"
                   },
                   {
-                    "const": "draft"
+                    "const": "live"
                   },
                   {
-                    "const": "live"
+                    "const": "draft"
                   },
                   {
                     "const": "saved"
@@ -34207,10 +34631,10 @@
                     "const": "failed"
                   },
                   {
-                    "const": "draft"
+                    "const": "live"
                   },
                   {
-                    "const": "live"
+                    "const": "draft"
                   },
                   {
                     "const": "saved"
@@ -34462,10 +34886,10 @@
                     "const": "failed"
                   },
                   {
-                    "const": "draft"
+                    "const": "live"
                   },
                   {
-                    "const": "live"
+                    "const": "draft"
                   },
                   {
                     "const": "saved"
@@ -34727,10 +35151,10 @@
                     "const": "failed"
                   },
                   {
-                    "const": "draft"
+                    "const": "live"
                   },
                   {
-                    "const": "live"
+                    "const": "draft"
                   },
                   {
                     "const": "saved"
@@ -34972,10 +35396,10 @@
                     "const": "failed"
                   },
                   {
-                    "const": "draft"
+                    "const": "live"
                   },
                   {
-                    "const": "live"
+                    "const": "draft"
                   },
                   {
                     "const": "saved"
@@ -35227,10 +35651,10 @@
                     "const": "failed"
                   },
                   {
-                    "const": "draft"
+                    "const": "live"
                   },
                   {
-                    "const": "live"
+                    "const": "draft"
                   },
                   {
                     "const": "saved"
@@ -35830,10 +36254,10 @@
                     "const": "failed"
                   },
                   {
-                    "const": "draft"
+                    "const": "live"
                   },
                   {
-                    "const": "live"
+                    "const": "draft"
                   },
                   {
                     "const": "saved"
@@ -65413,10 +65837,10 @@
                     "const": "failed"
                   },
                   {
-                    "const": "draft"
+                    "const": "live"
                   },
                   {
-                    "const": "live"
+                    "const": "draft"
                   },
                   {
                     "const": "saved"
@@ -65972,6 +66396,13 @@
                   }
                 ]
               },
+              "minimumTransportEnvelopeCount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
               "requireTerminal": {
                 "anyOf": [
                   {
@@ -66254,6 +66685,13 @@
                 ]
               },
               "minimumSemanticEventCount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "minimumTransportEnvelopeCount": {
                 "anyOf": [
                   {
                     "type": "number"
