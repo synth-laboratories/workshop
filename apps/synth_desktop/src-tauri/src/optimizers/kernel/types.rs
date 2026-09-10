@@ -57,11 +57,17 @@ impl AlgorithmKind {
     // projection. v1 rows replay through the same reducer and heal on load.
     pub const fn reducer_version(self) -> &'static str {
         match self {
-            Self::Eval => "eval.projection.v2",
-            Self::Gepa => "gepa.projection.v2",
-            Self::GoEx => "go_ex.projection.v2",
-            Self::Sft => "sft.projection.v2",
-            Self::Cispo => "cispo.projection.v2",
+            Self::Eval => "eval.projection.v3",
+            // v4 backfills the projection-derived collection rows introduced
+            // by the shared read model. Terminal v3 runs replay once on first
+            // read, then every later open is an indexed summary/page read.
+            Self::Gepa => "gepa.projection.v4",
+            Self::GoEx => "go_ex.projection.v3",
+            // v3 persists the bounded metric series and checkpoint evaluation
+            // summaries so training surfaces read the projection instead of
+            // re-reading the event prefix on a timer.
+            Self::Sft => "sft.projection.v3",
+            Self::Cispo => "cispo.projection.v5",
         }
     }
 
@@ -459,6 +465,10 @@ pub enum RunCondition {
     EnvironmentUnreachable,
     WaitingForProducer,
     ProducerSequenceBlocked,
+    EvaluationBlocked,
+    BudgetBlocked,
+    OperationUncertain,
+    PauseRequested,
 }
 
 impl RunCondition {
@@ -468,6 +478,10 @@ impl RunCondition {
             Self::EnvironmentUnreachable => "environment_unreachable",
             Self::WaitingForProducer => "waiting_for_producer",
             Self::ProducerSequenceBlocked => "producer_sequence_blocked",
+            Self::EvaluationBlocked => "evaluation_blocked",
+            Self::BudgetBlocked => "budget_blocked",
+            Self::OperationUncertain => "operation_uncertain",
+            Self::PauseRequested => "pause_requested",
         }
     }
 
@@ -477,6 +491,10 @@ impl RunCondition {
             "environment_unreachable" => Ok(Self::EnvironmentUnreachable),
             "waiting_for_producer" => Ok(Self::WaitingForProducer),
             "producer_sequence_blocked" => Ok(Self::ProducerSequenceBlocked),
+            "evaluation_blocked" => Ok(Self::EvaluationBlocked),
+            "budget_blocked" => Ok(Self::BudgetBlocked),
+            "operation_uncertain" => Ok(Self::OperationUncertain),
+            "pause_requested" => Ok(Self::PauseRequested),
             other => Err(KernelError::new(
                 KernelErrorCode::EventSchemaMismatch,
                 format!("{other:?} is not a run condition"),

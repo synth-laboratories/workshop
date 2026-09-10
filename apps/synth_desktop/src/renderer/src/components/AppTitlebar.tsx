@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { SynthLogo } from "./SynthLogo";
 import { ProviderMark } from "./ProviderMark";
 import { truncate } from "../runtime/codexTurn";
-import { BUILD_TIER } from "../flags/tier";
-import type { SidePanelTab } from "../hooks/useShellLayout";
 
 function IconSidePanel() {
 	return (
@@ -50,13 +48,16 @@ function IconEllipsis() {
 
 export type AppTitlebarProps = {
 	tabLabel: string;
-	appVersion: string;
+	/** False on a plugin destination, which is a place rather than a conversation. */
+	isChatTab?: boolean;
 	activeLocalModel: boolean;
 	terminalOpen: boolean;
 	sidePanelOpen: boolean;
-	sidePanelTab: SidePanelTab;
+	outputCount?: number;
 	reserveNativeControls?: boolean;
 	brand?: "synth" | "openai";
+	showTabIcon?: boolean;
+	showCloseTab?: boolean;
 	copyItems?: TabCopyItem[];
 	onCopyItem?: (item: TabCopyItem) => Promise<void>;
 	onCloseTab: () => void;
@@ -74,13 +75,15 @@ export type TabCopyItem = {
 
 export function AppTitlebar({
 	tabLabel,
-	appVersion,
+	isChatTab = true,
 	activeLocalModel,
 	terminalOpen,
 	sidePanelOpen,
-	sidePanelTab,
+	outputCount = 0,
 	reserveNativeControls = false,
 	brand = "synth",
+	showTabIcon = true,
+	showCloseTab = true,
 	copyItems = [],
 	onCopyItem,
 	onCloseTab,
@@ -110,12 +113,12 @@ export function AppTitlebar({
 	return (
 		<header className={`titlebar${reserveNativeControls ? " titlebar-native-inset" : ""}`} data-testid="titlebar" data-tauri-drag-region="">
 			<div className="titlebar-tabs" data-tauri-drag-region="">
-				<div className="tab tab-active" role="group" aria-label={`${tabLabel} chat tab`} data-tauri-drag-region="">
-					{brand === "openai" ? (
+				<div className="tab tab-active" role="group" aria-label={isChatTab ? `${tabLabel} chat tab` : `${tabLabel} tab`} data-tauri-drag-region="">
+					{showTabIcon ? (brand === "openai" ? (
 						<ProviderMark kind="openai" className="tab-logo" />
 					) : (
 						<SynthLogo className="tab-logo" compact />
-					)}
+					)) : null}
 					<span>{truncate(tabLabel, 28)}</span>
 					{copyItems.length > 0 && onCopyItem ? (
 						<div className="tab-menu" ref={menuRef}>
@@ -125,7 +128,6 @@ export function AppTitlebar({
 								aria-label="Chat tab actions"
 								aria-haspopup="menu"
 								aria-expanded={menuOpen}
-								aria-controls="chat-tab-actions-menu"
 								title="Copy chat details"
 								onPointerDown={(event) => event.stopPropagation()}
 								onClick={(event) => {
@@ -136,7 +138,7 @@ export function AppTitlebar({
 								<IconEllipsis />
 							</button>
 							{menuOpen ? (
-								<div id="chat-tab-actions-menu" className="tab-menu-popover" role="menu" aria-label="Copy chat details">
+								<div className="tab-menu-popover" role="menu" aria-label="Copy chat details">
 									<div className="tab-menu-heading">Copy</div>
 									{copyItems.map((item) => (
 										<button
@@ -157,9 +159,11 @@ export function AppTitlebar({
 							) : null}
 						</div>
 					) : null}
-					<button type="button" className="tab-close" aria-label="Close tab" onPointerDown={(event) => event.stopPropagation()} onClick={onCloseTab}>
-						×
-					</button>
+					{showCloseTab ? (
+						<button type="button" className="tab-close" aria-label="Close tab" onPointerDown={(event) => event.stopPropagation()} onClick={onCloseTab}>
+							×
+						</button>
+					) : null}
 				</div>
 				{activeLocalModel ? (
 					<button
@@ -175,51 +179,27 @@ export function AppTitlebar({
 			<div className="titlebar-actions">
 				<button
 					type="button"
-					className="titlebar-icon-btn"
+					className={`titlebar-icon-btn${terminalOpen ? " active" : ""}`}
 					aria-label={terminalOpen ? "Hide terminal" : "Show terminal"}
+					aria-pressed={terminalOpen}
 					title="Toggle terminal (⌘J)"
 					data-testid="toggle-terminal"
 					onClick={onToggleTerminal}
 				>
 					<IconTerminal />
 				</button>
-				{activeLocalModel ? (
-					<button
-						type="button"
-						className={`titlebar-icon-btn${sidePanelOpen && sidePanelTab === "inference" ? " active" : ""}`}
-						aria-label={
-							sidePanelOpen && sidePanelTab === "inference"
-								? "Hide inference panel"
-								: "Show inference panel"
-						}
-						aria-pressed={sidePanelOpen && sidePanelTab === "inference"}
-						title="Local inference panel"
-						data-testid="toggle-inference-rail"
-						onClick={onToggleInference}
-					>
-						<IconSidePanel />
-					</button>
-				) : null}
-				<span
-					className="titlebar-version"
-					data-testid="app-version"
-					aria-label={`Synth Desktop version ${appVersion}`}
-					title={`Synth Desktop v${appVersion}`}
+				<button
+					type="button"
+					className={`titlebar-icon-btn${sidePanelOpen ? " active" : ""}`}
+					aria-label={sidePanelOpen ? "Hide right panel" : "Show right panel"}
+					aria-pressed={sidePanelOpen}
+					title="Toggle right panel"
+					data-testid="toggle-inference-rail"
+					onClick={onToggleInference}
 				>
-					v{appVersion}
-				</span>
-				{/* Statically eliminated from stable/core bundles — the badge is
-				    the beta-tier prerelease_build_badge feature, so the public
-				    app is structurally unable to render it. */}
-				{__TIER_HAS_BETA__ ? (
-					<span
-						className="tier-badge"
-						data-testid="titlebar-tier-badge"
-						title={`Pre-release ${BUILD_TIER} build — see Settings → Build`}
-					>
-						{BUILD_TIER}
-					</span>
-				) : null}
+					<IconSidePanel />
+					{outputCount > 0 ? <span className="titlebar-panel-count" aria-label={`${outputCount} outputs`}>{outputCount}</span> : null}
+				</button>
 			</div>
 		</header>
 	);

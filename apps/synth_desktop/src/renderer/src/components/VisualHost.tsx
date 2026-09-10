@@ -1,9 +1,18 @@
 import { Component, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type MouseEvent, type ReactNode } from "react";
-import { formatVisualAdmissionIdentity, type ArtifactRef } from "../types/landing";
-import { VisualOpsLine } from "./VisualOpsLine";
+import { ReactVisualRendererRegistry, useVisualSessionClient, useVisualSessionSnapshot } from "@synth/visuals-react";
+import { useTemplateEvidence } from "../visuals/useTemplateEvidence";
+import { ManagedHtmlFrame } from "@synth/workshop-visuals/components/ManagedHtmlFrame.tsx";
+export { managedHtmlPayload } from "@synth/workshop-visuals/components/ManagedHtmlFrame.tsx";
+import { WorkshopVisualSession } from "../visuals/WorkshopVisualSession";
+import { WorkshopSubagents } from "@synth/workshop-visuals/subagents";
+import { resolveBoundVisual } from "@synth/workshop-visuals/runtime/bindingProjection.ts";
+import { observeOptimizerVisual } from "@synth/workshop-visuals/runtime/optimizerOrchestration.ts";
+import {retainWorkshopPorts} from "@synth/workshop-visuals/runtime/retainedPorts.ts";
+import { resolveSealedTrialProjections, resolveComparisonProjection } from "@synth/workshop-visuals/runtime/relatedProjections.ts";
+import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import {
-	bindTemplateSlots,
+	anonymousDataProp,
 	bindingInputName,
 	consumeInjectedRendererCrash,
 	createMediaClient,
@@ -13,37 +22,54 @@ import {
 	propsFromBindings,
 	replayStreamsFromBindings,
 	resolveTemplate,
+	registerRuntimeTemplate,
+	visualExtensions,
 	resolveVisualBindings,
+	selectObservationSurface,
 	selectRenderedProjection,
 	compileSourcedModule,
-	ensureRuntimeTemplates,
 	isSourcedTemplate,
-	isUserTemplate,
-	onRuntimeTemplatesChanged,
-	runtimeTemplates,
-	runtimeTemplatesVersion,
-	sourcedInvalidShell,
-	wasUserTemplate
+	sourcedInvalidShell
 } from "@synth/visuals";
 import { publicError, toPublicError, type PublicError } from "../runtime/publicError";
 import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
 import { loadVisualShell } from "../runtime/visualsLoader";
+import { loadPackagedFixture } from "../visuals/packagedFixtures";
 import { bridges } from "../runtime/desktopBridge";
-import { subscribeToRun } from "../runtime/runProgress/subscription";
+import { subscribeToRun, type RunProgressSnapshot } from "../runtime/runProgress/subscription";
+import { useOptimizerRun } from "../hooks/useRunRead";
+import {
+	subscribeRunCollection,
+	subscribeRunCollectionItem
+} from "../runtime/runRead/store";
+import { createEvidenceClient } from "../runtime/runProgress/evidence";
+import { verifyAgainstReceipt, visualDataDigest, type ReceiptVerdict } from "../runtime/runProgress/receipt";
 import { progressAgreement, projectRunProgress, splitSnapshotEvents } from "../runtime/runProgress/project";
+import { semanticCountsFromRunView } from "../runtime/runProgress/semanticCounts";
 import type { ProgressAgreement } from "../runtime/runProgress/project";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
-import { DocumentPane, isDocumentArtifact } from "../documents/DocumentPane";
 import { MermaidVisual } from "./MermaidVisual";
+import { DocumentPane, isDocumentArtifact } from "../documents/DocumentPane";
 import { SystemsMapVisual } from "./SystemsMapVisual";
 import { ChartVisual } from "./ChartVisual";
 import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
-import type { SubagentState } from "../runtime/sessionView";
+import { conversationThreadEvents, eventsToMessages, eventsToLocalActivity, type SubagentState } from "../runtime/sessionView";
+import { useEventsBySession } from "../stores/sessionStore";
+import { ChatTranscript } from "./ChatTranscript";
 import { bindingAuthorityKey } from "../runtime/visualRevisionState";
 import { openTraceReference, VISUAL_REFERENCE_ERROR_EVENT, VISUAL_REFERENCE_OPENED_EVENT } from "../runtime/visualReferences";
-import { previewVariantForTemplate, SEALED_TRACE_WORKBENCH_TEMPLATES } from "../runtime/templatePresentation";
+import {
+	previewVariantForTemplate,
+	SEALED_TRACE_WORKBENCH_TEMPLATES,
+	runProgressEvidenceMode
+} from "../runtime/templatePresentation";
 import { optimizerRunIdFromBindings } from "../runtime/visualBindings";
 import { projectVisualRunLifecycle } from "../runtime/visualRunLifecycle";
+import { isTerminalRunStatus } from "../runtime/runProgress/types";
+import { runFacets } from "./optimizers/runPresentation";
+import { VisualPaneChrome, type VisualPaneDebugState } from "./VisualPaneChrome";
+
+import { traceResearchClient } from "../runtime/traceResearch";
 
 type ShellProps = {
 	title?: string;
@@ -52,6 +78,27 @@ type ShellProps = {
 	[key: string]: unknown;
 };
 
+const TEMPLATE_PORTS=new Set(["replay","media","traceResearch","onReviewFinding","evidence","history","collections","visualState"]);
+function PinnedTemplate({Shell,...props}:{Shell:ComponentType<ShellProps>}&ShellProps){
+	const client=useVisualSessionClient();
+	const replay=Boolean(useVisualSessionSnapshot()?.state.replay);
+	const ports=useMemo(()=>retainWorkshopPorts(client,Object.fromEntries(Object.entries(props).filter(([key])=>TEMPLATE_PORTS.has(key)))),[client,replay,props.replay,props.media,props.traceResearch,props.onReviewFinding,props.evidence,props.history,props.collections,props.visualState]);
+	const values:ShellProps={},aliases:Record<string,string>={},seen=new Map<object,string>();
+	for(const [key,value] of Object.entries(props)){
+		if(TEMPLATE_PORTS.has(key))continue;
+		const prior=value&&typeof value==="object"?seen.get(value):undefined;
+		if(prior){aliases[key]=prior;continue;}
+		values[key]=value;
+		if(value&&typeof value==="object")seen.set(value,key);
+	}
+	const data=JSON.parse(JSON.stringify({values,aliases})) as {values:ShellProps;aliases:Record<string,string>};
+	const cut=useTemplateEvidence(data);
+	if(!cut.ready||!cut.value)return <div data-visual-capture-blocked="true" role={cut.error?"alert":"status"}>{cut.error??"Restoring pinned visual evidence…"}</div>;
+	const restored={...cut.value.values};
+	for(const [key,source] of Object.entries(cut.value.aliases))restored[key]=restored[source];
+	return <Shell {...restored} {...ports}/>;
+}
+
 export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 	const bindings = visual.bindings && typeof visual.bindings === "object"
 		? visual.bindings as Record<string, unknown>
@@ -59,10 +106,17 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 	const metadata = visual.metadata && typeof visual.metadata === "object"
 		? visual.metadata as Record<string, unknown>
 		: undefined;
+	const metadataDisplayName = typeof metadata?.displayName === "string"
+		? metadata.displayName.trim()
+		: typeof metadata?.display_name === "string"
+			? metadata.display_name.trim()
+			: "";
 	return {
 		id: visual.id,
 		kind: "report",
 		title: visual.title,
+		displayName: visual.displayName?.trim() || metadataDisplayName || visual.title,
+		updatedAt: visual.updatedAt,
 		templateId: visual.templateId,
 		visualId: visual.id,
 		revision: visual.currentRevision,
@@ -80,124 +134,23 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 	};
 }
 
-function elapsedLabel(value: string, now: number): string {
-	const seconds = Math.max(0, Math.floor((now - Date.parse(value)) / 1000));
-	if (seconds < 60) return `${seconds}s`;
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-	return `${Math.floor(seconds / 3600)}h`;
+function SubagentConversation({sessionId, agent}: {sessionId?: string; agent: SubagentState}) {
+ const sessionEvents = useEventsBySession();
+ const childEvents = useMemo(() => conversationThreadEvents(sessionId ? sessionEvents[sessionId] ?? [] : [], agent.id), [sessionEvents, sessionId, agent.id]);
+ const messages = useMemo(() => eventsToMessages(childEvents), [childEvents]);
+ const activity = useMemo(() => eventsToLocalActivity(childEvents, messages), [childEvents, messages]);
+ return <div data-testid="subagent-conversation">
+  {agent.summary && !messages.some(message => message.body === agent.summary) ? <p>{agent.summary}</p> : null}
+  <span data-testid="subagent-status">{agent.status[0].toUpperCase() + agent.status.slice(1)}</span>
+  <ChatTranscript readOnly chat={{id:agent.id,title:agent.title,messages,activityByMessageId:activity,artifacts:[]}} events={childEvents} openArtifactId={null} onOpenArtifact={id => {if(id) void bridges.visuals?.show(id);}} activityMode="detailed" />
+ </div>;
 }
 
-function subagentStatusLabel(status: SubagentState["status"]): string {
-	return ({
-		starting: "Starting",
-		working: "Working",
-		completed: "Completed",
-		interrupted: "Interrupted",
-		failed: "Failed",
-		stopped: "Stopped",
-		unavailable: "Unavailable"
-	})[status];
-}
-
-function subagentMarker(id: string): string {
-	let value = 0;
-	for (let index = 0; index < id.length; index += 1) value = (value + id.charCodeAt(index)) % 2;
-	return value ? "✣" : "✺";
-}
-
-function SubagentsVisual({ artifact }: { artifact: ArtifactRef }) {
-	const resolved = propsFromBindings(artifact.bindings);
-	const agents = Array.isArray(resolved.props.agents) ? resolved.props.agents as SubagentState[] : [];
-	const sessionId = typeof resolved.props.sessionId === "string" ? resolved.props.sessionId : undefined;
-	const [now, setNow] = useState(Date.now());
-	const [selectedId, setSelectedId] = useState<string | null>(null);
-	const [detail, setDetail] = useState<unknown>(null);
-	const [detailError, setDetailError] = useState<string | null>(null);
-	useEffect(() => {
-		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-		return () => window.clearInterval(timer);
-	}, []);
-	useEffect(() => {
-		if (!selectedId || !sessionId || !bridges.codex?.readThread) {
-			setDetail(null);
-			setDetailError(null);
-			return;
-		}
-		let cancelled = false;
-		void bridges.codex.readThread(sessionId, selectedId, true).then(
-			(payload) => {
-				if (!cancelled) {
-					setDetail(payload);
-					setDetailError(null);
-				}
-			},
-			(reason) => {
-				if (!cancelled) {
-					setDetail(null);
-					setDetailError(publicError(reason));
-				}
-			}
-		);
-		return () => {
-			cancelled = true;
-		};
-	}, [selectedId, sessionId]);
-	const groups = [
-		{ label: "Working", agents: agents.filter((agent) => agent.status === "starting" || agent.status === "working") },
-		{ label: "Needs attention", agents: agents.filter((agent) => agent.status === "interrupted" || agent.status === "failed" || agent.status === "stopped" || agent.status === "unavailable") },
-		{ label: "Completed", agents: agents.filter((agent) => agent.status === "completed") }
-	];
-	const selected = agents.find((agent) => agent.id === selectedId) ?? null;
-	const working = groups[0].agents.length;
-	const attention = groups[1].agents.length;
-	const completed = groups[2].agents.length;
-	if (selected) {
-		return (
-			<div className="subagents-visual" data-testid="visual-subagents">
-				<button type="button" className="subagents-back" data-testid="subagents-back" onClick={() => setSelectedId(null)}>
-					← {selected.title}
-				</button>
-				<p className="subagents-workspace-summary" data-testid="subagents-workspace-summary">
-					{subagentStatusLabel(selected.status)} · {selected.status === "starting" || selected.status === "working" ? elapsedLabel(selected.startedAt, now) : elapsedLabel(selected.updatedAt, now)}
-				</p>
-				<div className="subagents-detail" data-testid="subagents-detail">
-					{selected.summary ? <p>{selected.summary}</p> : <p>No result yet</p>}
-					{detailError ? <p className="subagents-empty">{detailError}</p> : null}
-					{detail ? <pre>{JSON.stringify(detail, null, 2)}</pre> : null}
-				</div>
-			</div>
-		);
-	}
-	return (
-		<div className="subagents-visual" data-testid="visual-subagents">
-			<p className="subagents-workspace-summary" data-testid="subagents-workspace-summary">
-				{working} working · {attention} need attention · {completed} completed
-			</p>
-			{groups.map((group) => (
-				<section key={group.label} className="subagents-group">
-					<h3>{group.label} · {group.agents.length}</h3>
-					{group.agents.length === 0 ? <p className="subagents-empty">No {group.label.toLowerCase()} subagents</p> : null}
-					{group.agents.map((agent) => (
-						<button
-							type="button"
-							className="subagent-row"
-							key={agent.id}
-							data-status={agent.status}
-							data-testid={`subagent-row-${agent.id}`}
-							onClick={() => setSelectedId(agent.id)}
-						>
-							<span className={`subagent-mark mark-${agent.status}`} aria-hidden>{subagentMarker(agent.id)}</span>
-							<div className="subagent-copy">
-								<div className="subagent-title-row"><strong>{agent.title}</strong><span className={`subagent-state state-${agent.status}`}>{subagentStatusLabel(agent.status)}</span></div>
-								{agent.summary ? <p>{agent.summary}</p> : null}
-							</div>
-							<time dateTime={agent.updatedAt}>{agent.status === "starting" || agent.status === "working" ? elapsedLabel(agent.startedAt, now) : elapsedLabel(agent.updatedAt, now) + " ago"}</time>
-						</button>
-					))}
-				</section>
-			))}
-		</div>
-	);
+function SubagentsVisual({artifact}:{artifact:ArtifactRef}) {
+  const resolved=propsFromBindings(artifact.bindings);
+  const agents=Array.isArray(resolved.props.agents)?resolved.props.agents as SubagentState[]:[];
+  const sessionId=typeof resolved.props.sessionId==="string"?resolved.props.sessionId:undefined;
+  return <WorkshopSubagents agents={agents} sessionId={sessionId} readThread={bridges.codex?.readThread} formatError={publicError} renderConversation={agent => <SubagentConversation sessionId={sessionId} agent={agent as SubagentState} />}/>;
 }
 
 function CraftaxEvalVisual({ artifact }: { artifact: ArtifactRef }) {
@@ -289,316 +242,12 @@ function decodeBase64Utf8(base64: string): string {
 	return new TextDecoder().decode(bytes);
 }
 
-// The runtime is loaded as an external `data:` script in an opaque iframe.
-// WebKit correctly treats a sandboxed document as having no `self` origin,
-// which blocks a Tauri-asset script even though the asset is app-bundled. A
-// data script avoids that origin ambiguity without allowing inline scripts in
-// the desktop document. The imported renderer itself still arrives only via
-// postMessage after native admission checks.
-const MANAGED_HTML_RUNTIME = String.raw`(() => {
-  let initialized = false;
-  let latestPayload = {};
-  const frameChunks = new Map();
-  const report = (type, message) => parent.postMessage({ type, message: String(message || "Managed renderer failed") }, "*");
-  const deliver = () => window.postMessage({ type: "synth.visual.update.v1", payload: latestPayload }, "*");
-  const renderSource = (source) => {
-    const parsed = new DOMParser().parseFromString(source, "text/html");
-    if (parsed.querySelector("script[src]")) throw new Error("Managed renderer contains an external script");
-    document.querySelectorAll("style[data-synth-managed]").forEach((node) => node.remove());
-    for (const style of parsed.querySelectorAll("style")) {
-      const copy = document.createElement("style");
-      copy.dataset.synthManaged = "true";
-      copy.textContent = style.textContent;
-      document.head.append(copy);
-    }
-    document.body.replaceChildren(...[...parsed.body.childNodes].filter((node) => node.nodeName !== "SCRIPT"));
-    const scripts = [...parsed.querySelectorAll("script:not([src])")];
-    if (scripts.length === 0) throw new Error("Managed renderer has no inline runtime");
-    for (const script of scripts) new Function(script.textContent || "")();
-  };
-  addEventListener("error", (event) => report("synth.visual.managed.error", event.message));
-  addEventListener("unhandledrejection", (event) => report("synth.visual.managed.error", event.reason));
-  addEventListener("message", (event) => {
-    const data = event.data || {};
-    try {
-      if (data.type === "synth.visual.managed.load.v1") {
-        if (!initialized) { renderSource(String(data.source || "")); initialized = true; }
-        latestPayload = data.payload || {};
-        // The telemetry lane can update independently of media. Never wait for
-        // a frame body before delivering run progress.
-        deliver();
-        report("synth.visual.managed.ready", "ready");
-        return;
-      }
-      if (data.type === "synth.visual.managed.frame-history.v1") {
-        window.postMessage({
-          type: "synth.visual.frame-history.v1",
-          payload: { seed: data.seed, frames: Array.isArray(data.frames) ? data.frames : [] }
-        }, "*");
-        return;
-      }
-      if (data.type !== "synth.visual.managed.frame-chunk.v1") return;
-      const seed = String(data.seed || "");
-      const frameSequence = Number(data.frameSequence);
-      const index = Number(data.index);
-      const total = Number(data.total);
-      if (!seed || !Number.isSafeInteger(frameSequence) || !Number.isSafeInteger(index) || !Number.isSafeInteger(total) || total < 1 || index < 0 || index >= total || typeof data.chunk !== "string") return;
-      const key = seed + ":" + frameSequence;
-      const chunks = frameChunks.get(key) || new Array(total);
-      if (chunks.length !== total) return;
-      chunks[index] = data.chunk;
-      frameChunks.set(key, chunks);
-      if (chunks.filter((chunk) => typeof chunk === "string").length !== total) return;
-      const dataUrl = "data:" + String(data.contentType || "image/png") + ";base64," + chunks.join("");
-      frameChunks.delete(key);
-      // Media has its own delta lane. Reposting latestPayload here would clone
-      // all ten base64 thumbnails for every single changed seed.
-      window.postMessage({
-        type: "synth.visual.frame-delta.v1",
-        payload: { seed: Number(seed), frameSequence, dataUrl, mode: data.mode || "live", frame: data.frameRef || null }
-      }, "*");
-    } catch (error) {
-      report("synth.visual.managed.error", error && error.message ? error.message : error);
-    }
-  });
-})();`;
-
-function managedRuntimeDocument() {
-	const runtime = `data:text/javascript;charset=utf-8,${encodeURIComponent(MANAGED_HTML_RUNTIME)}`;
-	return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src data: 'unsafe-eval'; img-src data:"><script src="${runtime}"></script></head><body><p id="managed-visual-status">Loading managed visual…</p></body></html>`;
-}
-
-function postManagedFrame(
-	target: Window,
-	content: { frame: { seed: number; frameSequence: number; contentType: string }; base64: string },
-	mode: "live" | "history"
-) {
-	const chunks = content.base64.match(/[\s\S]{1,16384}/g) ?? [];
-	for (const [index, chunk] of chunks.entries()) {
-		target.postMessage({
-			type: "synth.visual.managed.frame-chunk.v1",
-			seed: content.frame.seed,
-			frameSequence: content.frame.frameSequence,
-			contentType: content.frame.contentType,
-			mode,
-			frameRef: content.frame,
-			index,
-			total: chunks.length,
-			chunk,
-		}, "*");
-	}
-}
-
-function promoteRetainedFrames(value: unknown): unknown {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-	const record = value as Record<string, unknown>;
-	const mediaBySeed = record.mediaBySeed && typeof record.mediaBySeed === "object"
-		? { ...(record.mediaBySeed as Record<string, unknown>) }
-		: {};
-	let changed = false;
-	const project = (candidate: unknown): unknown => {
-		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
-		const event = candidate as Record<string, unknown>;
-		if (!event.item || typeof event.item !== "object" || Array.isArray(event.item)) return candidate;
-		const item = event.item as Record<string, unknown>;
-		const retained = item.retainedFrame ?? item.retained_frame;
-		if (!retained || typeof retained !== "object" || Array.isArray(retained)) return candidate;
-		const frame = retained as Record<string, unknown>;
-		const seed = Number(frame.seed);
-		const chunks = frame.chunks;
-		if (!Number.isSafeInteger(seed) || !Array.isArray(chunks) || !chunks.every((chunk) => typeof chunk === "string")) return candidate;
-		const dataUrl = chunks.join("");
-		if (!dataUrl.startsWith("data:image/png;base64,")) return candidate;
-		mediaBySeed[String(seed)] = { frame: { data_url: dataUrl } };
-		const { retainedFrame: _camel, retained_frame: _snake, ...rest } = item;
-		changed = true;
-		return { ...event, item: Object.keys(rest).length > 0 ? rest : null };
-	};
-	const events = Array.isArray(record.events) ? record.events.map(project) : record.events;
-	const enrichmentEvents = Array.isArray(record.enrichmentEvents)
-		? record.enrichmentEvents.map(project)
-		: record.enrichmentEvents;
-	return changed ? { ...record, events, enrichmentEvents, mediaBySeed } : value;
-}
-
-export function managedHtmlPayload(value: unknown): unknown {
-	if (value && typeof value === "object") {
-		const record = value as Record<string, unknown>;
-		if (record.type === "synth.visual.update.v1") return record.payload ?? {};
-		// Canonical bindings expose an inline value by its declared input name.
-		// A managed package's input is commonly named `payload`, so unwrap that
-		// binding envelope only when it is itself an update message; never guess
-		// through an arbitrary application payload that happens to have a field
-		// with the same name.
-		if (record.payload && typeof record.payload === "object") {
-			const nested = record.payload as Record<string, unknown>;
-			if (nested.type === "synth.visual.update.v1") return nested.payload ?? {};
-		}
-		if (Array.isArray(record.frames) && record.frames.length > 0) {
-			return managedHtmlPayload(record.frames[record.frames.length - 1]);
-		}
-		// Managed imports may declare their inline update input as `frames` even
-		// when the persisted value is a single canonical update envelope. Treat
-		// that declared binding envelope the same way as an array replay frame.
-		if (record.frames && typeof record.frames === "object") {
-			return managedHtmlPayload(record.frames);
-		}
-	}
-	return promoteRetainedFrames(value) ?? {};
-}
-
-function ManagedHtmlFrame({ source, payload, title }: { source: string; payload: unknown; title?: string }) {
-	const frame = useRef<HTMLIFrameElement>(null);
-	const [loaded, setLoaded] = useState(false);
-	const [runtimeError, setRuntimeError] = useState<string | null>(null);
-	const [frameStreamError, setFrameStreamError] = useState<string | null>(null);
-	const [nativeFrameCount, setNativeFrameCount] = useState(0);
-	const admittedPayload = useMemo(() => managedHtmlPayload(payload), [payload]);
-	const optimizerRunId = admittedPayload && typeof admittedPayload === "object" && !Array.isArray(admittedPayload)
-		? (((admittedPayload as Record<string, unknown>).run as Record<string, unknown> | undefined)?.id as string | undefined)
-		: undefined;
-	useEffect(() => {
-		const onMessage = (event: MessageEvent) => {
-			if (event.source !== frame.current?.contentWindow) return;
-			const data = event.data as { type?: unknown; message?: unknown } | null;
-			if (data?.type === "synth.visual.managed.error") {
-				setRuntimeError(typeof data.message === "string" ? data.message : "Managed renderer failed");
-			}
-			if (
-				data?.type === "synth.visual.managed.frame-request.v1"
-				&& optimizerRunId
-				&& bridges.optimizers?.frameContent
-			) {
-				const request = data as { seed?: unknown; frameSequence?: unknown };
-				const seed = Number(request.seed);
-				const frameSequence = Number(request.frameSequence);
-				if (!Number.isSafeInteger(seed) || !Number.isSafeInteger(frameSequence)) return;
-				void bridges.optimizers.frameContent(optimizerRunId, seed, frameSequence).then((content) => {
-					if (frame.current?.contentWindow) {
-						postManagedFrame(frame.current.contentWindow, content, "history");
-						setFrameStreamError(null);
-					}
-				}).catch((reason) => setFrameStreamError(publicError(reason, "Historical frame load failed")));
-			}
-		};
-		addEventListener("message", onMessage);
-		return () => removeEventListener("message", onMessage);
-	}, [optimizerRunId]);
-	useEffect(() => {
-		if (!loaded || !frame.current?.contentWindow) return;
-		// The public runtime is an external, app-bundled script. That matters on
-		// WebKit: srcdoc and data documents inherit the host's inline-script CSP,
-		// so a reviewed renderer can bind successfully yet paint nothing. The
-		// sandboxed runtime accepts the immutable source once, executes its inline
-		// script under its narrower CSP, and relays subsequent update frames.
-		const record = admittedPayload && typeof admittedPayload === "object" && !Array.isArray(admittedPayload)
-			? admittedPayload as Record<string, unknown>
-			: {};
-		const { mediaBySeed: _media, ...basePayload } = record;
-		frame.current.contentWindow.postMessage({
-			type: "synth.visual.managed.load.v1",
-			source,
-			payload: basePayload,
-		}, "*");
-	}, [admittedPayload, loaded, source]);
-	useEffect(() => {
-		if (!loaded || !optimizerRunId || !bridges.optimizers?.framesLatest || !bridges.optimizers.frameContent) return;
-		let cancelled = false;
-		let frameCursor = 0;
-		let timer: ReturnType<typeof globalThis.setTimeout> | null = null;
-		let polling = false;
-		const latestBySeed = new Map<number, number>();
-		const historyLoaded = new Set<number>();
-		const poll = async () => {
-			if (cancelled || polling) return;
-			polling = true;
-			try {
-				const delta = await bridges.optimizers!.framesLatest(optimizerRunId, frameCursor);
-				const nextCursor = Math.max(frameCursor, delta.frameCursor);
-				// Deliberately sequential: at most one decoded base64 frame is live in
-				// the host while ten rollout thumbnails advance together.
-				for (const next of delta.frames) {
-					if (cancelled) return;
-					if ((latestBySeed.get(next.seed) ?? -1) >= next.frameSequence) continue;
-					const content = await bridges.optimizers!.frameContent(optimizerRunId, next.seed, next.frameSequence);
-					if (cancelled || !frame.current?.contentWindow) return;
-					latestBySeed.set(next.seed, next.frameSequence);
-					postManagedFrame(frame.current.contentWindow, content, "live");
-					if (!historyLoaded.has(next.seed) && bridges.optimizers?.framesList) {
-						historyLoaded.add(next.seed);
-						void bridges.optimizers.framesList(optimizerRunId, next.seed, undefined, 200).then((frames) => {
-							frame.current?.contentWindow?.postMessage({
-								type: "synth.visual.managed.frame-history.v1",
-								seed: next.seed,
-								frames,
-							}, "*");
-						}).catch(() => historyLoaded.delete(next.seed));
-					}
-				}
-				if (!cancelled) {
-					// Commit the durable cursor only after every changed body was posted.
-					// A failed content read then retries the same delta; already-delivered
-					// seeds are skipped by latestBySeed without cloning their PNG again.
-					frameCursor = nextCursor;
-					setNativeFrameCount(latestBySeed.size);
-					setFrameStreamError(null);
-				}
-			} catch (reason) {
-				// Media is an independent, retryable lane. A transient read failure must
-				// never replace the still-valid telemetry visual or reset its state.
-				if (!cancelled) setFrameStreamError(publicError(reason, "Native frame stream failed"));
-			} finally {
-				polling = false;
-				if (!cancelled) timer = globalThis.setTimeout(poll, 750);
-			}
-		};
-		void poll();
-		return () => {
-			cancelled = true;
-			if (timer != null) globalThis.clearTimeout(timer);
-		};
-	}, [loaded, optimizerRunId]);
-	if (runtimeError) return <p role="alert" data-testid="visual-managed-html-error">Managed visual failed: {runtimeError}</p>;
-	return <iframe
-		ref={frame}
-		title={`${title ?? "Managed visual"} · ${nativeFrameCount} native frames${frameStreamError ? " · media retrying" : ""}`}
-		data-testid="visual-managed-html"
-		sandbox="allow-scripts"
-		srcDoc={managedRuntimeDocument()}
-		onLoad={() => setLoaded(true)}
-		style={{ border: 0, display: "block", height: "100%", minHeight: 420, width: "100%" }}
-	/>;
-}
-
-/**
- * Runtime user templates, loaded once and re-read whenever the set changes.
- *
- * The bundled catalog is frozen at build time; a user template arrives from the
- * host afterwards. Every `resolveTemplate` read below is synchronous, so this
- * hook is what turns "the host answered" into a re-render — without it a user
- * template would resolve to `undefined` on first paint and stay there, and the
- * pane would report a template that exists on disk as unavailable.
- */
-function useRuntimeTemplates(): number {
-	const [version, setVersion] = useState(() => runtimeTemplatesVersion());
-	useEffect(() => {
-		let cancelled = false;
-		const unsubscribe = onRuntimeTemplatesChanged(() => {
-			if (!cancelled) setVersion(runtimeTemplatesVersion());
-		});
-		void ensureRuntimeTemplates().then(() => {
-			if (!cancelled) setVersion(runtimeTemplatesVersion());
-		});
-		return () => { cancelled = true; unsubscribe(); };
-	}, []);
-	return version;
-}
 
 function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
-	const runtimeTemplateVersion = useRuntimeTemplates();
 	const [Shell, setShell] = useState<ComponentType<ShellProps> | null>(null);
 	const [failed, setFailed] = useState(false);
 	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
+	const [receiptVerdict, setReceiptVerdict] = useState<ReceiptVerdict>({ kind: "unverified", reason: "no_receipt" });
 	const [optimizerLoadError, setOptimizerLoadError] = useState<string | null>(null);
 	const [comparisonPayload, setComparisonPayload] = useState<Record<string, unknown> | null>(null);
 	const [progressView, setProgressView] = useState<ProgressAgreement | null>(null);
@@ -606,6 +255,16 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	// Returning an empty slot list for a shape it did not understand is how a
 	// visual with ten declared streams rendered an empty pane with no error.
 	const resolvedBindings = useMemo(() => resolveVisualBindings(artifact.bindings), [artifact.bindings]);
+	// Callers build `artifact` inline while rendering, so its `bindings` object is
+	// a new identity on every parent render even when the bindings are unchanged.
+	// Keyed on that identity, the async resolution effect below aborts its own
+	// in-flight read and restarts on every parent render; an AbortError is
+	// deliberately silent, so a binding that keeps restarting looks exactly like
+	// a pane that was never opened. Key it on the value instead.
+	const bindingsSignature = useMemo(
+		() => JSON.stringify(artifact.bindings ?? null),
+		[artifact.bindings]
+	);
 	const asyncBindings = useMemo(
 		() =>
 			resolvedBindings.slots.filter((binding) => {
@@ -614,8 +273,12 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					binding.kind === "live_sse"
 					|| binding.kind === "optimizer_run"
 					|| binding.kind === "inline"
-					|| binding.kind === "fixture"
 				) return false;
+				// A stored fixture binding carries a path, not a payload.
+				// Treating it as synchronous meant nothing ever loaded it and
+				// the pane failed with "has not been resolved by the Rust
+				// runtime". It resolves here, from the packaged assets.
+				if (binding.kind === "fixture") return binding.data === undefined;
 				return binding.data === undefined;
 			}),
 		[resolvedBindings]
@@ -686,6 +349,21 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		digest: string;
 		projection: unknown;
 	}>>([]);
+	const [analysisFindings, setAnalysisFindings] = useState<unknown[]>([]);
+	const [analysisCampaigns, setAnalysisCampaigns] = useState<unknown[]>([]);
+	const [userTemplateDigest, setUserTemplateDigest] = useState<string | null>(null);
+	const [templateReload, setTemplateReload] = useState(0);
+	const [templateCatalogEpoch, setTemplateCatalogEpoch] = useState(0);
+	useEffect(() => {
+		if (!userTemplateDigest || !artifact.templateId || !bridges.visuals) return;
+		let cancelled = false;
+		const timer = window.setInterval(() => {
+			void bridges.visuals!.getTemplate(artifact.templateId!).then(meta => {
+				if (!cancelled && meta.templateDigest !== userTemplateDigest) setTemplateReload(value => value + 1);
+			}).catch(reason => { if (!cancelled) setShell(() => sourcedInvalidShell(publicError(reason))); });
+		}, 1000);
+		return () => { cancelled = true; window.clearInterval(timer); };
+	}, [artifact.templateId, userTemplateDigest]);
 
 	const visualIdentity = useMemo(
 		() => ({
@@ -699,6 +377,96 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			(entry) => bindingInputName(entry) === "optimizer_run" && entry.kind === "optimizer_run"
 		)?.source
 		: undefined;
+	const inspectorTraceDigest = resolvedBindings.status !== "rejected"
+		? resolvedBindings.slots.find((entry) => entry.kind === "trace_v5")?.source
+			?? (typeof artifact.metadata?.traceDigest === "string" ? artifact.metadata.traceDigest : undefined)
+		: (typeof artifact.metadata?.traceDigest === "string" ? artifact.metadata.traceDigest : undefined);
+	const evidenceHeadDigest = resolvedBindings.status !== "rejected"
+		? resolvedBindings.slots.find((entry) => entry.kind === "annotation_evidence_head")?.source
+		: undefined;
+	useEffect(() => {
+		if (artifact.templateId !== "trace.rollout_inspector.v1" || !inspectorTraceDigest || !bridges.analysis) {
+			setAnalysisFindings([]);
+			return;
+		}
+		let cancelled = false;
+		void bridges.analysis.findings(inspectorTraceDigest).then((row) => {
+			if (!cancelled) setAnalysisFindings(Array.isArray(row?.findings) ? row.findings : []);
+		}).catch(() => {
+			if (!cancelled) setAnalysisFindings([]);
+		});
+		return () => { cancelled = true; };
+	}, [artifact.templateId, inspectorTraceDigest]);
+	useEffect(() => {
+		if (artifact.templateId !== "optimizer.eval.live.v1" || !optimizerRunId || !bridges.analysis) {
+			setAnalysisCampaigns([]);
+			return;
+		}
+		let cancelled = false;
+		const pull = () => {
+			void bridges.analysis!.campaigns(optimizerRunId).then((row) => {
+				if (!cancelled) setAnalysisCampaigns(Array.isArray(row?.campaigns) ? row.campaigns : []);
+			}).catch(() => {
+				if (!cancelled) setAnalysisCampaigns([]);
+			});
+		};
+		pull();
+		const timer = globalThis.setInterval(pull, 10_000);
+		return () => {
+			cancelled = true;
+			globalThis.clearInterval(timer);
+		};
+	}, [artifact.templateId, optimizerRunId]);
+	// Keep the bounded read-model summary live for the visual. Besides making
+	// config/runtime/count facts available without the journal, this is the
+	// invalidation source for any mounted collection pages below.
+	const optimizerSummaryState = useOptimizerRun(optimizerRunId);
+	const evidenceClient = useMemo(
+		() =>
+			// Lazy raw-journal access for the detail surfaces — Replay, the
+			// transcript, frame drill-down — that genuinely need events. The
+			// aggregate never waits for it. Same capability check as the two
+			// clients above: without the bridge method there is no client, and
+			// a template renders its evidence panel as unavailable rather than
+			// throwing on first open.
+			optimizerRunId && typeof bridges.optimizers?.evidencePage === "function"
+				? createEvidenceClient(optimizerRunId, {
+					evidencePage: (runId, window, held, limit) =>
+						bridges.optimizers!.evidencePage(runId, window, held, limit)
+				})
+				: undefined,
+		[optimizerRunId]
+	);
+	const collectionsClient = useMemo(
+		() =>
+			// Keyset-paged durable collections for the bound run. Templates page
+			// candidates, rollouts, and proposer calls through this on intent.
+			optimizerRunId && typeof bridges.optimizers?.runCollection === "function"
+				? {
+					page: (collection: Parameters<NonNullable<typeof bridges.optimizers>["runCollection"]>[1], query: Parameters<NonNullable<typeof bridges.optimizers>["runCollection"]>[2]) =>
+						bridges.optimizers!.runCollection(optimizerRunId, collection, query),
+					item: (collection: Parameters<NonNullable<typeof bridges.optimizers>["runCollectionItem"]>[1], itemId: string) =>
+						bridges.optimizers!.runCollectionItem(optimizerRunId, collection, itemId),
+					subscribePage: (collection: Parameters<NonNullable<typeof bridges.optimizers>["runCollection"]>[1], query: Parameters<NonNullable<typeof bridges.optimizers>["runCollection"]>[2], listener: (state: unknown) => void) =>
+						subscribeRunCollection(optimizerRunId, collection, query, listener as Parameters<typeof subscribeRunCollection>[3]),
+					subscribeItem: (collection: Parameters<NonNullable<typeof bridges.optimizers>["runCollectionItem"]>[1], itemId: string, listener: (state: unknown) => void) =>
+						subscribeRunCollectionItem(optimizerRunId, collection, itemId, listener as Parameters<typeof subscribeRunCollectionItem>[3])
+				}
+				: undefined,
+		[optimizerRunId]
+	);
+	const historyClient = useMemo(
+		() =>
+			// Backend checkpointed projections for the historical scrubber. The
+			// shell reads the state at a sequence through this instead of
+			// reducing the journal in the renderer.
+			optimizerRunId && typeof bridges.optimizers?.projectionAt === "function"
+				? {
+					projectionAt: (sequence: number) => bridges.optimizers!.projectionAt(optimizerRunId, sequence)
+				}
+				: undefined,
+		[optimizerRunId]
+	);
 	const templateDigest = typeof artifact.metadata?.templateDigest === "string"
 		? artifact.metadata.templateDigest
 		: undefined;
@@ -754,7 +522,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					const asset = await bridges.visuals?.content?.(visualId);
 					const source = asset?.base64 ? decodeBase64Utf8(asset.base64) : "";
 					if (!source) throw new Error("Managed renderer source is unavailable");
-					if (!cancelled) setShell(() => (props: ShellProps) => <ManagedHtmlFrame source={source} payload={props.data} title={artifact.title} />);
+					if (!cancelled) setShell(() => (props: ShellProps) => <ManagedHtmlFrame source={source} payload={props.data} title={artifact.title} media={bridges.optimizers} formatError={publicError} />);
 				} catch (reason) {
 					if (!cancelled) {
 						setFailed(true);
@@ -771,41 +539,30 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				}
 				return;
 			}
-			// The host owns the runtime half of the catalog, so ask it before
-			// deciding what this template is. A template written after this
-			// renderer was built is not in `import.meta.glob`, and treating a
-			// missing glob entry as "unknown template" is exactly the blank
-			// pane this branch exists to prevent.
-			await ensureRuntimeTemplates();
+			const nativeTemplate = typeof bridges.visuals?.getTemplate === "function" ? await bridges.visuals.getTemplate(templateId) : null;
+			const userAuthored = nativeTemplate?.sourceKind === "user";
 			if (cancelled) return;
-			// "Compiles in the pane" is a property of a template, not the name
-			// of one. `sourced.visual.v1` carries its TSX on the visual record;
-			// a user-authored template carries it in `shell.tsx` under the
-			// instance state root. Both run through the same validator, the
-			// same allowlist, and the same in-pane failure surface.
-			const userAuthored = isUserTemplate(templateId);
+			if (userAuthored) {
+				registerRuntimeTemplate(nativeTemplate);
+				setUserTemplateDigest(nativeTemplate.templateDigest ?? null);
+				setTemplateCatalogEpoch(value => value + 1);
+			} else setUserTemplateDigest(null);
 			if (isSourcedTemplate(templateId) || userAuthored) {
 				const visualId = artifact.visualId ?? artifact.id;
 				let source = "";
 				try {
 					if (userAuthored) {
-						const visuals = bridges.visuals;
-						if (!visuals?.templateShellSource) {
-							throw new Error(`Template ${templateId} source is unavailable: no visuals host`);
-						}
-						source = await visuals.templateShellSource(templateId);
+						if (!bridges.visuals?.templateShellSource) throw new Error("User-template source requires a native host");
+						source = await bridges.visuals.templateShellSource(templateId);
 					} else {
 						const asset = await bridges.visuals?.content?.(visualId);
 						if (asset?.base64) source = decodeBase64Utf8(asset.base64);
 					}
 				} catch (reason) {
-					// Missing file, oversized file, symlink, path outside the
-					// state root: the host refused and said why. Show its words
-					// where the author is looking rather than a failed pane.
 					if (!cancelled) setShell(() => sourcedInvalidShell(publicError(reason)));
 					return;
 				}
-				const compiled = compileSourcedModule(source, templateId);
+				const compiled = compileSourcedModule(source);
 				if (cancelled) return;
 				if (!compiled.ok) {
 					setShell(() => sourcedInvalidShell(compiled.error));
@@ -817,20 +574,6 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			const Component = await loadVisualShell(templateId);
 			if (cancelled) return;
 			if (!Component) {
-				// A user template that was here a moment ago and is not now:
-				// deleted, renamed, or edited into something the registry
-				// refuses. That is an authoring mistake with a fix, so it says
-				// so in the pane through the same surface every other
-				// user-template failure uses — never a blank rectangle.
-				if (wasUserTemplate(templateId)) {
-					const runtime = runtimeTemplates();
-					setShell(() => sourcedInvalidShell(
-						runtime.error
-							? `Template ${templateId} is no longer available: ${runtime.error}`
-							: `Template ${templateId} is no longer available: its directory left the user template root`
-					));
-					return;
-				}
 				setFailed(true);
 				reportDiagnostic({
 					...visualIdentity,
@@ -845,7 +588,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		};
 		void load().catch((reason) => {
 			if (cancelled) return;
-			if (isSourcedTemplate(templateId) || isUserTemplate(templateId) || wasUserTemplate(templateId)) {
+			if (isSourcedTemplate(templateId)) {
 				setShell(() => sourcedInvalidShell(publicError(reason)));
 				return;
 			}
@@ -861,153 +604,40 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			});
 		});
 		return () => { cancelled = true; };
-	}, [artifact.templateId, artifact.visualId, artifact.id, artifact.contentDigest, artifact.revision, runtimeTemplateVersion, visualIdentity]);
+	}, [artifact.templateId, artifact.visualId, artifact.id, artifact.contentDigest, artifact.revision, visualIdentity, templateReload]);
 
 	useEffect(() => {
-		let cancelled = false;
-		if (asyncBindings.length === 0 || !isVisualBindings(artifact.bindings)) {
-			setTraceResolution({ status: "idle", props: {} });
-			return () => { cancelled = true; };
+		const controller=new AbortController();
+		if(asyncBindings.length===0 || !isVisualBindings(artifact.bindings)){
+			setTraceResolution({status:"idle",props:{}});return ()=>controller.abort();
 		}
-		const bindings = artifact.bindings;
-		const template = artifact.templateId ? resolveTemplate(artifact.templateId) : undefined;
-		if (!template) {
-			// "Unavailable" has two causes now, and they need different fixes:
-			// the id is genuinely unknown, or the host could not be asked for
-			// the user tier at all. Say which.
-			const runtime = runtimeTemplates();
-			const unavailable = runtime.error
-				? `Template ${artifact.templateId ?? "unknown"} is unavailable: user templates could not be listed (${runtime.error})`
-				: `Template ${artifact.templateId ?? "unknown"} is unavailable`;
-			setTraceResolution({ status: "error", props: {}, error: unavailable });
-			reportDiagnostic({
-				...visualIdentity,
-				severity: "error",
-				component: "visual-host",
-				event: "visual.template.unavailable",
-				code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
-				message: unavailable,
-				details: {
-					templateId: artifact.templateId ?? null,
-					runtimeTemplateIds: runtime.accepted,
-					runtimeTemplatesShadowed: runtime.shadowed,
-					runtimeTemplateError: runtime.error ?? null,
-				},
-			});
-			return () => { cancelled = true; };
-		}
-		if (traceBindings.length > 0 && !bridges.inventory) {
-			setTraceResolution({ status: "error", props: {}, error: "Trace projection resolver is unavailable" });
-			return () => { cancelled = true; };
-		}
-		const unsupportedBinding = traceBindings.find((binding) =>
-			binding.schema && binding.schema !== "synth.trace-projection.rollout-inspector.v1"
-		);
-		if (unsupportedBinding) {
-			setTraceResolution({ status: "error", props: {}, error: `Unsupported trace projection schema: ${unsupportedBinding.schema}` });
-			// The failure this whole diagnostic system was built for: ten sealed
-			// traces, an empty pane, and no way to ask why. Emit the received
-			// schema, the accepted one, and every identity the binding names.
-			reportDiagnostic({
-				...visualIdentity,
-				traceId: typeof unsupportedBinding.source === "string" ? unsupportedBinding.source : null,
-				severity: "error",
-				component: "visual-host",
-				event: "visual.projection.rejected",
-				code: DIAGNOSTIC_CODES.unsupportedTraceProjectionSchema,
-				message: `Unsupported trace projection schema: ${unsupportedBinding.schema}`,
-				details: {
-					receivedSchema: unsupportedBinding.schema ?? null,
-					expectedSchemas: ["synth.trace-projection.rollout-inspector.v1"],
-					templateId: artifact.templateId ?? null,
-					slot: bindingInputName(unsupportedBinding) ?? null,
-					input: bindingInputName(unsupportedBinding) ?? null,
-					remediation: "Project Trace V5 into the visual's accepted input contract.",
-				},
-			});
-			return () => { cancelled = true; };
-		}
-
-		setTraceResolution({ status: "loading", props: {} });
-		const projectionByDigest = new Map<string, Promise<unknown>>();
-		const loadTraceV5 = (source: string) => {
-			let pending = projectionByDigest.get(source);
-			if (!pending) {
-				pending = bridges.inventory!.resolveTraceProjection(source, "rollout-inspector").then((projection) => {
-					if (projection.traceDigest !== source) {
-						throw new Error(`Trace resolver returned digest ${projection.traceDigest} for ${source}`);
-					}
-					if (projection.projectionKind !== "rollout-inspector") {
-						throw new Error(`Unsupported trace projection kind: ${projection.projectionKind}`);
-					}
-					if (projection.projectionSchema !== "synth.trace-projection.rollout-inspector.v1") {
-						throw new Error(`Unsupported trace projection schema: ${projection.projectionSchema}`);
-					}
-					return projection.payload;
-				});
-				projectionByDigest.set(source, pending);
-			}
-			return pending;
-		};
-		const loadLocalCas = (source: string) => {
-			if (!bridges.runtime) throw new Error(`No local CAS loader for ${source}`);
-			return bridges.runtime.request(`/v1/cas/${encodeURIComponent(source)}`);
-		};
-		const loadQuerySnapshot = (source: string) => {
-			if (!bridges.runtime) throw new Error(`No query snapshot loader for ${source}`);
-			return bridges.runtime.request("/v1/traces/snapshot", { method: "POST", body: { snapshot_id: source } });
-		};
-		const loadRun = (source: string) => {
-			if (!bridges.optimizers) throw new Error(`No run loader for ${source}`);
-			return bridges.optimizers.get(source);
-		};
-		void bindTemplateSlots(template, bindings, { loadTraceV5, loadLocalCas, loadQuerySnapshot, loadRun, skipOptional: true })
-			.then((result) => {
-				if (cancelled) return;
-				if (result.errors.length > 0) {
-					setTraceResolution({ status: "error", props: {}, error: result.errors.join(" · ") });
-					reportDiagnostic({
-						...visualIdentity,
-						severity: "error",
-						component: "visual-host",
-						event: "visual.binding.unresolved",
-						code: DIAGNOSTIC_CODES.visualBindingUnresolved,
-						message: result.errors.join(" · "),
-						details: { templateId: artifact.templateId ?? null, errorCount: result.errors.length },
-					});
-					return;
-				}
-				const props = Object.fromEntries(
-					Object.values(result.slots)
-						.filter((slot) => slot.kind !== "inline" && slot.kind !== "live_sse" && slot.kind !== "optimizer_run")
-						.map((slot) => [slot.input ?? slot.slot, slot.data])
-				);
-				setTraceResolution({ status: "ready", props });
-				setLastKnownGoodProps((current) => rememberLastKnownGood(current, props, false));
-			})
-			.catch((reason) => {
-				if (cancelled) return;
-				const failure = toPublicError(reason, "Trace projection resolution failed");
-				const message = publicError(reason, "Trace projection resolution failed");
-				setTraceResolution({ status: "error", props: {}, error: message, failure });
-				reportDiagnostic({
-					...visualIdentity,
-					severity: "error",
-					component: "visual-host",
-					event: "visual.projection.failed",
-					// A projection-schema mismatch thrown from the resolver is the
-					// same defect as the one caught above; keep one code so a
-					// query for it finds both spellings of the failure.
-					code: message.includes("projection schema")
-						? DIAGNOSTIC_CODES.unsupportedTraceProjectionSchema
-						: DIAGNOSTIC_CODES.visualBindingUnresolved,
-					message,
-					details: { templateId: artifact.templateId ?? null },
-				});
-			});
-		return () => { cancelled = true; };
-	}, [artifact.id, artifact.revision, artifact.templateId, artifact.bindings, asyncBindings.length, traceBindings.length, runtimeTemplateVersion, visualIdentity]);
-
+		const template=artifact.templateId?resolveTemplate(artifact.templateId):undefined;
+		if(!template){setTraceResolution({status:"error",props:{},error:"Visual template is unavailable"});return ()=>controller.abort();}
+		setTraceResolution({status:"loading",props:{}});
+		void resolveBoundVisual(template,artifact.bindings,{
+			loadFixture:loadPackagedFixture,
+			traceWindow:digest=>traceResearchClient.request("window",{trace_digest:digest,offset:0,limit:200}),
+			traceProjection:bridges.inventory?digest=>bridges.inventory!.resolveTraceProjection(digest,"rollout-inspector"):undefined,
+			loadLocalCas:bridges.runtime?source=>bridges.runtime!.request(`/v1/cas/${encodeURIComponent(source)}`):undefined,
+			loadQuerySnapshot:source=>traceResearchClient.request("snapshot",{snapshot_id:source}),
+			loadRun:bridges.optimizers?source=>bridges.optimizers!.get(source):undefined,
+			loadAnnotationEvidenceHead:bridges.analysis?source=>bridges.analysis!.projection("annotation_evidence_head",source):undefined,
+			loadVerifierResult:bridges.analysis?source=>bridges.analysis!.projection("verifier_result_v2",source):undefined,
+		},controller.signal).then(props=>{
+			if(controller.signal.aborted)return;
+			setTraceResolution({status:"ready",props});
+			setLastKnownGoodProps(current=>rememberLastKnownGood(current,props,false));
+		}).catch(reason=>{
+			if(controller.signal.aborted)return;
+			const failure=toPublicError(reason,"Trace projection resolution failed");
+			const message=publicError(reason,"Trace projection resolution failed");
+			setTraceResolution({status:"error",props:{},error:message,failure});
+			reportDiagnostic({...visualIdentity,severity:"error",component:"visual-host",event:"visual.projection.failed",
+				code:message.includes("projection schema")?DIAGNOSTIC_CODES.unsupportedTraceProjectionSchema:DIAGNOSTIC_CODES.visualBindingUnresolved,
+				message,details:{templateId:artifact.templateId ?? null}});
+		});
+		return ()=>controller.abort();
+	},[artifact.id,artifact.revision,artifact.templateId,bindingsSignature,asyncBindings.length,visualIdentity,templateCatalogEpoch]);
 	/*
 	 * The optimizer stream is read through the shared `RunProgressSubscription`
 	 * store, not a private loop here. One run can be open in the transcript card,
@@ -1025,90 +655,54 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			setProgressView(null);
 			return;
 		}
-		let postedReady = false;
-		return subscribeToRun(optimizerRunId, (snapshot) => {
-			const projection = projectRunProgress(snapshot, Date.now());
-			const agreement = projection ? progressAgreement(projection) : null;
-			setProgressView(agreement);
-			const lanes = snapshot.run ? splitSnapshotEvents(snapshot.run, snapshot.events) : null;
-			const payload = snapshot.run && lanes
-				? {
-					run: snapshot.run,
-					runViewV2: snapshot.viewV2,
-					runProgress: agreement,
-					events: lanes.terminalEvents,
-					enrichmentEvents: lanes.enrichmentEvents,
-					terminalCursor: lanes.terminalCursor,
-					enrichmentCursor: lanes.enrichmentCursor
-				}
-				: null;
-
-			if (snapshot.state === "unavailable") {
-				setOptimizerPayload(payload);
-				setOptimizerLoadError(snapshot.error ?? "Optimizer bridge is unavailable");
-				setConnectionState("failed");
-				return;
-			}
-			if (snapshot.state === "interrupted" || snapshot.state === "failed") {
-				if (payload) setOptimizerPayload(payload);
-				setOptimizerLoadError(snapshot.error ?? "Optimizer stream interrupted");
-				setConnectionState(snapshot.state);
-				reportDiagnostic({
-					...visualIdentity,
-					optimizerRunId,
-					streamId: optimizerRunId,
-					severity: "error",
-					component: "visual-host",
-					event: "stream.interrupted",
-					code: DIAGNOSTIC_CODES.streamInterrupted,
-					message: snapshot.error ?? "Optimizer stream interrupted",
-					retryable: true,
+		setOptimizerPayload(null);setOptimizerLoadError(null);setProgressView(null);
+		setReceiptVerdict({kind:"unverified",reason:"no_receipt"});
+		return observeOptimizerVisual({
+			subscribe:(listener:(snapshot:RunProgressSnapshot)=>void)=>subscribeToRun(optimizerRunId,listener,{evidence:runProgressEvidenceMode(artifact.templateId)}),
+			project:snapshot=>{
+				const projection=projectRunProgress(snapshot,Date.now());
+				const agreement=projection?progressAgreement(projection):null;
+				const lanes=snapshot.run?splitSnapshotEvents(snapshot.run,snapshot.events):null;
+				return {progress:agreement,payload:snapshot.run&&lanes?{
+					run:snapshot.run,runViewV2:snapshot.viewV2,runProgress:agreement,
+					events:lanes.terminalEvents,enrichmentEvents:lanes.enrichmentEvents,
+					terminalCursor:lanes.terminalCursor,enrichmentCursor:lanes.enrichmentCursor,evidenceState:snapshot.evidence
+				}:null};
+			},
+			onFrame:frame=>{setOptimizerPayload(frame.payload);setProgressView(frame.progress);setOptimizerLoadError(frame.error);setConnectionState(frame.connection);},
+			onDiagnostic:(kind,snapshot)=>reportDiagnostic({
+				...visualIdentity,optimizerRunId,streamId:optimizerRunId,severity:kind==="stale"?"warn":"error",component:"visual-host",
+				event:kind==="stale"?"stream.replay.gap":"stream.interrupted",
+				code:kind==="stale"?DIAGNOSTIC_CODES.streamReplayGap:DIAGNOSTIC_CODES.streamInterrupted,
+				message:kind==="stale"?`Optimizer event history is incomplete at ${snapshot.cursor}`:snapshot.error??"Optimizer stream interrupted",
+				retryable:true,details:kind==="stale"?{cursor:snapshot.cursor,gap:snapshot.gap}:undefined,
+			}),
+			readReceipt:()=>Promise.resolve(bridges.optimizers?.visualRenderReceipt?.(artifact.id,typeof artifact.revision==="number"?artifact.revision:0)),
+			verifyReceipt:(receipt,snapshot)=>verifyAgainstReceipt(receipt,{
+				optimizerRunId,projectionRevision:snapshot.viewV2!.header.projectionRevision,
+				dataDigest:visualDataDigest(snapshot.viewV2!),templateVersion:templateDigest??""
+			}),
+			onReceipt:verdict=>{
+				setReceiptVerdict(verdict);
+				if(verdict.kind==="regressed"||verdict.kind==="content_changed")reportDiagnostic({
+					...visualIdentity,optimizerRunId,severity:"warn",component:"visual-host",event:"visual.receipt.mismatch",code:DIAGNOSTIC_CODES.streamReplayGap,
+					message:verdict.kind==="regressed"
+						?`Local evidence is at projection revision ${verdict.localRevision}, behind the ${verdict.renderedRevision} this visual already rendered.`
+						:`Projection revision ${verdict.projectionRevision} now carries different content than when this visual rendered.`,
+					retryable:true,details:{verdict:verdict.kind,renderedAt:verdict.renderedAt},
 				});
-				return;
-			}
-			if (snapshot.state === "stale") {
-				if (payload) setOptimizerPayload(payload);
-				setOptimizerLoadError(null);
-				setConnectionState("stale");
-				reportDiagnostic({
-					...visualIdentity,
-					optimizerRunId,
-					streamId: optimizerRunId,
-					severity: "warn",
-					component: "visual-host",
-					event: "stream.replay.gap",
-					code: DIAGNOSTIC_CODES.streamReplayGap,
-					message: `Optimizer event history is incomplete at ${snapshot.cursor}`,
-					retryable: true,
-					details: { cursor: snapshot.cursor, gap: snapshot.gap },
+			},
+			recordReady:async(snapshot,signal)=>{
+				if(signal.aborted)return;
+				await bridges.optimizers?.recordVisualReady?.({
+					visualId:artifact.id,optimizerRunId,templateId:artifact.templateId??"optimizer.run.v1",
+					replayedThrough:snapshot.cursor,subscribedFrom:snapshot.cursor+1,templateDigest,
+					visualRevision:typeof artifact.revision==="number"?artifact.revision:0,
+					projectionRevision:snapshot.viewV2!.header.projectionRevision,dataDigest:visualDataDigest(snapshot.viewV2!)
 				});
-				return;
-			}
-			if (!snapshot.run || !payload) {
-				setConnectionState(snapshot.state === "loading" ? "loading" : "replaying");
-				return;
-			}
-			setOptimizerPayload(payload);
-			setOptimizerLoadError(null);
-			setConnectionState(
-				snapshot.state === "terminal" ? "terminal"
-					: snapshot.state === "reconnecting" ? "reconnecting"
-						: snapshot.state === "replaying" ? "replaying"
-							: "subscribed"
-			);
-			if (!postedReady) {
-				postedReady = true;
-				void bridges.optimizers?.recordVisualReady?.({
-					visualId: artifact.id,
-					optimizerRunId,
-					templateId: artifact.templateId ?? "optimizer.run.v1",
-					replayedThrough: snapshot.cursor,
-					subscribedFrom: snapshot.cursor + 1,
-					templateDigest
-				}).catch(() => undefined);
 			}
 		});
-	}, [artifact.id, artifact.templateId, optimizerRunId, templateDigest, visualIdentity]);
+	}, [artifact.id, artifact.revision, artifact.templateId, optimizerRunId, templateDigest, visualIdentity]);
 
 	// A container eval imports one sealed Trace V5 bundle per terminal trial.
 	// The digest is recorded inside that trial's durable terminal event rather
@@ -1127,31 +721,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			...(Array.isArray(optimizerPayload?.events) ? optimizerPayload.events : []),
 			...(Array.isArray(optimizerPayload?.enrichmentEvents) ? optimizerPayload.enrichmentEvents : [])
 		] as Array<Record<string, any>>;
-		const refs = allEvents.flatMap((event) => {
-			if ((event.type ?? event.eventType) !== "eval.trial.terminal") return [];
-			const item = event.item ?? {};
-			const record = item.raw ?? item;
-			const sealed = record.sealedTrace ?? record.sealed_trace;
-			if (!sealed?.inspectable || !Array.isArray(sealed.traces)) return [];
-			const trialId = String(event.delta?.trial_id ?? record.trialId ?? item.id ?? "");
-			const rolloutId = typeof record.rolloutId === "string" ? record.rolloutId : null;
-			return sealed.traces.flatMap((trace: Record<string, unknown>) =>
-				typeof trace.digest === "string" && trialId
-					? [{ trialId, rolloutId, digest: trace.digest }]
-					: []
-			);
-		});
-		if (refs.length === 0) {
-			setSealedTraceProjections([]);
-			return () => { cancelled = true; };
-		}
-		void Promise.all(refs.map(async (ref) => {
-			const resolved = await bridges.inventory!.resolveTraceProjection(ref.digest, "rollout-inspector");
-			if (resolved.traceDigest !== ref.digest || resolved.projectionKind !== "rollout-inspector") {
-				throw new Error(`Sealed trace projection identity changed for ${ref.digest}`);
-			}
-			return { ...ref, projection: resolved.payload };
-		})).then((rows) => {
+		const controller=new AbortController();
+		void resolveSealedTrialProjections(allEvents,
+			digest=>bridges.inventory!.resolveTraceProjection(digest,"rollout-inspector"),controller.signal).then((rows) => {
 			if (!cancelled) setSealedTraceProjections(rows);
 		}).catch((reason) => {
 			if (cancelled) return;
@@ -1166,7 +738,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				message: publicError(reason, "Sealed trace projection failed")
 			});
 		});
-		return () => { cancelled = true; };
+		return () => { cancelled = true; controller.abort(); };
 	}, [artifact.templateId, optimizerPayload, optimizerRunId, visualIdentity]);
 
 	const boundRun = optimizerPayload?.run as { id?: string; algorithmId?: string } | undefined;
@@ -1181,22 +753,15 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			return;
 		}
 		let cancelled = false;
-		void (async () => {
-			try {
-				const prefixOf = (id: string) => id.split("_").slice(0, 2).join("_");
-				const runs = await bridges.optimizers!.list({ algorithmId: "gepa" });
-				const sibling = runs
-					.filter((item) => item.id !== boundRunId && prefixOf(item.id) === prefixOf(boundRunId))
-					.sort((a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""))[0];
-				if (!sibling) return;
-				const runViewV2 = await bridges.optimizers!.runViewV2(sibling.id);
-				if (!cancelled) setComparisonPayload({ run: sibling, runViewV2 });
-			} catch {
-				// The comparison card is optional; the primary run view stands alone.
-			}
-		})();
+		const controller=new AbortController();
+		setComparisonPayload(null);
+		void resolveComparisonProjection(boundRunId,{
+			list:()=>bridges.optimizers!.list({algorithmId:"gepa"}),
+			view:id=>bridges.optimizers!.runViewV2(id),
+		},controller.signal).then(payload=>{if(!cancelled)setComparisonPayload(payload);}).catch(()=>undefined);
 		return () => {
 			cancelled = true;
+			controller.abort();
 		};
 	}, [boundRunId]);
 
@@ -1205,7 +770,10 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		return <VisualInvalidState title="Visual bindings unreadable" detail={resolvedBindings.error ?? "This visual's bindings could not be read."} />;
 	}
 	if (synchronouslyResolved.errors.length > 0) return <VisualInvalidState title="Visual data unavailable" detail={synchronouslyResolved.errors.join(" · ")} />;
-	if (traceResolution.status === "loading" && !lastKnownGoodProps) return <p className="visual-loading" role="status">Loading sealed trace…</p>;
+	// A cached shell can load before the binding effect's first state update.
+	// The initial idle state is not an empty resolved payload: passing it to a
+	// strict family would crash and permanently unmount the in-flight resolver.
+	if (asyncBindings.length>0 && (traceResolution.status === "idle" || traceResolution.status === "loading") && !lastKnownGoodProps) return <p className="visual-loading" role="status">Resolving visual inputs…</p>;
 	const liveFailed = traceResolution.status === "error";
 	const selected = selectRenderedProjection({
 		live: liveFailed ? null : { ...synchronouslyResolved.props, ...traceResolution.props },
@@ -1261,8 +829,17 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		throw new Error("injected renderer crash");
 	}
 	const resolvedProps = selected.projection ?? { ...synchronouslyResolved.props, ...traceResolution.props };
-	const showConnection = Boolean(optimizerPayload || optimizerLoadError || connectionState !== "loading");
 	const boundEvents = Array.isArray(optimizerPayload?.events) ? optimizerPayload.events as unknown[] : [];
+	// Readiness describes the run, not the renderer's hydration. A
+	// projection-only visual proves its candidates and rollouts from the
+	// durable view; raw event length is the floor only when no view exists.
+	const semanticCounts = semanticCountsFromRunView(
+		optimizerPayload?.runViewV2 as Parameters<typeof semanticCountsFromRunView>[0],
+		boundEvents.length
+	);
+	const optimizerEvidenceState = typeof optimizerPayload?.evidenceState === "string"
+		? optimizerPayload.evidenceState
+		: undefined;
 	const runLifecycle = projectVisualRunLifecycle(
 		optimizerPayload?.run as Parameters<typeof projectVisualRunLifecycle>[0],
 		progressView
@@ -1276,11 +853,15 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	return (
 		<div
 			data-testid="visual-template-shell"
-			data-connection-state={showConnection ? connectionState : undefined}
+			data-connection-state={connectionState}
 			data-visual-transport-state={connectionState === "loading" ? "idle" : connectionState}
 			data-visual-terminal={transportTerminal ? "true" : "false"}
-			data-visual-semantic-event-count={String(boundEvents.length)}
-			data-visual-rollout-count={String(boundEvents.length)}
+			data-visual-evidence={optimizerEvidenceState}
+			data-visual-receipt={receiptVerdict.kind}
+			data-visual-semantic-event-count={String(semanticCounts.semanticEvents)}
+			data-visual-rollout-count={String(semanticCounts.rollouts)}
+			data-visual-semantic-source={semanticCounts.source}
+			data-visual-raw-event-count={String(boundEvents.length)}
 			data-visual-error={optimizerLoadError ?? (liveFailed ? traceResolution.error : undefined)}
 			data-visual-projection-source={selected.source ?? "live"}
 			data-visual-projection-stale={selected.stale ? "true" : undefined}
@@ -1307,8 +888,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					Showing last known good projection while live rendering recovers.
 				</p>
 			) : null}
-			{showConnection ? <p className="visual-connection-state" data-testid="visual-connection-state">{connectionState}</p> : null}
-			<Shell
+			<PinnedTemplate Shell={Shell}
 				{...(resolvedProps as ShellProps)}
 				title={artifact.title}
 				lede={artifact.summary}
@@ -1316,15 +896,39 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				visualMetadata={artifact.metadata}
 				loadError={optimizerLoadError ?? undefined}
 				{...(optimizerPayload ?? {})}
-				data={optimizerPayload ?? resolvedProps.optimizer_run ?? resolvedProps}
+				data={anonymousDataProp(resolvedProps, optimizerPayload)}
 				comparison={comparisonPayload ?? undefined}
 				replay={replayClient}
 				media={mediaClient}
+				traceResearch={traceResearchClient}
 				sealedTraceProjections={sealedTraceProjections}
+				analysisFindings={analysisFindings}
+				analysisCampaigns={analysisCampaigns}
+				onReviewFinding={
+					artifact.templateId === "analysis.annotation_workbench.v1" && bridges.analysis
+						? (input: { findingId: string; decision: string; rationale: string; evidenceHeadDigest?: string }) =>
+							bridges.analysis!.review({
+								findingId: input.findingId,
+								decision: input.decision,
+								rationale: input.rationale,
+								evidenceHeadDigest: input.evidenceHeadDigest ?? evidenceHeadDigest ?? ""
+							})
+						: undefined
+				}
+				evidence={evidenceClient}
+				history={historyClient}
+				collections={collectionsClient}
+				runSummary={optimizerSummaryState.summary ?? undefined}
+				runSummaryStatus={optimizerSummaryState.status}
+				tailCursor={typeof optimizerPayload?.terminalCursor === "number" ? optimizerPayload.terminalCursor : undefined}
 				runLifecycle={runLifecycle}
 				replayMissingTransport={replay.missingTransport}
 				visualId={artifact.visualId ?? artifact.id}
 				revision={typeof artifact.revision === "number" ? artifact.revision : null}
+				visualState={bridges.visuals ? {
+					putSnapshot: (snapshot: import("@synth/visuals-protocol").VisualSnapshot) => bridges.visuals!.putSnapshot(artifact.visualId ?? artifact.id, snapshot),
+					putRecording: (recording: import("@synth/visuals-protocol").VisualRecording) => bridges.visuals!.putRecording(artifact.visualId ?? artifact.id, recording),
+				} : undefined}
 			/>
 		</div>
 	);
@@ -1339,13 +943,12 @@ function numericAttribute(element: Element, name: string): number {
  * extractor and readiness decision. Nothing supplied by a template is treated
  * as a passing boolean. */
 function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactRef; children: ReactNode }) {
+  const visualClient=useVisualSessionClient();
+  const visualSession=useVisualSessionSnapshot();
+  const renderedStateVersion=visualSession?.state.stateVersion;
 	const root = useRef<HTMLDivElement>(null);
+	const lastPublishedObservation = useRef<string | null>(null);
 	const [bindingsDigest, setBindingsDigest] = useState<string | null>(null);
-	// Same catalog, same read. Review, readiness and sealing are driven by the
-	// observation contract on the manifest, so a user template earns them by
-	// resolving here exactly as a family does — never by a branch that skips
-	// observation for templates that came from disk.
-	useRuntimeTemplates();
 	const template = artifact.templateId ? resolveTemplate(artifact.templateId) : undefined;
 	const contract = template?.observationContract;
 
@@ -1362,14 +965,28 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 
 	useEffect(() => {
 		const host = root.current;
-		if (!host || !contract || !bindingsDigest || !artifact.visualId || !artifact.revision || !bridges.visuals) return;
+		const visualBridge = bridges.visuals;
+		if (!host || !contract || !bindingsDigest || !artifact.visualId || !artifact.revision || !visualBridge) return;
 		let frame: number | null = null;
+		let fallback: number | null = null;
+		lastPublishedObservation.current = null;
 		const publish = () => {
 			frame = null;
-			const surface = host.querySelector("[data-visual-transport-state]");
+			if (fallback != null) {
+				window.clearTimeout(fallback);
+				fallback = null;
+			}
+			// The host wraps every shell in its own transport element, so a bare
+			// `[data-visual-transport-state]` query harvested the wrapper rather
+			// than the template's published observation — reading `idle` over a
+			// declared `terminal`, and zero frames over a surface that has none
+			// of the count attributes at all. Prefer the template's own.
+			const surface = selectObservationSurface(
+				Array.from(host.querySelectorAll("[data-visual-transport-state]"))
+			);
 			if (!surface) return;
 			const rawError = surface.getAttribute("data-visual-error")?.trim();
-			void bridges.visuals?.reportObservation({
+			const observation = {
 				schemaVersion: "synth.rendered-visual-observation.v1",
 				visualId: artifact.visualId!,
 				renderedRevision: artifact.revision!,
@@ -1381,10 +998,39 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 				terminal: surface.getAttribute("data-visual-terminal") === "true",
 				error: rawError || null,
 				observedAt: new Date().toISOString()
+			} as const;
+      const committed=visualClient?.getSnapshot();
+      if(committed?.ready&&committed.state.stateVersion===renderedStateVersion){
+        visualClient!.publishSceneContribution("rendered",renderedStateVersion,{
+          truth:{rolloutCount:{state:"observed",value:observation.rolloutCount},frameCount:{state:"observed",value:observation.renderedFrameCount},semanticEventCount:{state:"observed",value:observation.semanticEventCount},transportState:{state:"observed",value:observation.transportState},bindingsDigest:{state:"observed",value:bindingsDigest}},
+          diagnostics:observation.error?[observation.error]:[],
+        });
+      }
+			// Rich visuals can mutate many descendants while their readiness facts
+			// stay unchanged. Publishing every mutation feeds the resulting app
+			// event back into run invalidation and creates a render/report loop.
+			// The timestamp is deliberately excluded: only semantic observation
+			// changes deserve another durable receipt.
+			const observationKey = JSON.stringify({
+				bindingsDigest,
+				transportState: observation.transportState,
+				rolloutCount: observation.rolloutCount,
+				renderedFrameCount: observation.renderedFrameCount,
+				semanticEventCount: observation.semanticEventCount,
+				terminal: observation.terminal,
+				error: observation.error
 			});
+			if (lastPublishedObservation.current === observationKey) return;
+			lastPublishedObservation.current = observationKey;
+			void visualBridge.reportObservation(observation);
 		};
 		const schedule = () => {
 			if (frame == null) frame = window.requestAnimationFrame(publish);
+			// macOS suspends requestAnimationFrame for an occluded Workshop
+			// window. Review capture is intentionally host-driven and must still
+			// receive the exact rendered-observation receipt while the app is in
+			// the background, so race rAF with one bounded timer.
+			if (fallback == null) fallback = window.setTimeout(publish, 250);
 		};
 		const observer = new MutationObserver(schedule);
 		observer.observe(host, { subtree: true, childList: true, attributes: true });
@@ -1392,8 +1038,9 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 		return () => {
 			observer.disconnect();
 			if (frame != null) window.cancelAnimationFrame(frame);
+			if (fallback != null) window.clearTimeout(fallback);
 		};
-	}, [artifact.revision, artifact.visualId, bindingsDigest, contract]);
+	}, [artifact.revision, artifact.visualId, bindingsDigest, contract,visualClient,renderedStateVersion]);
 
 	const openReference = async (event: MouseEvent<HTMLDivElement>) => {
 		const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-reference-kind]") : null;
@@ -1483,71 +1130,35 @@ class VisualErrorBoundary extends Component<
 				onRetry={() => this.setState((current) => ({ error: null, retry: current.retry + 1 }))}
 			/>;
 		}
-		return <div className="visual-host-boundary" key={this.state.retry}>{this.props.children}</div>;
+		return <div className="visual-host-boundary" data-visual-id={this.props.visualId ?? undefined} data-visual-revision={this.props.visualRevision ?? undefined} key={this.state.retry}>{this.props.children}</div>;
 	}
 }
 
+const visualRenderers = new ReactVisualRendererRegistry<ArtifactRef>()
+    .register({ id: "document", matches: isDocumentArtifact, component: DocumentPane })
+	.register({ id: "systems-dynamic", matches: (artifact) => artifact.rendererKind === "systems-dynamic", component: SystemsDynamicVisual })
+	.register({ id: "systems", matches: (artifact) => artifact.rendererKind === "systems", component: SystemsMapVisual })
+	.register({ id: "chart", matches: (artifact) => artifact.rendererKind === "chart", component: ChartVisual })
+	.register({ id: "mermaid", matches: (artifact) => artifact.rendererKind === "mermaid", component: MermaidVisual })
+	.register({ id: "subagents", matches: (artifact) => artifact.templateId === "synth.subagents.v1", component: SubagentsVisual })
+	.register({ id: "preview", matches: (artifact) => Boolean(artifact.preview?.variant && artifact.preview.variant !== "generic" && !artifact.templateId), component: MockFallback })
+	.register({ id: "template", matches: () => true, component: TemplateVisualHost, observe: true });
+
 /** Shared host used by chat cards, the right pane, and the Visuals library. */
 export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
-	const bindingsKey = bindingAuthorityKey(artifact.bindings);
-	// First, because a document pane is host-rendered end to end: its bytes
-	// arrive through a scoped host command rather than a bound payload, so
-	// none of the template resolution below applies to it.
-	if (isDocumentArtifact(artifact)) {
-		return (
-			<VisualErrorBoundary
-				key={`${artifact.id}:document`}
-				visualId={artifact.visualId ?? artifact.id}
-				visualRevision={typeof artifact.revision === "number" ? artifact.revision : null}
-				templateId={artifact.templateId ?? null}
-			>
-				<DocumentPane artifact={artifact} />
-			</VisualErrorBoundary>
-		);
-	}
-	const isSystemsDynamic =
-		artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
-	if (isSystemsDynamic) {
-		return <VisualErrorBoundary key={`${artifact.id}:systems-dynamic`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}><SystemsDynamicVisual artifact={artifact} /></VisualErrorBoundary>;
-	}
-	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
-	if (isSystems) {
-		return <VisualErrorBoundary key={`${artifact.id}:systems`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}><SystemsMapVisual artifact={artifact} /></VisualErrorBoundary>;
-	}
-	const isChart = artifact.templateId === "analysis.chart.v1" || artifact.rendererKind === "chart";
-	if (isChart) {
-		return <VisualErrorBoundary key={`${artifact.id}:chart`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}><ChartVisual artifact={artifact} /></VisualErrorBoundary>;
-	}
-	const isMermaid =
-		artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";
-	if (isMermaid) {
-		return (
-			<VisualErrorBoundary key={`${artifact.id}:mermaid`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
-				<MermaidVisual artifact={artifact} />
-			</VisualErrorBoundary>
-		);
-	}
-	if (artifact.templateId === "synth.subagents.v1") {
-		return (
-			<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "subagents"}`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
-				<SubagentsVisual artifact={artifact} />
-			</VisualErrorBoundary>
-		);
-	}
-	if (artifact.preview?.variant && artifact.preview.variant !== "generic" && !artifact.templateId) {
-		return (
-			<VisualErrorBoundary key={`${artifact.id}:preview`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
-				<MockFallback artifact={artifact} />
-			</VisualErrorBoundary>
-		);
-	}
-	return (
-		<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "missing"}:${bindingsKey}`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
-			<VisualObservationBoundary artifact={artifact}>
-				<TemplateVisualHost artifact={artifact} />
-			</VisualObservationBoundary>
-		</VisualErrorBoundary>
-	);
+	const bindingsKey = artifact.templateId === "synth.subagents.v1" ? "live-subagents" : bindingAuthorityKey(artifact.bindings);
+	const definition = artifact.templateId ? visualExtensions.definition(artifact.templateId) : undefined;
+	const renderer = visualRenderers.resolve({...artifact,rendererKind:artifact.rendererKind??definition?.renderer});
+	const Renderer = renderer.component;
+	const content = renderer.observe
+		? <VisualObservationBoundary artifact={artifact}><Renderer artifact={artifact} /></VisualObservationBoundary>
+		: <Renderer artifact={artifact} />;
+	return <div data-visual-definition={definition?.id} data-visual-definition-version={definition?.version}><VisualErrorBoundary
+		key={`${artifact.id}:${artifact.revision ?? "unversioned"}:${renderer.id}:${artifact.templateId ?? "missing"}:${bindingsKey}`}
+		visualId={artifact.visualId ?? artifact.id}
+		visualRevision={typeof artifact.revision === "number" ? artifact.revision : null}
+		templateId={artifact.templateId ?? null}
+	><WorkshopVisualSession artifact={artifact}>{content}</WorkshopVisualSession></VisualErrorBoundary></div>;
 }
 
 const SHARED_URL_INVALID = "Enter an http(s) private artifact URL.";
@@ -1616,6 +1227,8 @@ function optimizerSealGateFromPane(host: HTMLElement): OptimizerSealGate {
 
 export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClose: () => void }) {
 	const paneRef = useRef<HTMLElement>(null);
+	const overflowRef = useRef<HTMLDivElement>(null);
+	const moreButtonRef = useRef<HTMLButtonElement>(null);
 	const primaryOptimizerRunId = productOwnedPrimaryOptimizerRunId(artifact);
 	const [optimizerSealGate, setOptimizerSealGate] = useState<OptimizerSealGate>(() => ({
 		ready: false,
@@ -1632,24 +1245,67 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const [labelPoint, setLabelPoint] = useState<{ x: number; y: number; selector?: Record<string, unknown>; targetLabel?: string } | null>(null);
 	const [labelBody, setLabelBody] = useState("");
 	const [artifactError, setArtifactError] = useState<string | null>(null);
+	const [artifactActionStatus, setArtifactActionStatus] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
-	const labelButtonRef = useRef<HTMLButtonElement | null>(null);
-
+	const [inspectorOpen, setInspectorOpen] = useState(false);
+	const [debugState, setDebugState] = useState<VisualPaneDebugState>({
+		connectionState: null,
+		transportState: null,
+		projectionSource: null,
+		stale: false
+	});
 	function cancelLabeling() {
 		setLabeling(false);
 		setLabelPoint(null);
-		requestAnimationFrame(() => labelButtonRef.current?.focus());
+		requestAnimationFrame(() => moreButtonRef.current?.focus());
+	}
+
+	function readDebugState(): VisualPaneDebugState {
+		const shell = paneRef.current?.querySelector<HTMLElement>('[data-testid="visual-template-shell"]');
+		return {
+			connectionState: shell?.dataset.connectionState ?? null,
+			transportState: shell?.dataset.visualTransportState ?? null,
+			projectionSource: shell?.dataset.visualProjectionSource ?? null,
+			stale: shell?.dataset.visualProjectionStale === "true"
+		};
+	}
+
+	function closeInspector(restoreFocus = true) {
+		setInspectorOpen(false);
+		if (restoreFocus) requestAnimationFrame(() => moreButtonRef.current?.focus());
+	}
+
+	function toggleInspector() {
+		setInspectorOpen((open) => {
+			if (!open) setDebugState(readDebugState());
+			return !open;
+		});
 	}
 
 	useEffect(() => {
-		if (!labeling && !expanded) return;
+		if (!inspectorOpen) return;
+		const closeOnPointerDown = (event: PointerEvent) => {
+			if (!overflowRef.current?.contains(event.target as Node)) closeInspector(false);
+		};
+		document.addEventListener("pointerdown", closeOnPointerDown);
+		return () => document.removeEventListener("pointerdown", closeOnPointerDown);
+	}, [inspectorOpen]);
+
+	useEffect(() => {
+		if (!labeling && !inspectorOpen && !expanded) return;
 		const onKeyDown = (event: KeyboardEvent) => {
 			if (event.key !== "Escape") return;
-			// Escape hierarchy: labeling, then expanded; pane close stays in the controller.
+			// Escape hierarchy: labeling, inspector, then expanded; pane close stays in the controller.
 			if (labeling) {
 				event.preventDefault();
 				event.stopPropagation();
 				cancelLabeling();
+				return;
+			}
+			if (inspectorOpen) {
+				event.preventDefault();
+				event.stopPropagation();
+				closeInspector();
 				return;
 			}
 			if (expanded) {
@@ -1660,7 +1316,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 		};
 		window.addEventListener("keydown", onKeyDown, true);
 		return () => window.removeEventListener("keydown", onKeyDown, true);
-	}, [labeling, expanded]);
+	}, [labeling, inspectorOpen, expanded]);
 	useEffect(() => {
 		const root = document.documentElement;
 		root.classList.toggle("visual-expanded", expanded);
@@ -1668,8 +1324,17 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	}, [expanded]);
 	const visualId = artifact.visualId;
 	const revision = artifact.revision;
-	const qualityGate = artifact.metadata?.qualityGate as { ready?: boolean; revision?: number } | undefined;
-	const authoringGateReady = Boolean(qualityGate?.ready && qualityGate.revision === revision);
+	const qualityGate = artifact.metadata?.qualityGate as {
+		ready?: boolean;
+		revision?: number;
+		state?: "ready" | "stale";
+		staleReasons?: string[];
+	} | undefined;
+	const authoringGateReady = Boolean(
+		qualityGate?.ready
+		&& qualityGate.state !== "stale"
+		&& qualityGate.revision === revision
+	);
 	const sealEligible = Boolean(visualId && revision && (
 		primaryOptimizerRunId ? optimizerSealGate.ready : authoringGateReady
 	));
@@ -1677,7 +1342,9 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 		? optimizerSealGate.reason
 		: authoringGateReady
 			? null
-			: "Seal requires the E1 visual quality gate for this exact revision.";
+			: qualityGate?.state === "stale"
+				? `Seal requires fresh visual review; certification is stale${qualityGate.staleReasons?.length ? ` (${qualityGate.staleReasons.join(", ")})` : ""}.`
+				: "Seal requires the E1 visual quality gate for this exact revision.";
 
 	useEffect(() => {
 		if (!primaryOptimizerRunId) {
@@ -1750,6 +1417,60 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 		}
 	}
 
+	async function rerenderWithCurrentTemplate() {
+		if (!visualId || !bridges.visuals) return;
+		setBusy(true);
+		setArtifactError(null);
+		setArtifactActionStatus(null);
+		try {
+			const updated = await bridges.visuals.update(visualId, {
+				metadata: {
+					...(artifact.metadata ?? {}),
+					templateRerender: {
+						requestedAt: new Date().toISOString(),
+						fromRevision: revision ?? null,
+						templateId: artifact.templateId ?? null
+					}
+				},
+				bumpRevision: true
+			});
+			setArtifactActionStatus(`Rendered revision ${updated.currentRevision} with the current ${updated.templateId} template.`);
+		} catch (reason) {
+			setArtifactError(publicError(reason, "Could not re-render this visual."));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function restartEvaluator() {
+		if (!primaryOptimizerRunId || !bridges.optimizers || !bridges.inventory) return;
+		const sessionId = artifact.sessionId ?? artifact.ownerSessionId;
+		if (!sessionId) {
+			setArtifactError("Evaluator restart requires the visual's owning Workshop session.");
+			return;
+		}
+		setBusy(true);
+		setArtifactError(null);
+		setArtifactActionStatus(null);
+		try {
+			const run = await bridges.optimizers.get(primaryOptimizerRunId);
+			if (!isTerminalRunStatus(run.status)) {
+				throw new Error(`Finish or cancel optimizer run ${run.id} before restarting its evaluator.`);
+			}
+			const containerId = runFacets(run).containerId;
+			if (!containerId) throw new Error(`Optimizer run ${run.id} has no recorded evaluator container.`);
+			const container = await bridges.inventory.restartContainer(containerId, sessionId);
+			if (container.status !== "ready") {
+				throw new Error(`Evaluator ${containerId} restarted but reported ${container.status}.`);
+			}
+			setArtifactActionStatus(`Evaluator ${container.name} restarted and is ready; durable run evidence was retained.`);
+		} catch (reason) {
+			setArtifactError(publicError(reason, "Could not safely restart the evaluator."));
+		} finally {
+			setBusy(false);
+		}
+	}
+
 	async function reopenSeal(receiptDigest: string) {
 		if (!bridges.visuals) return;
 		setBusy(true);
@@ -1786,10 +1507,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 
 	async function openSharedUrl() {
 		const url = sharedUrl.trim();
-		if (!isSharedArtifactUrl(url)) {
-			if (url) setArtifactError(SHARED_URL_INVALID);
-			return;
-		}
+		if (!isSharedArtifactUrl(url)) return;
 		if (!bridges.visuals) return;
 		setBusy(true);
 		setArtifactError(null);
@@ -1806,6 +1524,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	}
 
 	function closeVisualPane() {
+		setInspectorOpen(false);
 		onClose();
 		requestAnimationFrame(restoreFocusAfterVisualPaneClose);
 	}
@@ -1825,19 +1544,12 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 		}
 	}
 	const isSubagents = artifact.templateId === "synth.subagents.v1";
-	const isMermaid = artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";
-	const isSystemsDynamic = artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
-	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
-	const kindLabel = isSubagents ? "Agents" : isSystemsDynamic ? "Benjamin Dicken Style" : isSystems ? "Systems map · 2D" : isMermaid ? "Diagram" : "Visual";
 	const sharedUrlValid = isSharedArtifactUrl(sharedUrl);
 	const sharedUrlError = sharedUrl.trim() && !sharedUrlValid ? SHARED_URL_INVALID : null;
 	const revisionSync = artifact.metadata?.revisionSync as {
-		loading?: boolean;
-		requestedRevision?: number;
-		acceptedRevision?: number;
 		error?: string | null;
 	} | undefined;
-	const paneAlert = sharedUrlError ?? artifactError ?? (revisionSync?.error ? `Visual refresh failed · ${revisionSync.error}` : null);
+	const paneAlert = artifactError ?? (revisionSync?.error ? `Visual refresh failed · ${revisionSync.error}` : null);
 	return (
 		<aside
 			ref={paneRef}
@@ -1845,109 +1557,44 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 			data-testid="visual-pane"
 			aria-label={isSubagents ? "Subagents" : "Visual artifact"}
 		>
-			<header className="visual-pane-head">
-				<div className="visual-pane-head-text">
-					<span className="visual-pane-kind">
-						{kindLabel}{revision ? ` · rev ${revision}` : ""}
-						{revisionSync?.loading ? ` · reconciling${(revisionSync.requestedRevision ?? -1) > (revisionSync.acceptedRevision ?? -1) ? ` rev ${revisionSync.requestedRevision}` : ""}` : ""}
-					</span>
-					<span className="visual-pane-title">{artifact.title}</span>
-					<span className="visual-pane-identity" data-testid="visual-pane-identity">
-						{formatVisualAdmissionIdentity({
-							visualId: visualId ?? artifact.id,
-							revision,
-							receiptDigest: seals.find((seal) => seal.visualRevision === revision)?.receiptDigest ?? artifact.receiptDigest,
-							contentDigest: artifact.contentDigest
-						})}
-					</span>
-					<VisualOpsLine
-						sessionId={artifact.sessionId ?? artifact.ownerSessionId}
-						runId={artifact.runId}
-						traceId={artifact.traceId}
-						testId="visual-pane-ops"
-						probe
-					/>
-				</div>
-				<div className="visual-pane-head-actions">
-					{isSubagents ? null : sealedBundle ? (
-						<>
-							<button type="button" className="visual-expand" onClick={() => { setSealedBundle(null); setCompareBundle(null); setShareUpload(null); }}>Live revision</button>
-							{compareBundle ? <button type="button" className="visual-expand" onClick={() => setCompareBundle(null)}>Close comparison</button> : null}
-							<button type="button" className="visual-expand" onClick={() => void shareCurrentSeal()} disabled={busy} title="Human Share uploads this sealed digest privately">
-								{shareUpload?.state === "committed" ? "Shared privately" : "Share privately"}
-							</button>
-						</>
-					) : null}
-					{isSubagents ? null : (
-					<button
-						ref={labelButtonRef}
-						type="button"
-						className="visual-expand"
-						onClick={() => { setLabeling(true); setLabelPoint(null); }}
-						disabled={!visualId || !revision || busy}
-						title="Place a label on this exact revision"
-					>
-						Label{annotations.length ? ` · ${annotations.length}` : ""}
-					</button>
-					)}
-					{isSubagents || !sealDisabledReason ? null : <span className="visual-seal-disabled-reason" role="status">{sealDisabledReason}</span>}
-					{isSubagents ? null : (
-					<button
-						type="button"
-						className="visual-expand"
-						onClick={() => void sealCurrentRevision()}
-						disabled={!sealEligible || busy}
-						title={sealEligible ? "Seal this exact revision for offline use" : sealDisabledReason ?? "Seal is unavailable"}
-					>
-						{busy ? "Working…" : "Seal"}
-					</button>
-					)}
-					<button
-						type="button"
-						className="visual-expand"
-						onClick={() => setExpanded((current) => !current)}
-						aria-pressed={expanded}
-						aria-label={expanded ? "Restore split view" : "Expand visual"}
-						data-testid="toggle-visual-expand"
-					>
-						{expanded ? "Restore" : "Expand"}
-					</button>
-					<button type="button" className="visual-close" onClick={closeVisualPane} aria-label="Close visual">×</button>
-				</div>
-			</header>
+			<VisualPaneChrome
+				artifact={artifact}
+				expanded={expanded}
+				inspectorOpen={inspectorOpen}
+				overflowRef={overflowRef}
+				moreButtonRef={moreButtonRef}
+				busy={busy}
+				artifactOperationsEnabled={!isSubagents}
+				evaluatorRestartAvailable={!isSubagents && Boolean(primaryOptimizerRunId)}
+				actionStatus={artifactActionStatus}
+				annotationsCount={annotations.length}
+				sealEligible={!isSubagents && sealEligible}
+				sealDisabledReason={isSubagents ? null : sealDisabledReason}
+				seals={isSubagents ? [] : seals}
+				sealedBundle={isSubagents ? null : sealedBundle}
+				compareBundle={isSubagents ? null : compareBundle}
+				shareUpload={isSubagents ? null : shareUpload}
+				sharedUrl={sharedUrl}
+				sharedUrlValid={!isSubagents && sharedUrlValid}
+				sharedUrlError={isSubagents ? null : sharedUrlError}
+				debugState={debugState}
+				onToggleInspector={toggleInspector}
+				onBeginLabeling={() => { closeInspector(false); setLabeling(true); setLabelPoint(null); }}
+				onRerender={() => void rerenderWithCurrentTemplate()}
+				onRestartEvaluator={() => void restartEvaluator()}
+				onSeal={() => void sealCurrentRevision()}
+				onLiveRevision={() => { setSealedBundle(null); setCompareBundle(null); setShareUpload(null); }}
+				onCloseComparison={() => setCompareBundle(null)}
+				onShare={() => void shareCurrentSeal()}
+				onReopenSeal={(receiptDigest) => void reopenSeal(receiptDigest)}
+				onCompareSeal={(receiptDigest) => void compareSeal(receiptDigest)}
+				onSharedUrlChange={setSharedUrl}
+				onOpenShared={() => void openSharedUrl()}
+				onCopySharedUrl={() => void navigator.clipboard?.writeText(shareUpload?.committedUrl ?? "")}
+				onToggleExpanded={() => { closeInspector(false); setExpanded((current) => !current); }}
+				onClose={closeVisualPane}
+			/>
 			{paneAlert ? <div className="visual-artifact-error" role="alert">{paneAlert}</div> : null}
-			{seals.length ? (
-				<div className="visual-seal-strip" aria-label="Sealed revisions">
-					<span>Offline:</span>
-					{seals.map((seal) => (
-						<span key={seal.receiptDigest} className="visual-seal-choice">
-							<button type="button" onClick={() => void reopenSeal(seal.receiptDigest)}>
-								rev {seal.visualRevision} · {seal.receiptDigest.slice(0, 8)}
-							</button>
-							{sealedBundle?.seal.receiptDigest !== seal.receiptDigest ? (
-								<button type="button" onClick={() => void compareSeal(seal.receiptDigest)}>Compare</button>
-							) : null}
-						</span>
-					))}
-				</div>
-			) : null}
-			<form className="visual-shared-open" onSubmit={(event) => { event.preventDefault(); void openSharedUrl(); }}>
-				<input
-					value={sharedUrl}
-					onChange={(event) => setSharedUrl(event.target.value)}
-					placeholder="Paste private artifact URL"
-					aria-label="Private artifact URL"
-					aria-invalid={Boolean(sharedUrlError)}
-				/>
-				<button type="submit" disabled={!sharedUrlValid || busy}>Open shared</button>
-			</form>
-			{shareUpload?.committedUrl ? (
-				<div className="visual-share-url">
-					<span>Private permalink</span>
-					<a href={shareUpload.committedUrl} target="_blank" rel="noreferrer">{shareUpload.committedUrl}</a>
-					<button type="button" onClick={() => void navigator.clipboard?.writeText(shareUpload.committedUrl!)}>Copy</button>
-				</div>
-			) : null}
 			{labeling ? (
 				<form className="visual-label-form visual-label-form-stack" onSubmit={(event) => { event.preventDefault(); void createLabel(); }}>
 					<span className="visual-label-status">{labelPoint ? (labelPoint.targetLabel ? `Attached to ${labelPoint.targetLabel}` : `Placed at ${Math.round(labelPoint.x * 100)}%, ${Math.round(labelPoint.y * 100)}%`) : "Click the visual to place the label."}</span>

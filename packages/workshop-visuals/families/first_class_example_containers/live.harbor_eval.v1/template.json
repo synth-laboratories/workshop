@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "live.harbor_eval.v1",
+  "title": "Harbor eval live",
+  "genre": "live",
+  "family": "harbor",
+  "version": "1.0.0",
+  "description": "Harbor trial/verifier live view. Streams while the run is open and restores from the persisted terminal snapshot after it settles.",
+  "accent": "#FF5C00",
+  "shell": "shell.tsx",
+  "tags": [
+    "live",
+    "harbor",
+    "eval",
+    "job",
+    "rollout"
+  ],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "replaying",
+        "error",
+        "connecting",
+        "reconnecting"
+      ],
+      "minimumRolloutCount": 0,
+      "minimumRenderedFrameCount": 0,
+      "minimumSemanticEventCount": 1,
+      "minimumTransportEnvelopeCount": 1,
+      "requireTerminal": false
+    }
+  },
+  "inputs": [
+    {
+      "name": "stream",
+      "description": "Declared live SSE or fixture with trial/verifier events. Absent once the producer has sealed and closed the run.",
+      "accepts": [
+        "live_sse",
+        "fixture",
+        "inline"
+      ],
+      "required": false,
+      "schema": "synth.trace-stream-event.v1"
+    },
+    {
+      "name": "experiment",
+      "description": "Persisted terminal projection for the same run. A reopened or settled visual renders from this instead of waiting on a closed stream; missing usage stays unavailable rather than zero.",
+      "accepts": [
+        "inline",
+        "fixture",
+        "local_cas"
+      ],
+      "required": false,
+      "schema": "synth.experiment.overview.v1"
+    },
+    {
+      "name": "optimizer_run",
+      "description": "The optimizer run this visual belongs to, for navigation to its trace workstation.",
+      "accepts": [
+        "optimizer_run"
+      ],
+      "required": false,
+      "schema": "synth.optimizer-run-document.v1"
+    }
+  ]
+}

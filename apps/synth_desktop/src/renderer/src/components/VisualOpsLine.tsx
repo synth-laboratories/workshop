@@ -19,6 +19,12 @@ type Props = {
 	traceSetCount?: number | null;
 	testId: string;
 	compact?: boolean;
+	/**
+	 * List cards get the most specific binding only. Three provenance parts wrap
+	 * across several underlined lines in a narrow rail; the full identity stays
+	 * one click away in the preview's details-and-provenance disclosure.
+	 */
+	oneLine?: boolean;
 	/** Pane header probes local disk so "not a Workshop route" is visible without a click. */
 	probe?: boolean;
 };
@@ -78,7 +84,7 @@ function OpsPart({
 	);
 }
 
-export function VisualOpsLine({ sessionId, runId, traceId, traceSetCount, testId, compact, probe }: Props) {
+export function VisualOpsLine({ sessionId, runId, traceId, traceSetCount, testId, compact, oneLine, probe }: Props) {
 	const [openable, setOpenable] = useState<Openable>(unknownOpenable);
 
 	useEffect(() => {
@@ -131,9 +137,25 @@ export function VisualOpsLine({ sessionId, runId, traceId, traceSetCount, testId
 	}, [sessionId, runId, traceId]);
 
 	const className = useMemo(
-		() => `visual-ops-line${compact ? " visual-ops-compact" : ""}`,
-		[compact]
+		() => `visual-ops-line${compact ? " visual-ops-compact" : ""}${oneLine ? " visual-ops-one-line" : ""}`,
+		[compact, oneLine]
 	);
+
+	if (oneLine) {
+		return (
+			<span className={className} data-testid={testId}>
+				{traceId?.trim() ? (
+					<OpsPart kind="trace" id={traceId} openable={openable.trace} />
+				) : traceSetCount !== undefined ? (
+					<span>{traceSetCount == null ? "trace set · optimizer run" : `${traceSetCount} retained traces`}</span>
+				) : runId?.trim() ? (
+					<OpsPart kind="run" id={runId} openable={openable.run} />
+				) : (
+					<OpsPart kind="session" id={sessionId} openable={openable.session} />
+				)}
+			</span>
+		);
+	}
 
 	return (
 		<span className={className} data-testid={testId}>

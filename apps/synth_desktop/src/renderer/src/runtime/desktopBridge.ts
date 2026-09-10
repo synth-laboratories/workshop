@@ -4,11 +4,10 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, ComposerImageAttachment, DesktopInstanceDiagnostics, HostedTrainingModelCatalog, LagunaAdapterStatus, LagunaDownloadProgress, LagunaModelHit, LagunaPolicy, LagunaStatus, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, OptimizerRunOutputs, OptimizerRunViewV2, PersistedCodexSession, RegisteredInstance, RequestOptions, RuntimeBridge, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraDownload, SavedLoraRunPage, SecretsBridge, TerminalEvent, TrainingModelDownloadProgress, WhisperDownloadProgress, WhisperRuntimeStatus } from "../bridge";
+import type { AnalysisBridge, CodexEvent, ComposerImageAttachment, DesktopInstanceDiagnostics, HostedTrainingModelCatalog, LagunaAdapterStatus, LagunaDownloadProgress, LagunaModelHit, LagunaPolicy, LagunaStatus, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, OptimizerRunOutputs, OptimizerRunViewV2, PersistedCodexSession, RegisteredInstance, RequestOptions, RuntimeBridge, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraDownload, SavedLoraRunPage, SecretsBridge, TerminalEvent, TrainingModelDownloadProgress, WhisperDownloadProgress, WhisperRuntimeStatus } from "../bridge";
 import type { CoreDiagnostics } from "@synth/runtime-protocol";
 import type { ContainerDeployment, TraceV5Record, UsageLedgerEntry, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
-import { refreshRuntimeTemplates, rescanRuntimeTemplates, setRuntimeTemplateLoader } from "@synth/visuals";
 import { BROWSER_MODEL_CATALOG } from "./modelCatalog";
 
 // The packaged WebKit view is always served from the `tauri:` protocol.  The
@@ -162,6 +161,17 @@ function browserCoreBridge() {
 				databasePath: "browser-memory://core-runtime",
 				schemaVersion: 0,
 				integrityOk: true,
+				// A browser preview has no SQLite, so nothing ever waits for a
+				// lock. Zeroes here are the honest reading, not a placeholder.
+				lockWait: {
+					readTransactions: 0,
+					readWaitAvgUs: 0,
+					readWaitMaxUs: 0,
+					writeTransactions: 0,
+					writeWaitAvgUs: 0,
+					writeWaitMaxUs: 0,
+					timeouts: 0
+				},
 				contentStorePath: "browser-memory://content",
 				journalHead: 0,
 				sessionCount: 0,
@@ -242,6 +252,34 @@ const unavailableLaguna: LagunaStatus = {
 /** Installs Rust-owned desktop bridges; HTTP runtime compatibility is browser-only. */
 export function installDesktopBridge(): void {
 	if (!isTauri && import.meta.env.DEV) window.synthRuntime ??= browserRuntimeBridge();
+	window.synthAnalysis ??= isTauri
+		? {
+			projection: (kind, digest) => bridgeResult<{ payload?: unknown }>(
+				fromGenerated(spectaCommands.analysisProjectionGet(kind, digest))
+			).then((row) => row?.payload ?? row),
+			findings: (traceDigest) => bridgeResult<{ findings: unknown[] }>(fromGenerated(spectaCommands.analysisFindingsList(traceDigest))),
+			campaigns: (evalRunId) => bridgeResult<{ campaigns: unknown[] }>(fromGenerated(spectaCommands.analysisCampaignsList(evalRunId))),
+			review: (input) => bridgeResult<unknown>(fromGenerated(spectaCommands.analysisReviewRecord(
+				input.findingId,
+				input.evidenceHeadDigest,
+				input.decision,
+				input.rationale
+			)))
+		} satisfies AnalysisBridge
+		: {
+			projection: (kind, digest) => window.synthRuntime!.request<{ payload?: unknown }>("/v1/analysis/projection", {
+				method: "POST", body: { kind, digest }
+			}).then((row) => row?.payload ?? row),
+			findings: (traceDigest) => window.synthRuntime!.request<{ findings: unknown[] }>("/v1/analysis/findings", {
+				method: "POST", body: { traceDigest }
+			}),
+			campaigns: (evalRunId) => window.synthRuntime!.request<{ campaigns: unknown[] }>("/v1/analysis/campaigns", {
+				method: "POST", body: { evalRunId }
+			}),
+			review: (input) => window.synthRuntime!.request("/v1/analysis/review", {
+				method: "POST", body: input
+			})
+		} satisfies AnalysisBridge;
 	window.synthDesktop ??= {
 		platform: navigator.platform,
 		chooseImageFiles: async () => {
@@ -508,25 +546,6 @@ window.synthTelemetry ??= isTauri
 			flushNow: async () => 0
 		};
 	})();
-window.synthReleaseTier ??= isTauri
-	? { get: () => fromGenerated(spectaCommands.releaseTierGet()) }
-	: {
-		// Browser mode has no host binary: report the bundle's own tier with
-		// an empty feature envelope rather than inventing host inclusions.
-		get: async () => ({
-			tier: __WORKSHOP_TIER__,
-			contractVersion: "workshop.release-tiers.v1",
-			features: []
-		})
-	};
-if (isTauri) {
-	// A host/bundle tier mismatch is a packaging defect; surface it loudly at
-	// startup instead of letting the envelopes silently disagree.
-	void window.synthReleaseTier
-		.get()
-		.then((report) => import("../flags/tier").then(({ verifyHostTier }) => verifyHostTier(report)))
-		.catch(() => undefined);
-}
 window.synthCodexOauth ??= isTauri
 	? {
 		begin: () => fromGenerated(spectaCommands.codexOauthBegin()),
@@ -631,10 +650,25 @@ window.synthConfig ??= isTauri
 				configPath: "~/.synth-desktop/config.toml",
 				approvalPolicy: "untrusted",
 				sandboxMode: "workspace-write",
-				paidCompute: { enabled: false, maxRequestUsd: "0.10", maxConversationUsd: "1.00", providers: [] }
+				paidCompute: { enabled: false, maxRequestUsd: "0.10", maxConversationUsd: "10.00", providers: [] }
 			}),
 			updateDesktopPermissions: async () => { throw new Error("Desktop permission settings require Synth Desktop"); }
 		};
+// Source admission has its own boundary; it never reuses file attachments.
+if (!window.synthProjectSources) {
+	const requireDesktop = () => {
+		if (!isDesktopApp()) throw new Error("Project sources require Synth Desktop");
+	};
+	window.synthProjectSources = {
+		get: async () => { requireDesktop(); return fromGenerated(spectaCommands.projectSourcesGet()); },
+		refresh: async () => { requireDesktop(); return fromGenerated(spectaCommands.projectSourcesRefresh()); },
+		add: async (containers, recipes) => { requireDesktop(); return fromGenerated(spectaCommands.projectSourceAdd(containers, recipes)); },
+		remove: async (path) => { requireDesktop(); return fromGenerated(spectaCommands.projectSourceRemove(path)); },
+		requests: async (sessionId = null) => { requireDesktop(); return fromGenerated(spectaCommands.projectSourceRequestsList(sessionId)); },
+		approve: async (requestId) => { requireDesktop(); return fromGenerated(spectaCommands.projectSourceApprove(requestId)); },
+		deny: async (requestId) => { requireDesktop(); return fromGenerated(spectaCommands.projectSourceDeny(requestId)); }
+	};
+}
 window.synthWorkspaceScope ??= isTauri
 	? {
 		get: (sessionId) => fromGenerated(spectaCommands.workspaceScopeGet(sessionId)),
@@ -656,25 +690,6 @@ window.synthWorkspaceScope ??= isTauri
 		approveRequest: async () => { throw new Error("Folder approval requires Synth Desktop"); },
 		denyRequest: async () => { throw new Error("Folder approval requires Synth Desktop"); }
 	};
-window.synthProjectSources ??= isTauri
-	? {
-		get: () => fromGenerated(spectaCommands.projectSourcesGet()),
-		refresh: () => fromGenerated(spectaCommands.projectSourcesRefresh()),
-		add: (containers, recipes) => fromGenerated(spectaCommands.projectSourceAdd(containers, recipes)),
-		remove: (path) => fromGenerated(spectaCommands.projectSourceRemove(path)),
-		listRequests: (sessionId) => fromGenerated(spectaCommands.projectSourceRequestsList(sessionId)),
-		approveRequest: (requestId) => fromGenerated(spectaCommands.projectSourceApprove(requestId)),
-		denyRequest: (requestId) => fromGenerated(spectaCommands.projectSourceDeny(requestId))
-	}
-	: {
-		get: async () => ({ configPath: "", sources: [], implicitRoots: [] }),
-		refresh: async () => ({ configPath: "", sources: [], implicitRoots: [] }),
-		add: async () => { throw new Error("Project sources require Synth Desktop"); },
-		remove: async () => { throw new Error("Project sources require Synth Desktop"); },
-		listRequests: async () => [],
-		approveRequest: async () => { throw new Error("Project source approval requires Synth Desktop"); },
-		denyRequest: async () => { throw new Error("Project source approval requires Synth Desktop"); }
-	};
 	window.synthTerminal ??= isTauri
 		? {
 			available: true,
@@ -683,6 +698,11 @@ window.synthProjectSources ??= isTauri
 			snapshot: (terminalId, afterSequence = 0) => fromGenerated(spectaCommands.terminalSnapshot(terminalId, afterSequence)),
 			write: (terminalId, data) => fromGenerated(spectaCommands.terminalWrite(terminalId, data)),
 			resize: (terminalId, cols, rows) => fromGenerated(spectaCommands.terminalResize(terminalId, cols, rows)),
+			mountNative: (request) => fromGenerated(spectaCommands.terminalGhosttyMount(request)),
+			setNativeFrame: (terminalId, frame) => fromGenerated(spectaCommands.terminalGhosttySetFrame(terminalId, frame)),
+			setNativeVisible: (terminalId, visible) => fromGenerated(spectaCommands.terminalGhosttySetVisible(terminalId, visible)),
+			focusNative: (terminalId) => fromGenerated(spectaCommands.terminalGhosttyFocus(terminalId)),
+			unmountNative: (terminalId) => fromGenerated(spectaCommands.terminalGhosttyUnmount(terminalId)),
 			close: (terminalId) => fromGenerated(spectaCommands.terminalClose(terminalId)),
 			onEvent(listener) {
 				let unlisten: (() => void) | undefined;
@@ -698,6 +718,11 @@ window.synthProjectSources ??= isTauri
 			snapshot: async () => [],
 			write: async () => undefined,
 			resize: async () => undefined,
+			mountNative: async () => false,
+			setNativeFrame: async () => undefined,
+			setNativeVisible: async () => undefined,
+			focusNative: async () => undefined,
+			unmountNative: async () => undefined,
 			close: async () => undefined,
 			onEvent: () => () => undefined
 		};
@@ -824,6 +849,7 @@ window.synthProjectSources ??= isTauri
 						sessionId,
 						prompt,
 						effort,
+						uiContext: options?.uiContext ?? null,
 						clientMessageId: options?.clientMessageId ?? null
 					}))),
 			sendTurn: (start, prompt, effort, options) =>
@@ -831,6 +857,7 @@ window.synthProjectSources ??= isTauri
 						start,
 						prompt,
 						effort,
+						uiContext: options?.uiContext ?? null,
 						compactBeforeModelSwitch: Boolean(options?.compactBeforeModelSwitch),
 						clientMessageId: options?.clientMessageId ?? null,
 						recoveryMode: Boolean(options?.recoveryMode)
@@ -870,22 +897,24 @@ window.synthProjectSources ??= isTauri
 			listTemplates: (genre) => fromGenerated(spectaCommands.visualsTemplatesList(genre ?? null)),
 			getTemplate: (templateId) => fromGenerated(spectaCommands.visualsTemplatesGet(templateId)),
 			templateShellSource: (templateId) => fromGenerated(spectaCommands.visualsTemplateShellSource(templateId)),
-			saveTemplate: (sessionId, templateId, manifest, source) =>
-				fromGenerated(spectaCommands.visualsTemplateSave(sessionId, templateId, manifest, source)),
-			createTemplate: (sessionId, templateId, fromTemplateId, title) =>
-				fromGenerated(spectaCommands.visualsTemplateCreate(sessionId, templateId, fromTemplateId, title ?? null)),
+			saveTemplate: (sessionId, templateId, manifest, source) => fromGenerated(spectaCommands.visualsTemplateSave(sessionId, templateId, manifest, source)),
+			createTemplate: (sessionId, templateId, fromTemplateId, title) => fromGenerated(spectaCommands.visualsTemplateCreate(sessionId, templateId, fromTemplateId, title ?? null)),
 			validateTemplate: (templateId) => fromGenerated(spectaCommands.visualsTemplateValidate(templateId)),
-			onTemplatesChanged(listener) {
-				let disposed = false;
-				let unlisten: (() => void) | undefined;
-				void listen(EVENT_CHANNELS.VISUAL_TEMPLATES, () => listener()).then((next) => {
-					if (disposed) next();
-					else unlisten = next;
-				});
-				return () => { disposed = true; unlisten?.(); };
-			},
 			list: (query) => fromGenerated(spectaCommands.visualsList(wire(query ?? null))),
 			get: (visualId) => fromGenerated(spectaCommands.visualsGet(visualId)),
+			engine: (visualId, request) => fromGenerated(spectaCommands.visualsEngine(visualId, request)) as Promise<Record<string, unknown>>,
+			onEngineChanged: (callback) => {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen<{ visualId: string; revision: number; viewKey: string }>("visual-engine-changed", (event) => callback(event.payload)).then((stop) => { if (disposed) stop(); else unlisten = stop; });
+				return () => { disposed = true; unlisten?.(); };
+			},
+			presentation: (visualId) => fromGenerated(spectaCommands.visualsPresentationGet(visualId)) as Promise<import("@synth/visuals-protocol").PresentationState | null>,
+			putPresentation: (visualId, presentation) => fromGenerated(spectaCommands.visualsPresentationPut(visualId, presentation)) as Promise<import("@synth/visuals-protocol").PresentationState>,
+			snapshots: (visualId) => fromGenerated(spectaCommands.visualsSnapshotsList(visualId)) as Promise<import("@synth/visuals-protocol").VisualSnapshot[]>,
+			putSnapshot: (visualId, snapshot) => fromGenerated(spectaCommands.visualsSnapshotPut(visualId, snapshot)) as Promise<import("@synth/visuals-protocol").VisualSnapshot>,
+			recordings: (visualId) => fromGenerated(spectaCommands.visualsRecordingsList(visualId)) as Promise<import("@synth/visuals-protocol").VisualRecording[]>,
+			putRecording: (visualId, recording) => fromGenerated(spectaCommands.visualsRecordingPut(visualId, recording)) as Promise<import("@synth/visuals-protocol").VisualRecording>,
 			reportObservation: (observation) => fromGenerated(spectaCommands.visualsObservationReport(wire(observation))),
 			revisions: (visualId) => fromGenerated(spectaCommands.visualsRevisions(visualId)),
 			annotations: (visualId) => fromGenerated(spectaCommands.visualsAnnotationsList(visualId)),
@@ -931,7 +960,41 @@ window.synthProjectSources ??= isTauri
 				return () => { disposed = true; unlisten?.(); };
 			}
 		};
+		window.synthHumanAnnotations ??= {
+			preview: (request) => bridgeResult<Record<string, unknown>>(fromGenerated(spectaCommands.humanAnnotationPreview(wire(request)))),
+			create: (request) => fromGenerated(spectaCommands.humanAnnotationCreate(wire(request))),
+			open: (sessionId) => bridgeResult<import("../bridge").HumanAnnotationSessionView>(fromGenerated(spectaCommands.humanAnnotationSessionOpen(sessionId))),
+			show: (sessionId) => bridgeResult<import("../bridge").HumanAnnotationSessionView>(fromGenerated(spectaCommands.humanAnnotationShow(sessionId))),
+			setAnswer: (request) => fromGenerated(spectaCommands.humanAnnotationAnswerSet(wire(request))),
+			clearAnswer: (sessionId, expectedRevision, questionId) => fromGenerated(spectaCommands.humanAnnotationAnswerClear(sessionId, expectedRevision, questionId)),
+			createComment: (request) => fromGenerated(spectaCommands.humanAnnotationCommentCreate(wire(request))),
+			audioBegin: (request) => fromGenerated(spectaCommands.humanAnnotationAudioBegin(wire(request))),
+			audioAppend: (request) => fromGenerated(spectaCommands.humanAnnotationAudioAppend(wire(request))),
+			audioFinish: (request) => fromGenerated(spectaCommands.humanAnnotationAudioFinish(wire(request))),
+			audioRead: (sessionId, attachmentId) => bridgeResult<{ attachmentId: string; mediaType: string; base64Data: string }>(fromGenerated(spectaCommands.humanAnnotationAudioRead(sessionId, attachmentId))),
+			audioTranscribe: (request) => fromGenerated(spectaCommands.humanAnnotationAudioTranscribe(wire(request))),
+			correctTranscript: (request) => fromGenerated(spectaCommands.humanAnnotationTranscriptCorrect(wire(request))),
+			submit: (request) => fromGenerated(spectaCommands.humanAnnotationSubmit(wire(request))),
+			list: (query = {}) => bridgeResult<Array<Record<string, unknown>>>(fromGenerated(spectaCommands.humanAnnotationList(wire(query)))),
+			status: (id) => fromGenerated(spectaCommands.humanAnnotationStatus(id)),
+			cancel: (request) => fromGenerated(spectaCommands.humanAnnotationCancel(wire(request))),
+			exportResult: (request) => fromGenerated(spectaCommands.humanAnnotationExport(wire(request))),
+			supersede: (request) => fromGenerated(spectaCommands.humanAnnotationSupersede(wire(request))),
+			campaignCreate: (request) => bridgeResult<Record<string, unknown>>(fromGenerated(spectaCommands.humanAnnotationCampaignCreate(wire(request)))),
+			campaignStatus: (campaignId) => bridgeResult<Record<string, unknown>>(fromGenerated(spectaCommands.humanAnnotationCampaignStatus(campaignId))),
+			campaignClose: (request) => bridgeResult<Record<string, unknown>>(fromGenerated(spectaCommands.humanAnnotationCampaignClose(wire(request)))),
+			campaignAdjudicate: (request) => bridgeResult<Record<string, unknown>>(fromGenerated(spectaCommands.humanAnnotationCampaignAdjudicate(wire(request)))),
+			onShow(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen<{ sessionId: string }>("human-annotation:show", ({ payload }) => listener(payload.sessionId)).then((next) => {
+					if (disposed) next(); else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			}
+		};
 		window.synthPlugins ??= {
+			jesterkyAnalysisSettings: (settings) => fromGenerated(spectaCommands.jesterkyAnalysisSettings(settings ?? null)),
 			status: (pluginId) => fromGenerated(spectaCommands.pluginsStatus(pluginId ?? null)),
 			list: () => fromGenerated(spectaCommands.pluginsList()),
 			setReleaseChannel: (pluginId, channel) =>
@@ -1018,9 +1081,15 @@ window.synthProjectSources ??= isTauri
 				});
 			}
 		};
-		window.synthOptimizers ??= {
+		// Merge on every installation. Development HMR and staged release
+		// upgrades can retain an older bridge object on `window`; `??=` left new
+		// read-model methods absent until a full process restart, which made live
+		// visuals silently fall back to their one-point summary even though the
+		// durable collection existed.
+		window.synthOptimizers = {
+			...window.synthOptimizers,
 			listAlgorithms: () => fromGenerated(spectaCommands.optimizersAlgorithmsList()) as Promise<import("../bridge").OptimizerAlgorithmInfo[]>,
-			listRecipes: () => fromGenerated(spectaCommands.optimizersRecipesList()) as Promise<import("../bridge").OptimizerRecipeInfo[]>,
+			listRecipes: (sessionRef) => fromGenerated(spectaCommands.optimizersRecipesList(sessionRef ?? null)) as Promise<import("../bridge").OptimizerRecipeInfo[]>,
 			startRecipe: (request) => fromGenerated(spectaCommands.optimizersRecipeStart(wire(request))),
 			stageEvalCandidates: (request) =>
 				fromGenerated(spectaCommands.optimizersStageEvalCandidates(wire(request))) as Promise<{ id: string; candidates: { id: string; label: string }[] }>,
@@ -1028,6 +1097,45 @@ window.synthProjectSources ??= isTauri
 			get: (optimizerRunId) => fromGenerated(spectaCommands.optimizersGet(optimizerRunId)),
 			runViewV2: (optimizerRunId) =>
 				fromGenerated(spectaCommands.optimizersRunViewV2(optimizerRunId)) as Promise<OptimizerRunViewV2>,
+			visualRenderReceipt: (visualId, visualRevision) =>
+				fromGenerated(spectaCommands.optimizersVisualRenderReceipt(
+					visualId,
+					visualRevision ?? null
+				)) as Promise<import("../bridge").VisualRenderReceipt | null>,
+			evidencePage: (optimizerRunId, window, held, limit) =>
+				fromGenerated(spectaCommands.optimizersEvidencePage(
+					optimizerRunId,
+					window,
+					held ?? null,
+					limit ?? null
+				)) as Promise<import("../bridge").EvidencePage>,
+			runView: (optimizerRunId, ifNewerThan) =>
+				fromGenerated(spectaCommands.optimizersRunView(
+					optimizerRunId,
+					ifNewerThan ?? null
+				)) as Promise<import("../bridge").OptimizerRunViewEnvelope>,
+			runSummary: (optimizerRunId, ifNewerThan) =>
+				fromGenerated(spectaCommands.optimizersRunSummary(
+					optimizerRunId,
+					ifNewerThan ?? null
+				)) as Promise<import("../bridge").OptimizerRunSummaryEnvelope>,
+			runCollection: (optimizerRunId, collection, query) =>
+				fromGenerated(spectaCommands.optimizersRunCollection(
+					optimizerRunId,
+					collection,
+					query ?? null
+				)) as Promise<import("../bridge").RunCollectionPage>,
+			runCollectionItem: (optimizerRunId, collection, itemId) =>
+				fromGenerated(spectaCommands.optimizersRunCollectionItem(
+					optimizerRunId,
+					collection,
+					itemId
+				)) as Promise<import("../bridge").RunCollectionRow | null>,
+			projectionAt: (optimizerRunId, sequence) =>
+				fromGenerated(spectaCommands.optimizersProjectionAt(
+					optimizerRunId,
+					sequence
+				)) as Promise<import("../bridge").HistoricalProjection>,
 			create: (request) => fromGenerated(spectaCommands.optimizersCreate(request)),
 			refresh: (optimizerRunId) => fromGenerated(spectaCommands.optimizersRefresh(optimizerRunId)),
 			eventsAfter: (optimizerRunId, afterSeq = 0, limit) =>
@@ -1091,6 +1199,8 @@ window.synthProjectSources ??= isTauri
 				});
 				return () => { disposed = true; unlisten?.(); };
 			},
+			containerExperimentAction: (optimizerRunId, action, checkpointId) =>
+				fromGenerated(spectaCommands.optimizersContainerExperimentAction(optimizerRunId, action, checkpointId ?? null)),
 			reconcileTraining: (optimizerRunId) =>
 				fromGenerated(spectaCommands.optimizersTrainingReconcile(optimizerRunId)) as Promise<{ schemaVersion: "workshop.training_snapshot.v1"; runId: string; projection: import("../bridge").TrainingProjection }>,
 			recordVisualReady: (request) => fromGenerated(spectaCommands.visualSubscriptionReady(wire(request))),
@@ -1101,39 +1211,22 @@ window.synthProjectSources ??= isTauri
 			}
 		};
 	}
-	// The visual template catalog is `bundled union runtime`, and the runtime half
-	// only exists on the host: `import.meta.glob` fixed the bundled half when this
-	// renderer was built, so a template the user wrote afterwards is invisible to
-	// it. Hand the registry the host list; it keeps only `sourceKind === "user"`
-	// rows and refuses any that would shadow a bundled id. Read through `bridges`
-	// at call time so the loader survives a host installed after this line.
-	setRuntimeTemplateLoader(async () => (await bridges.visuals?.listTemplates?.()) ?? []);
-	// Hot reload. A user template is an ordinary file, so it changes without
-	// the app doing anything: an author saves `shell.tsx` in their editor, or
-	// a tool writes one. The host watches the root and says when it moved;
-	// this re-asks for the catalog, which bumps the registry generation, which
-	// makes `VisualHost` re-read and recompile the source it is showing.
-	//
-	// The event is a nudge, never data: nothing here reads its payload. Two
-	// nudges for one save cost one extra list, and a missed one is picked up
-	// by the focus rescan below.
-	bridges.visuals?.onTemplatesChanged?.(() => { void refreshRuntimeTemplates(); });
-	// The window was in the background while someone edited a file: whatever
-	// the watcher missed, refocusing catches. Cheap, and the only recovery a
-	// user would think to try. Quiet, because a focus is a guess: it wakes the
-	// pane only when the catalog actually moved, or every alt-tab would remount
-	// every open visual and throw away its state.
-	window.addEventListener("focus", () => { void rescanRuntimeTemplates(); });
 }
 
 
 /** Quarantined window.synth* accessors — import these instead of reading window. */
 export const bridges = {
+	get projectSources() {
+		return window.synthProjectSources;
+	},
 	get desktop() {
 		return window.synthDesktop;
 	},
 	get runtime() {
 		return window.synthRuntime;
+	},
+	get analysis() {
+		return window.synthAnalysis;
 	},
 	get laguna() {
 		return window.synthLaguna;
@@ -1158,9 +1251,6 @@ export const bridges = {
 	},
 	get workspaceScope() {
 		return window.synthWorkspaceScope;
-	},
-	get projectSources() {
-		return window.synthProjectSources;
 	},
 	get account() {
 		return window.synthAccount;
@@ -1204,10 +1294,23 @@ export const bridges = {
 	get visuals() {
 		return window.synthVisuals;
 	},
+	get humanAnnotations() {
+		return window.synthHumanAnnotations;
+	},
 	get reports() {
 		return window.synthReports;
 	},
 	get optimizers() {
+		// A long-lived dev/QA webview can retain a bridge installed by an older
+		// renderer revision. Repair it on capability access so newly introduced
+		// bounded read-model methods do not require restarting a paid run or the
+		// Desktop process merely to become visible.
+		if (
+			typeof window.synthOptimizers?.runSummary !== "function"
+			|| typeof window.synthOptimizers?.runCollection !== "function"
+		) {
+			installDesktopBridge();
+		}
 		return window.synthOptimizers;
 	},
 	get secrets() {
@@ -1215,9 +1318,6 @@ export const bridges = {
 	},
 	get telemetry() {
 		return window.synthTelemetry;
-	},
-	get releaseTier() {
-		return window.synthReleaseTier;
 	},
 	get terminal() {
 		return window.synthTerminal;

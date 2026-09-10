@@ -289,7 +289,7 @@ function Segmented<T extends string>({
 
 export function UsagePanel() {
 	const [usageWindow, setUsageWindow] = useState<UsageWindow>("30d");
-	const [metric, setMetric] = useState<"cost" | "tokens">("cost");
+	const [metric, setMetric] = useState<"cost" | "tokens">("tokens");
 	const [grouping, setGrouping] = useState<"model" | "day">("model");
 	const [summary, setSummary] = useState<UsageSummary | null>(null);
 	const [failed, setFailed] = useState(false);
@@ -379,13 +379,13 @@ export function UsagePanel() {
 				<>
 					<div className="usage-hero">
 						<section className="usage-hero-spend" data-testid="usage-hero">
-							<span className="usage-eyebrow">Device spend</span>
+							<span className="usage-eyebrow">{totalSpend == null ? "Observed usage" : "Device spend"}</span>
 							<strong className="usage-hero-value" data-testid="usage-hero-value">
-								{usd(totalSpend)}
+								{totalSpend == null ? compactTokens(totals.totalTokens) : usd(totalSpend)}
 							</strong>
 							<p className="usage-hero-note" data-testid="usage-hero-note">
 								{totalSpend == null
-									? "No request in this window carried a price."
+									? "tokens · cost unavailable because these requests carried no price"
 									: totalBilled != null && totalEstimated != null
 										? `${usd(totalBilled)} settled · ${usd(totalEstimated)} estimated by Backend`
 										: totalBilled != null

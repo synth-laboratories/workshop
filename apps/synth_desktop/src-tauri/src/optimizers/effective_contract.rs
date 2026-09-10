@@ -210,6 +210,37 @@ fn declared_media_types(metadata: &Value, declaration: &Value) -> BTreeSet<Strin
     .collect()
 }
 
+fn runtime_family_declaration_matches_benchmark(
+    expected_benchmark: &str,
+    declared_family: &str,
+    metadata: &Value,
+) -> bool {
+    let trusted_runtime_family = metadata
+        .pointer("/info/runtime_family")
+        .or_else(|| metadata.pointer("/info/runtimeFamily"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if !trusted_runtime_family.is_some_and(|runtime| runtime.eq_ignore_ascii_case(declared_family))
+    {
+        return false;
+    }
+
+    [
+        "/info/platform_id",
+        "/info/environment_ref",
+        "/info/evaluation_plan_ref",
+        "/declarationOrigin/declarationId",
+    ]
+    .into_iter()
+    .filter_map(|pointer| metadata.pointer(pointer).and_then(Value::as_str))
+    .any(|identity| {
+        identity
+            .to_ascii_lowercase()
+            .contains(&expected_benchmark.to_ascii_lowercase())
+    })
+}
+
 pub(super) fn negotiate(
     optimizer_run_id: &str,
     container_id: &str,
@@ -218,9 +249,30 @@ pub(super) fn negotiate(
     templates: &[TemplateMeta],
 ) -> Result<EffectiveContract> {
     let declared = live_eval_declaration(metadata);
-    let declared_family = declaration_string(&declared, &["family", "taskFamily"]);
-    if let (Some(expected), Some(declared)) = (task_family, declared_family) {
+    let benchmark_family = declaration_string(
+        &declared,
+        &[
+            "benchmarkFamily",
+            "benchmark_family",
+            "taskFamily",
+            "task_family",
+        ],
+    );
+    let visual_family = declaration_string(&declared, &["family", "visualFamily", "visual_family"]);
+    if let (Some(expected), Some(declared)) = (task_family, benchmark_family) {
         if !expected.eq_ignore_ascii_case(declared) {
+            return Err(refusal(
+                ContractRefusalCode::DeclarationContradiction,
+                "liveEval.benchmarkFamily",
+                format!("container row family {expected:?} contradicts declared benchmark family {declared:?}"),
+            ));
+        }
+    } else if let (Some(expected), Some(declared)) = (task_family, visual_family) {
+        // Legacy producers expose only their runtime family. Keep the existing
+        // producer-identity check until they declare a separate benchmark.
+        if !expected.eq_ignore_ascii_case(declared)
+            && !runtime_family_declaration_matches_benchmark(expected, declared, metadata)
+        {
             return Err(refusal(
                 ContractRefusalCode::DeclarationContradiction,
                 "liveEval.family",
@@ -230,14 +282,18 @@ pub(super) fn negotiate(
             ));
         }
     }
-    let family = declared_family.or(task_family).map(str::to_string);
+    // Comparison retains benchmark identity; template matching uses visual family.
+    let family = task_family
+        .or(benchmark_family)
+        .or(visual_family)
+        .map(str::to_string);
 
     let primary_visual = if let Some(id) = declaration_string(
         &declared,
         &["templateId", "template_id", "primaryTemplateId"],
     ) {
         declared_template("primary", id, templates)?
-    } else if let Some(family) = family.as_deref() {
+    } else if let Some(family) = visual_family.or(family.as_deref()) {
         family_template(family, templates)?.unwrap_or_else(|| {
             fallback(
                 "primary",

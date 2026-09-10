@@ -192,6 +192,12 @@ pub enum TrainingJobStatus {
     Failed,
     Cancelled,
     Interrupted,
+    StopRequested,
+    PauseRequested,
+    Paused,
+    BlockedBudget,
+    BlockedEvaluation,
+    BlockedUncertain,
 }
 
 impl TrainingJobStatus {
@@ -203,6 +209,12 @@ impl TrainingJobStatus {
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
             Self::Interrupted => "interrupted",
+            Self::StopRequested => "stop_requested",
+            Self::PauseRequested => "pause_requested",
+            Self::Paused => "paused",
+            Self::BlockedBudget => "blocked_budget",
+            Self::BlockedEvaluation => "blocked_evaluation",
+            Self::BlockedUncertain => "blocked_uncertain",
         }
     }
 
@@ -214,6 +226,12 @@ impl TrainingJobStatus {
             "failed" => Self::Failed,
             "cancelled" | "canceled" => Self::Cancelled,
             "interrupted" => Self::Interrupted,
+            "stop_requested" => Self::StopRequested,
+            "pause_requested" => Self::PauseRequested,
+            "paused" => Self::Paused,
+            "blocked_budget" => Self::BlockedBudget,
+            "blocked_evaluation" => Self::BlockedEvaluation,
+            "blocked_uncertain" => Self::BlockedUncertain,
             _ => return None,
         })
     }
@@ -235,7 +253,7 @@ pub struct SavedLoraStorage {
     pub version: Option<String>,
     pub etag: Option<String>,
     pub sha256: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub size_bytes: Option<u64>,
     pub content_type: String,
 }
@@ -273,7 +291,7 @@ pub struct SavedLoraCheckpoint {
     pub optimizer_algorithm: Option<String>,
     pub base_model: String,
     pub lora_rank: Option<i32>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub step: Option<u64>,
     pub status: String,
     pub storage: SavedLoraStorage,
@@ -405,9 +423,9 @@ pub struct SavedLoraCheckpointQuery {
     pub optimizer_algorithm: Option<String>,
     pub status: Option<String>,
     pub tags: Option<Vec<String>>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub limit: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub offset: Option<u64>,
 }
 
@@ -436,7 +454,7 @@ pub struct SavedLoraDownload {
     #[specta(type = specta_typescript::Number)]
     pub expires_in: u64,
     pub content_type: String,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub size_bytes: Option<u64>,
     pub sha256: Option<String>,
 }
@@ -661,7 +679,7 @@ pub struct OptimizerRunArtifact {
     #[serde(default)]
     pub media_type: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub byte_size: Option<u64>,
     #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
@@ -709,6 +727,39 @@ pub struct OptimizerExecutionBinding {
     #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
+}
+
+/// Durable proof that one visual revision rendered from complete local
+/// evidence.
+///
+/// Not a copy of the evidence — the kernel projection remains the sole
+/// authority and is already durable. This is the checkable claim *about* a
+/// render, which is what lets a reopened visual tell the difference between
+/// "the projection has moved on" (normal) and "the projection is now older or
+/// different than what I already showed" (a regression that must be reported,
+/// never silently rendered).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualRenderReceipt {
+    pub visual_id: String,
+    #[specta(type = specta_typescript::Number)]
+    pub visual_revision: i64,
+    pub optimizer_run_id: String,
+    pub template_id: String,
+    /// The template digest the render was produced by. A template change
+    /// invalidates the comparison rather than failing it: different code
+    /// legitimately renders the same projection differently.
+    pub template_version: String,
+    /// The durable projection revision this render was produced from.
+    #[specta(type = specta_typescript::Number)]
+    pub projection_revision: u64,
+    /// Digest of the projection content, so the same revision carrying
+    /// different bytes is detectable.
+    pub data_digest: String,
+    /// How far the journal had been replayed when the render completed.
+    #[specta(type = specta_typescript::Number)]
+    pub tail_cursor: u64,
+    pub rendered_at: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
@@ -830,9 +881,9 @@ pub struct OptimizerQuery {
     pub source: Option<String>,
     pub search: Option<String>,
     pub session_ref: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub limit: Option<i64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub offset: Option<i64>,
 }
 
@@ -889,7 +940,7 @@ pub struct OptimizerImportLocalRequest {
 pub struct OptimizerReconcileRequest {
     pub optimizer_run_id: String,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub after_seq: Option<u64>,
     #[serde(default)]
     pub open_visual: Option<bool>,
@@ -946,16 +997,16 @@ pub struct OptimizerRecipeRunRequest {
 #[serde(rename_all = "camelCase")]
 pub struct OptimizerSearchOverrides {
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub proposals_per_generation: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub max_in_flight_candidates: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub policy_concurrency: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub rollout_concurrency: Option<i64>,
 }
 

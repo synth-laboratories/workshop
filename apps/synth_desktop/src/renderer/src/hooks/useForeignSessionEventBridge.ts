@@ -37,7 +37,10 @@ export function useForeignSessionEventBridge(args: {
 		if (!activeSessionId) return () => undefined;
 		const sessionId = activeSessionId;
 		const selected = sessions.find((session) => session.id === sessionId);
-		if (selected?.metadata.runtime === "codex-app-server") return () => undefined;
+		// Persisted tab selection can arrive before session hydration. Do not
+		// route an unknown native session through the browser fixture bridge.
+		if (!selected) return () => undefined;
+		if (selected.metadata.runtime === "codex-app-server") return () => undefined;
 
 		async function connect() {
 			try {

@@ -2,16 +2,32 @@ import type { LagunaPolicy, SavedLoraCheckpoint } from "../bridge/types";
 
 /** The daemon's base policy: Laguna XS with nothing attached. */
 export const LOCAL_BASE_POLICY = "poolside/Laguna-XS-2.1-NVFP4-mlx";
-/** Stable human-facing name for the daemon base policy. */
-export const LOCAL_BASE_DISPLAY_NAME = "Laguna XS 2.1";
 /** The model id a registered Laguna finetune is served under. */
 export const LOCAL_FT_POLICY = "synth/Laguna-XS-2.1-ft";
 
+function modelName(modelId: string): string {
+	if (modelId === LOCAL_BASE_POLICY) return "Laguna XS 2.1";
+	return modelId
+		.split("/").pop()!
+		.replace(/-NVFP4-mlx$/i, "")
+		.replace(/-mlx$/i, "")
+		.replace(/-/g, " ")
+		.replace(/\bxs\b/gi, "XS")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
 export function policyLabel(policy: LagunaPolicy): string {
-	// The policy id is the value sent to Laguna. Render it instead of a
-	// generic role ("Base model") or an optional catalog title so the picker
-	// always tells the user exactly which base/LoRA policy a turn will use.
-	return policy.modelId;
+	if (policy.isBase) return modelName(policy.modelId);
+	return policy.title ?? policy.modelId.split("/").pop() ?? policy.modelId;
+}
+
+/** The actual model leads, followed by every registered SFT variant. */
+export function orderedLagunaPolicies(policies: readonly LagunaPolicy[]): LagunaPolicy[] {
+	return [...policies].sort((left, right) => {
+		if (left.isBase !== right.isBase) return left.isBase ? -1 : 1;
+		return policyLabel(left).localeCompare(policyLabel(right));
+	});
 }
 
 /**

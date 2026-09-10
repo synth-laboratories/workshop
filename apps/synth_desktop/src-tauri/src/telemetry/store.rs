@@ -16,6 +16,7 @@ use crate::storage::Database;
 
 const INSTALL_ID_KEY: &str = "telemetry.install_id";
 const WATERMARK_KEY: &str = "telemetry.sync.watermark";
+const SEQUENCE_KEY: &str = "telemetry.outbox.sequence";
 const LAST_SYNC_KEY: &str = "telemetry.sync.last_at";
 const FIRST_PREFIX: &str = "telemetry.first.";
 
@@ -48,17 +49,34 @@ impl TelemetryStore {
         let event_id = format!("pte_{}", Uuid::new_v4().simple());
         let at = Utc::now().to_rfc3339();
         let payload = serde_json::to_string(properties)?;
-        self.db.with_conn(|conn| {
+        self.db.transaction(|conn| {
             conn.execute(
-                "INSERT INTO product_telemetry_events(event_id, name, at, sensitivity, properties_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                // SQLite may reuse rowids after pruning or consent withdrawal.
+                // Keep new events beyond the acknowledged cursor even if empty.
+                "INSERT INTO product_telemetry_events(rowid, event_id, name, at, sensitivity, properties_json)
+                 SELECT MAX(COALESCE((SELECT MAX(rowid) FROM product_telemetry_events), 0),
+                            COALESCE((SELECT CAST(TRIM(value_json, '\"') AS INTEGER)
+                                      FROM runtime_settings WHERE key = ?6), 0),
+                            COALESCE((SELECT CAST(TRIM(value_json, '\"') AS INTEGER)
+                                      FROM runtime_settings WHERE key = ?7), 0)) + 1,
+                        ?1, ?2, ?3, ?4, ?5",
                 params![
                     event_id,
                     name,
                     at,
                     contract::sensitivity_name(sensitivity),
-                    payload
+                    payload,
+                    WATERMARK_KEY,
+                    SEQUENCE_KEY
                 ],
+            )?;
+            // Retain the allocated ID even when an in-flight batch is deleted
+            // before acknowledgment (withdrawal, sign-out, or retention).
+            let rowid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO runtime_settings(key, value_json, updated_at) VALUES(?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
+                params![SEQUENCE_KEY, serde_json::to_string(&rowid.to_string())?, at],
             )?;
             Ok(())
         })?;
@@ -96,9 +114,9 @@ impl TelemetryStore {
                 "SELECT rowid, event_id, name, at, properties_json
                  FROM product_telemetry_events
                  WHERE rowid > ?1 AND sensitivity = 'optional'
-                 ORDER BY rowid ASC LIMIT ?2",
+                 ORDER BY rowid ASC",
             )?;
-            let rows = stmt.query_map(params![watermark, limit as i64], |row| {
+            let rows = stmt.query_map(params![watermark], |row| {
                 let raw: String = row.get(4)?;
                 Ok(OutboxEvent {
                     rowid: row.get(0)?,
@@ -108,15 +126,26 @@ impl TelemetryStore {
                     properties: serde_json::from_str(&raw).unwrap_or(Value::Null),
                 })
             })?;
-            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            let mut eligible = Vec::new();
+            for row in rows {
+                if eligible.len() >= limit {
+                    break;
+                }
+                let event = row?;
+                let Some(spec) = contract::spec(&event.name) else {
+                    continue;
+                };
+                // Revalidate legacy outbox rows at the egress boundary too.
+                if spec.sync == contract::SyncClass::Eligible
+                    && super::policy::gate(spec, true, Default::default(), event.properties.clone())
+                        .is_ok()
+                {
+                    eligible.push(event);
+                }
+            }
+            Ok(eligible)
         })?;
-        Ok(rows
-            .into_iter()
-            .filter(|event| {
-                contract::spec(&event.name)
-                    .is_some_and(|spec| spec.sync == contract::SyncClass::Eligible)
-            })
-            .collect())
+        Ok(rows)
     }
 
     pub fn watermark(&self) -> Result<i64> {

@@ -1,3 +1,4 @@
+import { runtimeStorage } from "../preferences/runtimeStorage";
 /** App-owned page zoom (RP-CUA-038). Command/Ctrl + Plus/Minus/0. */
 
 export const ZOOM_STEPS = [75, 90, 100, 110, 125, 150, 175, 200] as const;
@@ -39,7 +40,7 @@ export function applyDocumentZoom(percent: number): number {
 	if (typeof document === "undefined") return next;
 	document.documentElement.style.zoom = next === DEFAULT_ZOOM_PERCENT ? "" : String(next / 100);
 	try {
-		window.sessionStorage.setItem(ZOOM_STORAGE_KEY, String(next));
+		runtimeStorage.setItem(ZOOM_STORAGE_KEY, String(next));
 	} catch {
 		// Private mode / blocked storage must not disable zoom.
 	}
@@ -49,10 +50,14 @@ export function applyDocumentZoom(percent: number): number {
 export function readStoredZoomPercent(): number {
 	if (typeof window === "undefined") return DEFAULT_ZOOM_PERCENT;
 	try {
-		const raw = window.sessionStorage.getItem(ZOOM_STORAGE_KEY);
+		const raw = runtimeStorage.getItem(ZOOM_STORAGE_KEY);
 		if (!raw) return DEFAULT_ZOOM_PERCENT;
 		return clampZoomPercent(Number(raw));
 	} catch {
 		return DEFAULT_ZOOM_PERCENT;
 	}
+}
+
+if (typeof window !== "undefined") {
+    window.addEventListener("workshop:state-changed", () => applyDocumentZoom(readStoredZoomPercent()));
 }

@@ -1,0 +1,49 @@
+id = "eval.deepswe.annotated.v1"
+title = "DeepSWE · five-task annotated sample"
+algorithm = "eval"
+container = "harbor-deepswe"
+family = "deepswe"
+provider = "openrouter"
+model = "openai/gpt-5.6-luna"
+harness = "codex_agentic"
+policy_config = "agentic_codex"
+locality = "container"
+requires_credential_advertisement = false
+train_seeds = [0, 1, 2, 3, 4]
+train_task_instance_ids = [
+  "deepswe/anko-default-function-arguments",
+  "deepswe/happy-dom-abort-pending-body-reads",
+  "deepswe/oxvg-structural-selector-preservation",
+  "deepswe/numba-stencil-boundary-modes",
+  "deepswe/helm-unified-manifest-stream",
+]
+concurrency = 5
+
+[policy]
+effort = "medium"
+sandbox = "danger-full-access"
+max_calls = 50
+max_steps = 2000
+timeout_seconds = 3600
+
+[bounds]
+# The comparable 2026-09-01 five-task sweep cost $10.42676. Keep an honest
+# bounded envelope rather than a smoke-test limit that can terminate good work.
+max_cost_usd = 16.00
+max_total_rollouts = 5
+
+[annotation]
+enabled = true
+annotators = [
+  "deepswe.command_facts",
+  "deepswe.file_reads",
+  "deepswe.patch_facts",
+  "deepswe.test_outcomes",
+  "deepswe.verifier_status",
+  "deepswe.episode_integrity",
+  "deepswe.milestone_progress",
+]
+label = "post_rollout"
+
+[annotation.throughput]
+deterministic = 4

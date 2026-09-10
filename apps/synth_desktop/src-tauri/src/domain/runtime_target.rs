@@ -58,6 +58,8 @@ pub struct InternBinding {
 /// [`RuntimeTarget::CloudRuntime`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeTarget {
+    /// Agent-managed inference. Workshop never invents a model/provider identity.
+    AgentRuntime { backend_id: String },
     /// On-device Laguna (MLX).
     LocalRuntime {
         model: String,
@@ -156,6 +158,7 @@ impl RuntimeTarget {
             Self::RemoteRuntime { .. } => "remote",
             Self::CloudRuntime { .. } => "cloud",
             Self::InternRuntime { .. } => "intern",
+            Self::AgentRuntime { .. } => "agent",
         }
     }
 
@@ -187,7 +190,7 @@ impl RuntimeTarget {
             Self::LocalRuntime { model, .. }
             | Self::RemoteRuntime { model, .. }
             | Self::CloudRuntime { model, .. } => Some(model.as_str()),
-            Self::InternRuntime { .. } => None,
+            Self::InternRuntime { .. } | Self::AgentRuntime { .. } => None,
         }
     }
 
@@ -214,6 +217,12 @@ impl Serialize for RuntimeTarget {
     {
         use serde::ser::SerializeMap;
         match self {
+            Self::AgentRuntime { backend_id } => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("kind", "agent")?;
+                map.serialize_entry("backendId", backend_id)?;
+                map.end()
+            }
             Self::LocalRuntime { model, adapter } => {
                 let mut map = serializer.serialize_map(Some(3))?;
                 map.serialize_entry("kind", "local")?;
@@ -282,6 +291,10 @@ fn parse_runtime_target_value(value: &Value) -> Result<RuntimeTarget, String> {
         .and_then(Value::as_str)
         .ok_or_else(|| "RuntimeTarget.kind is required".to_string())?;
     match kind {
+        "agent" => Ok(RuntimeTarget::AgentRuntime {
+            backend_id: string_field(obj, "backendId").filter(|id| !id.is_empty())
+                .ok_or_else(|| "AgentRuntime.backendId is required".to_string())?,
+        }),
         "local" => Ok(RuntimeTarget::LocalRuntime {
             model: string_field(obj, "model").unwrap_or_else(|| LOCAL_LAGUNA_MODEL.into()),
             adapter: optional_string(obj, "adapter"),

@@ -30,6 +30,19 @@ impl SftOptimizerClient {
         })
     }
 
+    #[allow(dead_code)]
+    pub(super) async fn health(&self) -> Result<Value> {
+        self.get_json("/health").await
+    }
+
+    pub(super) async fn checkpoint_evidence(&self, parent: &str, child: &str) -> Result<Value> {
+        self.post_json(&format!("/v1/runs/{parent}/child-evaluations/{child}/evidence"), json!({})).await
+    }
+
+    pub(super) async fn renderer_profile(&self, model: &str) -> Result<Value> {
+        self.post_json("/v1/renderer-profile", json!({"model_id": model})).await
+    }
+
     pub(super) async fn submit_toml(&self, run_id: &str, config_toml: &str) -> Result<Value> {
         self.post_json(
             "/v1/runs",
@@ -57,6 +70,13 @@ impl SftOptimizerClient {
 
     pub(super) async fn get_run(&self, run_id: &str) -> Result<Value> {
         self.get_json(&format!("/v1/runs/{run_id}")).await
+    }
+
+    pub(super) async fn control(&self, run_id: &str, action: &str) -> Result<Value> {
+        if !matches!(action, "pause" | "resume") {
+            bail!("unsupported training action");
+        }
+        self.post_json(&format!("/v1/runs/{run_id}/{action}"), json!({})).await
     }
 
     pub(super) async fn cancel(&self, run_id: &str) -> Result<Value> {

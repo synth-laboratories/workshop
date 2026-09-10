@@ -1,10 +1,12 @@
 # Synth Desktop / workshop
 node_modules/
+/dist/
 apps/*/node_modules/
 apps/*/out/
 apps/*/dist/
 apps/*/test-results/
 test-results/
+/artifacts/capabilities/
 **/__pycache__/
 **/*.pyc
 **/*.egg-info/
@@ -24,5 +26,8 @@ work/bombadil-src/
 .env.*
 .turbo/
 work/
-runtime-distributions/
 apps/synth_desktop/src-tauri/generated-resources/
+apps/synth_desktop/browser/runtime
+runtime-distributions/trace/
+
+!.env.example

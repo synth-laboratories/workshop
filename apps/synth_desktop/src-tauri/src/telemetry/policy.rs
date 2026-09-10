@@ -12,9 +12,7 @@ use super::contract::{self, EventSpec, Sensitivity};
 use super::privacy;
 
 pub enum Decision {
-    Record {
-        properties: Value,
-    },
+    Record { properties: Value },
     /// Optional analytics are disabled; the event is silently not recorded.
     Drop,
 }

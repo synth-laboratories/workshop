@@ -113,15 +113,15 @@ pub struct LagunaStatus {
     pub backend: Option<String>,
     pub loaded_model: Option<String>,
     pub detail: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub memory_bytes: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub idle_seconds: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub idle_unload_after_seconds: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub last_used_at: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub free_at: Option<u64>,
     #[specta(type = specta_typescript::Number)]
     pub updated_at: u64,
@@ -162,11 +162,11 @@ pub struct LagunaGeneration {
     pub started_at: Option<f64>,
     pub first_token_at: Option<f64>,
     pub last_token_at: Option<f64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub prompt_tokens: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub cached_tokens: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub output_tokens: Option<u64>,
     pub cache_hit_ratio: Option<f64>,
     pub prefill_tokens_per_second: Option<f64>,
@@ -179,17 +179,18 @@ pub struct LagunaGeneration {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LagunaRollingStats {
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub requests_completed: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub requests_failed: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub requests_cancelled: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    pub last_failure_reason: Option<String>,
+    #[specta(type = Option<specta_typescript::Number>)]
     pub input_tokens: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub output_tokens: Option<u64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub cached_tokens: Option<u64>,
     pub ttft_p50_ms: Option<f64>,
     pub ttft_p95_ms: Option<f64>,
@@ -206,7 +207,7 @@ pub struct LagunaRollingStats {
 pub struct LagunaInference {
     pub model: Option<String>,
     pub resident: bool,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub resident_bytes: Option<u64>,
     pub queue_depth: Option<u32>,
     pub queue_capacity: Option<u32>,
@@ -870,15 +871,20 @@ for shard in sorted(shards):
             .await
             .context("Laguna model load returned an unreadable payload")?;
         if !status.is_success() {
-            let code = serde_json::from_slice::<Value>(&body)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .pointer("/error/code")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
+            let payload = serde_json::from_slice::<Value>(&body).ok();
+            let code = payload
+                .as_ref()
+                .and_then(|value| value.pointer("/error/code"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
                 .unwrap_or_else(|| "load_failed".into());
+            if code == "insufficient_memory" {
+                if let Some(requirement) =
+                    payload.as_ref().and_then(Self::memory_requirement_message)
+                {
+                    anyhow::bail!(requirement);
+                }
+            }
             anyhow::bail!("Laguna model load returned {} ({code})", status.as_u16());
         }
         let outcome: LagunaLoadOutcome = serde_json::from_slice(&body)
@@ -887,6 +893,38 @@ for shard in sorted(shards):
             anyhow::bail!("Laguna model load completed without resident weights");
         }
         Ok(())
+    }
+
+    fn memory_requirement_message(payload: &Value) -> Option<String> {
+        let details = payload.pointer("/error/details")?;
+        let required = details.get("required_bytes").and_then(Value::as_u64);
+        let system = details.get("system_bytes").and_then(Value::as_u64);
+        let required_available = details
+            .get("required_available_bytes")
+            .and_then(Value::as_u64);
+        let available = details.get("available_bytes").and_then(Value::as_u64);
+        let shortfall = details.get("shortfall_bytes").and_then(Value::as_u64);
+        let constraint = details.get("constraint").and_then(Value::as_str);
+        let gib = |bytes: u64| bytes as f64 / 1024_f64.powi(3);
+
+        if constraint == Some("system_capacity") {
+            return Some(format!(
+                "this model requires a Mac with at least {:.1} GiB unified memory; this Mac has {:.1} GiB",
+                gib(required?),
+                gib(system?)
+            ));
+        }
+
+        if let Some(needed) = required_available {
+            let mut message = format!("Laguna needs {:.1} GiB available", gib(needed));
+            let missing = shortfall.or_else(|| available.map(|value| needed.saturating_sub(value)));
+            if let Some(missing) = missing.filter(|value| *value > 0) {
+                message.push_str(&format!(". Free {:.1} GiB and retry", gib(missing)));
+            }
+            return Some(message);
+        }
+
+        required.map(|needed| format!("requires {:.1} GiB unified memory", gib(needed)))
     }
 
     async fn probe(&self, base_url: &str, api_key: &str) -> Option<LagunaStatus> {
@@ -1806,11 +1844,11 @@ impl LagunaRuntimeState {
         match self {
             Self::Ready { python } => Ok(python),
             Self::Missing { expected } => Err(anyhow::anyhow!(
-                "Laguna runtime is missing at `{}`. Install the Workshop-managed Laguna runtime in Settings → Models; no alternate interpreter will be used.",
+                "Laguna runtime is missing at `{}`. Install the Workshop-managed Laguna runtime in Settings → Services; no alternate interpreter will be used.",
                 expected.display()
             )),
             Self::Invalid { expected, detail } => Err(anyhow::anyhow!(
-                "Laguna runtime at `{}` is invalid: {detail}. Repair it in Settings → Models; no alternate interpreter will be used.",
+                "Laguna runtime at `{}` is invalid: {detail}. Repair it in Settings → Services; no alternate interpreter will be used.",
                 expected.display()
             )),
         }
@@ -1822,11 +1860,11 @@ pub(crate) fn managed_python() -> Result<PathBuf> {
     match LagunaRuntimeState::detect() {
         LagunaRuntimeState::Ready { python } => Ok(python),
         LagunaRuntimeState::Missing { expected } => Err(anyhow::anyhow!(
-            "The Workshop-managed model runtime is missing at `{}`. Install it in Settings → Models before downloading training weights.",
+            "The Workshop-managed model runtime is missing at `{}`. Install it in Settings → Services before downloading training weights.",
             expected.display()
         )),
         LagunaRuntimeState::Invalid { expected, detail } => Err(anyhow::anyhow!(
-            "The Workshop-managed model runtime at `{}` is invalid: {detail}. Repair it in Settings → Models before downloading training weights.",
+            "The Workshop-managed model runtime at `{}` is invalid: {detail}. Repair it in Settings → Services before downloading training weights.",
             expected.display()
         )),
     }

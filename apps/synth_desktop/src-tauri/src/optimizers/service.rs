@@ -8,7 +8,6 @@ use super::models::{
 };
 use super::results;
 use super::terminal;
-use super::training_adapter::is_step_metrics_event;
 use crate::storage::{
     append_event, AppEvent, ContentStore, Database, EventAppend, EventJournal, EventSource,
 };
@@ -312,7 +311,6 @@ pub struct GrantedRunMedia {
 pub struct OptimizerService {
     db: Arc<Database>,
     frame_store: ContentStore,
-    content: ContentStore,
     #[allow(dead_code)]
     journal: EventJournal,
     visuals: VisualRegistry,
@@ -504,14 +502,12 @@ impl OptimizerService {
     pub fn new(
         db: Arc<Database>,
         journal: EventJournal,
-        content: ContentStore,
         visuals: VisualRegistry,
         events_tx: broadcast::Sender<AppEvent>,
     ) -> Self {
         Self::new_with_manager(
             db,
             journal,
-            content,
             visuals,
             events_tx,
             Arc::new(super::OptimizerManager::new()),
@@ -521,7 +517,6 @@ impl OptimizerService {
     pub fn new_with_manager(
         db: Arc<Database>,
         journal: EventJournal,
-        content: ContentStore,
         visuals: VisualRegistry,
         events_tx: broadcast::Sender<AppEvent>,
         manager: Arc<super::OptimizerManager>,
@@ -535,7 +530,6 @@ impl OptimizerService {
         Self {
             db,
             frame_store,
-            content,
             journal,
             visuals,
             local_recipes: Arc::new(Mutex::new(HashMap::new())),
@@ -577,55 +571,34 @@ impl OptimizerService {
     /// pixels share it, which is exactly the physical deduplication the content
     /// store already performs.
     pub(super) async fn record_run_media(&self, run_id: &str, row: &RunMediaRow) -> Result<()> {
-        const MAX_BUSY_ATTEMPTS: usize = 3;
-        for attempt in 1..=MAX_BUSY_ATTEMPTS {
-            let run_id = run_id.to_string();
-            let row = row.clone();
-            let result = self
-                .db
-                .clone()
-                .run_transaction(move |conn| {
-                    conn.execute(
-                        "INSERT INTO optimizer_run_media(
+        let run_id = run_id.to_string();
+        let row = row.clone();
+        self.db
+            .clone()
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "INSERT INTO optimizer_run_media(
                         optimizer_run_id, cas_digest, kind, media_type, byte_size,
                         width, height, rollout_id, trial_id, step, producer_digest, created_at)
                      VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,datetime('now'))
                      ON CONFLICT(optimizer_run_id, cas_digest) DO NOTHING",
-                        params![
-                            run_id,
-                            row.cas_digest,
-                            row.kind,
-                            row.media_type,
-                            row.byte_size as i64,
-                            row.width.map(i64::from),
-                            row.height.map(i64::from),
-                            row.rollout_id,
-                            row.trial_id,
-                            row.step,
-                            row.producer_digest,
-                        ],
-                    )?;
-                    Ok(())
-                })
-                .await;
-            match result {
-                Ok(()) => return Ok(()),
-                Err(error)
-                    if attempt < MAX_BUSY_ATTEMPTS
-                        && error.to_string().contains("database is locked") =>
-                {
-                    // Five live Craftax relays can finish frames at the same
-                    // instant. SQLite's busy timeout normally serializes them,
-                    // but a long event projection transaction can outlive that
-                    // timeout. A frame is durable in CAS already, so retrying
-                    // this idempotent index insert is safer than drawing a
-                    // permanent hole in the live trace.
-                    tokio::time::sleep(std::time::Duration::from_millis(25 * attempt as u64)).await;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        unreachable!("bounded media-index retry loop always returns")
+                    params![
+                        run_id,
+                        row.cas_digest,
+                        row.kind,
+                        row.media_type,
+                        row.byte_size as i64,
+                        row.width.map(i64::from),
+                        row.height.map(i64::from),
+                        row.rollout_id,
+                        row.trial_id,
+                        row.step,
+                        row.producer_digest,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
     }
 
     /// Durable media counts for one trial. Receipts use this index, never the
@@ -726,6 +699,32 @@ impl OptimizerService {
     /// already existed in the visuals IPC lane; nothing on the eval path ever
     /// invoked it, which is why a finished seed had frames on disk inside a
     /// container and nothing durable in Workshop.
+    pub(super) async fn import_checkpoint_evidence(&self, client: &super::sft_client::SftOptimizerClient,
+        parent: &str, child: &str) -> Result<()> {
+        use sha2::{Digest, Sha256};
+        anyhow::ensure!(child.starts_with("eval_") && child.len() == 37 && child[5..].chars().all(|c| c.is_ascii_hexdigit()), "invalid child evaluation identity");
+        let evidence = client.checkpoint_evidence(parent, child).await?;
+        anyhow::ensure!(evidence["parent_run_id"] == parent && evidence["eval_job_id"] == child, "checkpoint evidence ownership mismatch");
+        let allowed = self.manager.home().join("eval/runs").join(child).canonicalize()
+            .context("checkpoint trace import currently requires retained local eval files")?;
+        let data = crate::data::DataStore::new(self.db.clone(), self.visuals.content().clone());
+        for reference in evidence["traces"].as_array().context("checkpoint evidence omitted traces")? {
+            let path = std::path::PathBuf::from(reference["path"].as_str().context("trace path missing")?).canonicalize()?;
+            anyhow::ensure!(path.starts_with(&allowed), "checkpoint trace is outside its retained child job");
+            anyhow::ensure!(path.metadata()?.len() <= 64 * 1024 * 1024, "checkpoint trace exceeds import byte limit");
+            let bytes = std::fs::read(&path)?;
+            let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+            anyhow::ensure!(reference["digest"] == digest, "checkpoint trace digest changed before import");
+            let (result, event) = data.ingest_trace_bundle(crate::trace_ingest::TraceBundleIngestRequest {
+                source_path: path.display().to_string(), source_kind: Some("checkpoint_evaluation".into()),
+                source_uri: Some(format!("eval:{child}")), title: Some(format!("{child} · {}", reference["trial_id"].as_str().unwrap_or("rollout"))), container_id: None,
+            }).await?;
+            anyhow::ensure!(result.trusted, "checkpoint trace failed the native trust boundary");
+            if let Some(event) = event { let _ = self.events_tx.send(event); }
+        }
+        Ok(())
+    }
+
     pub(super) async fn import_container_trace(
         &self,
         container_id: &str,
@@ -807,46 +806,13 @@ impl OptimizerService {
     pub fn list_recipes_for_session(&self, session_ref: Option<&str>) -> Vec<Value> {
         let mut recipes = Vec::new();
         if let Some(session) = session_ref.map(str::trim).filter(|value| !value.is_empty()) {
-            // Diagnostics are catalog entries, never discarded: a declared
-            // recipe that fails validation must not silently disappear and be
-            // reported later as `unknown optimizer recipe`.
-            match super::workspace_recipe::session_workspace(&self.db, session) {
-                Ok(Some(workspace)) => {
-                    match super::workspace_recipe::load_recipes_with_diagnostics(&workspace) {
-                        Ok(outcome) => {
-                            recipes.extend(
-                                outcome
-                                    .recipes
-                                    .iter()
-                                    .map(super::workspace_recipe::catalog_entry),
-                            );
-                            recipes.extend(
-                                outcome
-                                    .diagnostics
-                                    .iter()
-                                    .map(super::workspace_recipe::invalid_catalog_entry),
-                            );
-                        }
-                        Err(error) => recipes.push(json!({
-                            "source": "workspace",
-                            "availability": "unavailable",
-                            "availabilityReason": format!(
-                                "workspace recipe catalog could not be read: {error:#}"
-                            ),
-                            "diagnosticCode": "workspace_recipes_unreadable",
-                        })),
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => recipes.push(json!({
-                    "source": "workspace",
-                    "availability": "unavailable",
-                    "availabilityReason": format!(
-                        "workspace recipe catalog is unavailable: the session workspace could \
-                         not be resolved: {error:#}"
-                    ),
-                    "diagnosticCode": "workspace_unavailable",
-                })),
+            if let Ok(Some(workspace)) =
+                super::workspace_recipe::session_workspace(&self.db, session)
+            {
+                let _ = super::workspace_recipe::ensure_bundled_annotation_eval_recipes(&workspace);
+            }
+            if let Ok(declared) = super::workspace_recipe::load_session_recipes(&self.db, session) {
+                recipes.extend(declared.iter().map(super::workspace_recipe::catalog_entry));
             }
         }
         recipes.push(super::hosted_gelo::recipe_catalog());
@@ -879,26 +845,33 @@ impl OptimizerService {
         &self,
         request: super::models::OptimizerRecipeRunRequest,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        // Keep algorithm-specific future state off the caller's worker stack.
+        // The unified HTTP -> approval -> recipe chain otherwise embeds the
+        // largest algorithm future at every dispatch layer in debug builds.
         match request.recipe_id.as_str() {
             super::sft_recipes::CRAFTAX_SFT_SMOKE_RECIPE => {
-                super::sft_recipes::start(self, request).await
+                Box::pin(super::sft_recipes::start(self, request)).await
             }
             super::hosted_gelo::HOSTED_GELO_CRAFTAX_RECIPE => {
-                super::hosted_gelo::start(self, request).await
+                Box::pin(super::hosted_gelo::start(self, request)).await
             }
             super::hosted_sft::HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE
             | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE => {
-                super::hosted_sft::start(self, request).await
+                Box::pin(super::hosted_sft::start(self, request)).await
             }
-            super::mlx_sft::QWEN_MLX_SFT_RECIPE => super::mlx_sft::start(self, request).await,
+            super::mlx_sft::QWEN_MLX_SFT_RECIPE => Box::pin(super::mlx_sft::start(self, request)).await,
             super::sidecar_training::LOCAL_MLX_CISPO_RECIPE
-            | super::sidecar_training::HOSTED_CISPO_RECIPE => {
-                super::cispo::start(self, request).await
+            | super::sidecar_training::HOSTED_CISPO_RECIPE
+            | super::sidecar_training::HOSTED_BANKING77_CISPO_RECIPE => {
+                Box::pin(super::cispo::start(self, request)).await
+            }
+            id if super::sidecar_training::is_hosted_cispo_recipe(id) => {
+                Box::pin(super::cispo::start(self, request)).await
             }
             id if super::eval_recipes::is_eval_recipe(id) => {
-                super::eval_recipes::start(self, request).await
+                Box::pin(super::eval_recipes::start(self, request)).await
             }
-            _ => super::recipes::start(self, request).await,
+            _ => Box::pin(super::recipes::start(self, request)).await,
         }
     }
 
@@ -908,7 +881,7 @@ impl OptimizerService {
         &self,
         request: super::eval_candidates::EvalStageCandidatesRequest,
     ) -> Result<Value> {
-        super::eval_candidates::stage(request).await
+        super::eval_candidates::stage(&self.db, request).await
     }
 
     pub async fn prepare_recipe(
@@ -935,14 +908,14 @@ impl OptimizerService {
         if ready.is_none() {
             bail!("visual readiness receipt is required before starting paid compute");
         }
-        if approval_receipt_id
+        let approval_id = approval_receipt_id
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .is_none()
-        {
-            bail!("compute approval receipt is required before starting paid compute");
-        }
+            .ok_or_else(|| {
+                anyhow!("compute approval receipt is required before starting paid compute")
+            })?
+            .to_string();
         // Both digests must be present and equal. Treating either absence as
         // "nothing to compare" fails open: a run prepared without a proven
         // handshake would start unguarded, which is the case the pin exists for.
@@ -974,6 +947,25 @@ impl OptimizerService {
         // advertising a wholly unrelated algorithm, so check the one claim that
         // matters before paying for rollouts.
         require_advertised_algorithm(&current_caps, &run.algorithm_id)?;
+        let max_cost_usd_micros = run
+            .summary
+            .pointer("/limits/maxCostUsd")
+            .and_then(Value::as_f64)
+            .and_then(crate::session::paid_compute_budget::micros_from_reported_cost);
+        let max_rollouts = run
+            .summary
+            .pointer("/limits/maxTotalRollouts")
+            .and_then(Value::as_u64);
+        // Prepared GEPA start authorizes before the worker. The receipt must
+        // land on the durable run before any usage fold, or terminal settlement
+        // cannot find the reservation and the conversation ceiling leaks.
+        self.attach_paid_compute_approval(
+            optimizer_run_id.clone(),
+            &approval_id,
+            max_cost_usd_micros,
+            max_rollouts,
+        )
+        .await?;
         super::recipes::start_prepared(self, &optimizer_run_id).await
     }
 
@@ -982,12 +974,98 @@ impl OptimizerService {
         optimizer_run_id: String,
         receipt: Value,
     ) -> Result<Value> {
+        // The typed row is the checkable claim; the summary field stays because
+        // the paid-compute start gate reads it as proof a visual was mounted
+        // before money is spent.
+        if let Some(typed) = visual_render_receipt_from(&optimizer_run_id, &receipt) {
+            self.record_visual_render_receipt(typed).await?;
+        }
         let mut run = self.get(optimizer_run_id.clone()).await?;
         let mut summary = run.summary.as_object().cloned().unwrap_or_default();
         summary.insert("visualReadyReceipt".into(), receipt.clone());
         run.summary = Value::Object(summary);
         self.persist_run(run).await?;
         Ok(receipt)
+    }
+
+    /// Persist a render receipt, refusing to move a revision backwards.
+    ///
+    /// Monotonicity is enforced here rather than trusted from the caller: a
+    /// renderer that reconnected to an older projection must not be able to
+    /// overwrite the proof that a newer one already rendered, or the
+    /// regression it should be reporting becomes invisible.
+    pub async fn record_visual_render_receipt(
+        &self,
+        receipt: super::models::VisualRenderReceipt,
+    ) -> Result<()> {
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            conn.execute(
+                "INSERT INTO visual_render_receipts(
+                    visual_id, visual_revision, optimizer_run_id, template_id,
+                    template_version, projection_revision, data_digest,
+                    tail_cursor, rendered_at
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+                 ON CONFLICT(visual_id, visual_revision) DO UPDATE SET
+                    optimizer_run_id=excluded.optimizer_run_id,
+                    template_id=excluded.template_id,
+                    template_version=excluded.template_version,
+                    projection_revision=excluded.projection_revision,
+                    data_digest=excluded.data_digest,
+                    tail_cursor=excluded.tail_cursor,
+                    rendered_at=excluded.rendered_at
+                 WHERE excluded.projection_revision >= visual_render_receipts.projection_revision
+                    OR excluded.template_version <> visual_render_receipts.template_version",
+                params![
+                    receipt.visual_id,
+                    receipt.visual_revision,
+                    receipt.optimizer_run_id,
+                    receipt.template_id,
+                    receipt.template_version,
+                    receipt.projection_revision as i64,
+                    receipt.data_digest,
+                    receipt.tail_cursor as i64,
+                    receipt.rendered_at,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The render receipt for one visual revision, if it has ever rendered.
+    pub async fn visual_render_receipt(
+        &self,
+        visual_id: String,
+        visual_revision: i64,
+    ) -> Result<Option<super::models::VisualRenderReceipt>> {
+        let db = self.db.clone();
+        db.run_read(move |conn| {
+            conn.query_row(
+                "SELECT visual_id, visual_revision, optimizer_run_id, template_id,
+                        template_version, projection_revision, data_digest,
+                        tail_cursor, rendered_at
+                 FROM visual_render_receipts
+                 WHERE visual_id = ?1 AND visual_revision = ?2",
+                params![visual_id, visual_revision],
+                |row| {
+                    Ok(super::models::VisualRenderReceipt {
+                        visual_id: row.get(0)?,
+                        visual_revision: row.get(1)?,
+                        optimizer_run_id: row.get(2)?,
+                        template_id: row.get(3)?,
+                        template_version: row.get(4)?,
+                        projection_revision: row.get::<_, i64>(5)?.max(0) as u64,
+                        data_digest: row.get(6)?,
+                        tail_cursor: row.get::<_, i64>(7)?.max(0) as u64,
+                        rendered_at: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+            .context("load visual render receipt")
+        })
+        .await
     }
 
     pub async fn await_visual_ready(
@@ -1254,22 +1332,9 @@ impl OptimizerService {
             return Ok(());
         };
         let chain = chain.clone();
-        let provider_usage = chain.get("providerUsage").cloned();
         self.patch_run(run_id.to_string(), move |run| {
             if let Some(object) = run.summary.as_object_mut() {
                 object.insert("credentialChain".into(), chain);
-                if let Some(provider_usage) = provider_usage.clone() {
-                    object.insert("providerUsage".into(), provider_usage.clone());
-                    let usage_lanes = object
-                        .entry("usageLanes")
-                        .or_insert_with(|| serde_json::json!({}));
-                    if let Some(lanes) = usage_lanes.as_object_mut() {
-                        lanes.insert("provider".into(), provider_usage.clone());
-                    }
-                    run.usage
-                        .extra
-                        .insert("providerUsage".into(), provider_usage);
-                }
             }
             Ok(())
         })
@@ -1347,35 +1412,421 @@ impl OptimizerService {
     }
 
     /// Versioned backend projection. Raw events do not determine this view.
+    ///
+    /// Compatibility shape for callers that want the view unconditionally.
+    /// New callers should prefer [`Self::run_view_envelope`], which reads the
+    /// projection and the run record together and can answer `unchanged`.
     pub async fn run_view_v2(
         &self,
         optimizer_run_id: String,
     ) -> Result<super::kernel::OptimizerRunViewV2> {
+        let envelope = self
+            .run_view_envelope(optimizer_run_id.clone(), None)
+            .await?;
+        envelope.view.ok_or_else(|| {
+            anyhow!("optimizer run {optimizer_run_id} returned an empty run view envelope")
+        })
+    }
+
+    /// One coherent read for a visual's first paint.
+    ///
+    /// Deliberately three separable things in one call, because the renderer
+    /// was previously orchestrating them as three serial IPC hops:
+    ///
+    ///   · the durable kernel projection (product truth),
+    ///   · the run record the templates still read compatibility fields from,
+    ///   · the durable tail cursor an evidence reader pages against.
+    ///
+    /// All three come from a single **deferred** transaction, so this read
+    /// takes a WAL snapshot and never queues behind the producer appending to
+    /// the run it is describing.
+    ///
+    /// `if_newer_than` makes the read conditional. The projection revision is
+    /// already monotonic; a caller holding revision *n* is told `unchanged`
+    /// rather than handed the same bytes again, which is what lets a cached
+    /// visual revalidate in the background for the cost of one indexed column
+    /// read.
+    pub async fn run_view_envelope(
+        &self,
+        optimizer_run_id: String,
+        if_newer_than: Option<u64>,
+    ) -> Result<super::kernel::OptimizerRunViewEnvelope> {
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        let cached = if_newer_than;
+        let read = db
+            .run_read(move |conn| {
+                // Cheapest possible freshness check first: one indexed column,
+                // no run row, no 5 KB projection deserialize, no IPC payload.
+                if let Some(cached_revision) = cached {
+                    if let Some(durable) =
+                        super::kernel::persist::load_projection_revision(conn, &run_id)?
+                    {
+                        if durable == cached_revision {
+                            return Ok(Some(super::kernel::OptimizerRunViewEnvelope {
+                                unchanged: true,
+                                view: None,
+                                run: None,
+                                projection_revision: durable,
+                                tail_cursor: durable_tail_cursor(conn, &run_id)?,
+                            }));
+                        }
+                    }
+                }
+                let run = load_run(conn, &run_id)?;
+                let Some(state) = super::kernel::persist::load_state(conn, &run_id)? else {
+                    // No durable projection. Repair is a write, and a write has
+                    // no business running inside a read that a user is waiting
+                    // on: it would take the exclusive lock, replay the whole
+                    // journal, and — for a run with no admitted spec — roll all
+                    // of that back and do it again on the next attempt.
+                    return Ok(None);
+                };
+                let context = run_view_context(conn, &run)?;
+                let view =
+                    super::kernel::project_view_with_context(&state, &context).into_bounded_wire();
+                let tail_cursor = durable_tail_cursor(conn, &run_id)?;
+                Ok(Some(super::kernel::OptimizerRunViewEnvelope {
+                    unchanged: false,
+                    projection_revision: state.projection_revision,
+                    tail_cursor,
+                    view: Some(view),
+                    run: Some(run),
+                }))
+            })
+            .await?;
+        if let Some(envelope) = read {
+            return Ok(envelope);
+        }
+
+        // Historical row that predates the kernel projection. Repair it once,
+        // in its own write transaction, then re-read through the fast path.
+        self.repair_kernel_projection(optimizer_run_id.clone())
+            .await?;
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        db.run_read(move |conn| {
+            let run = load_run(conn, &run_id)?;
+            let state = super::kernel::persist::load_state(conn, &run_id)?.ok_or_else(|| {
+                anyhow!("optimizer run {run_id} did not produce a saved kernel projection")
+            })?;
+            let context = run_view_context(conn, &run)?;
+            let view =
+                super::kernel::project_view_with_context(&state, &context).into_bounded_wire();
+            let tail_cursor = durable_tail_cursor(conn, &run_id)?;
+            Ok(super::kernel::OptimizerRunViewEnvelope {
+                unchanged: false,
+                projection_revision: state.projection_revision,
+                tail_cursor,
+                view: Some(view),
+                run: Some(run),
+            })
+        })
+        .await
+    }
+
+    /// The bounded, algorithm-neutral run summary every live surface mounts
+    /// from. Conditional on projection revision exactly like
+    /// [`Self::run_view_envelope`], and byte-budgeted by construction: growing
+    /// collections are counted here and paged through
+    /// [`Self::run_collection`].
+    pub async fn run_summary(
+        &self,
+        optimizer_run_id: String,
+        if_newer_than: Option<u64>,
+    ) -> Result<super::kernel::OptimizerRunSummaryEnvelope> {
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        let read = db
+            .run_read(move |conn| read_run_summary(conn, &run_id, if_newer_than))
+            .await?;
+        if let Some(envelope) = read {
+            return Ok(envelope);
+        }
+        self.repair_kernel_projection(optimizer_run_id.clone())
+            .await?;
+        let db = self.db.clone();
+        db.run_read(move |conn| {
+            read_run_summary(conn, &optimizer_run_id, None)?.ok_or_else(|| {
+                anyhow!(
+                    "optimizer run {optimizer_run_id} did not produce a saved kernel projection"
+                )
+            })
+        })
+        .await
+    }
+
+    /// One keyset page of a durable collection. Rows and the projection
+    /// revision they belong to are read in the same transaction; there is no
+    /// unbounded "all rows" answer.
+    pub async fn run_collection(
+        &self,
+        optimizer_run_id: String,
+        collection: super::kernel::RunCollection,
+        query: super::kernel::RunCollectionQuery,
+    ) -> Result<super::kernel::RunCollectionPage> {
+        use super::kernel::read_model;
+        let db = self.db.clone();
+        db.run_read(move |conn| {
+            let run = load_run(conn, &optimizer_run_id)?;
+            let algorithm = super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
+                .map_err(|error| anyhow!("{error}"))?;
+            let (revision, as_of_sequence) = projection_position(conn, &optimizer_run_id)?;
+            match collection {
+                read_model::RunCollection::Artifacts => {
+                    let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
+                        .ok_or_else(|| {
+                            anyhow!("optimizer run {optimizer_run_id} has no projection")
+                        })?;
+                    let artifacts = super::artifacts::list_all(conn, &optimizer_run_id)?;
+                    read_model::page_rows_in_memory(
+                        &optimizer_run_id,
+                        collection,
+                        read_model::artifact_rows(&state, &artifacts),
+                        &query,
+                        state.projection_revision,
+                        state.aggregate_sequence,
+                    )
+                }
+                read_model::RunCollection::EvidenceRefs => {
+                    let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
+                        .ok_or_else(|| {
+                            anyhow!("optimizer run {optimizer_run_id} has no projection")
+                        })?;
+                    read_model::page_rows_in_memory(
+                        &optimizer_run_id,
+                        collection,
+                        read_model::evidence_ref_rows(&state),
+                        &query,
+                        state.projection_revision,
+                        state.aggregate_sequence,
+                    )
+                }
+                projected => read_model::query_collection_rows(
+                    conn,
+                    &optimizer_run_id,
+                    algorithm,
+                    projected,
+                    &query,
+                    revision,
+                    as_of_sequence,
+                ),
+            }
+        })
+        .await
+    }
+
+    /// One collection row by identity — a candidate's durable content, one
+    /// evaluation, one proposer call — without paging its neighbours.
+    pub async fn run_collection_item(
+        &self,
+        optimizer_run_id: String,
+        collection: super::kernel::RunCollection,
+        item_id: String,
+    ) -> Result<Option<super::kernel::RunCollectionRow>> {
+        use super::kernel::read_model;
+        let db = self.db.clone();
+        db.run_read(move |conn| {
+            let run = load_run(conn, &optimizer_run_id)?;
+            let algorithm = super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
+                .map_err(|error| anyhow!("{error}"))?;
+            match collection {
+                read_model::RunCollection::Artifacts | read_model::RunCollection::EvidenceRefs => {
+                    let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
+                        .ok_or_else(|| {
+                            anyhow!("optimizer run {optimizer_run_id} has no projection")
+                        })?;
+                    let rows = if collection == read_model::RunCollection::Artifacts {
+                        let artifacts = super::artifacts::list_all(conn, &optimizer_run_id)?;
+                        read_model::artifact_rows(&state, &artifacts)
+                    } else {
+                        read_model::evidence_ref_rows(&state)
+                    };
+                    Ok(rows.into_iter().find(|row| row.item_id == item_id))
+                }
+                projected => read_model::load_collection_row(
+                    conn,
+                    &optimizer_run_id,
+                    algorithm,
+                    projected,
+                    &item_id,
+                ),
+            }
+        })
+        .await
+    }
+
+    /// The projection as it stood at `sequence`, folded from the nearest
+    /// reducer checkpoint plus the suffix up to the requested point.
+    ///
+    /// This is what the historical scrubber reads. The renderer never fetches
+    /// the journal to reduce it; the backend folds a bounded suffix, and when
+    /// a run predates checkpoints — so the first scrub had to replay a long
+    /// prefix — it leaves a checkpoint behind so the next one does not.
+    pub async fn projection_at(
+        &self,
+        optimizer_run_id: String,
+        sequence: u64,
+    ) -> Result<super::kernel::HistoricalProjection> {
+        use super::kernel::read_model;
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        let (historical, backfill) = db
+            .run_read(move |conn| {
+                let run = load_run(conn, &run_id)?;
+                let algorithm = super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
+                    .map_err(|error| anyhow!("{error}"))?;
+                let placement =
+                    super::kernel::bridge::placement_from_run_source(algorithm, &run.source);
+                let spec_digest: String = conn
+                    .query_row(
+                        "SELECT spec_digest FROM optimizer_run_specs WHERE optimizer_run_id = ?1",
+                        [&run.id],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .filter(|value: &String| !value.trim().is_empty())
+                    .ok_or_else(|| {
+                        anyhow!("optimizer run {} is missing its admitted spec", run.id)
+                    })?;
+                let tail = durable_tail_cursor(conn, &run_id)?;
+                let requested = sequence;
+                let sequence = sequence.min(tail);
+                let checkpoint = read_model::load_checkpoint_at_or_before(
+                    conn,
+                    &run_id,
+                    algorithm.reducer_version(),
+                    sequence,
+                )?;
+                let (base, from) = match checkpoint {
+                    Some(state) => {
+                        let from = state.aggregate_sequence;
+                        (Some(state), from)
+                    }
+                    None => (None, 0),
+                };
+                let mut events = load_events_between(conn, &run_id, from, sequence)?;
+                let mut from = from;
+                let mut base = base;
+                if from > 0 && batch_forces_full_replay(&events) {
+                    // Settlement-rewriting events keep the replay-from-zero
+                    // semantics the live fold uses for them.
+                    events = load_events_between(conn, &run_id, 0, sequence)?;
+                    from = 0;
+                    base = None;
+                }
+                let replayed = events.len() as u64;
+                // A long suffix — a run that predates checkpoints, or a bulk
+                // import folded in one batch — is folded one interval at a
+                // time, and every boundary state is kept so the next scrub
+                // pays for one interval rather than the whole prefix again.
+                // Settlement-rewriting suffixes replay as one commit, exactly
+                // as the live path would, and leave no intermediate marks.
+                let interval = read_model::CHECKPOINT_EVENT_INTERVAL as usize;
+                let mut backfill: Vec<super::kernel::RunKernelState> = Vec::new();
+                let state = if from == 0 && batch_forces_full_replay(&events) {
+                    super::kernel::bridge::reduce_envelopes(
+                        &run_id,
+                        algorithm,
+                        placement,
+                        &spec_digest,
+                        &events,
+                    )
+                    .map_err(|error| anyhow!("historical replay failed for {run_id}: {error}"))?
+                } else {
+                    let mut state = base.unwrap_or_else(|| {
+                        super::kernel::RunKernelState::new(
+                            &run_id,
+                            algorithm,
+                            placement,
+                            &spec_digest,
+                        )
+                    });
+                    for chunk in events.chunks(interval) {
+                        state = super::kernel::bridge::fold_envelopes(state, &run_id, chunk)
+                            .map_err(|error| {
+                                anyhow!("historical fold failed for {run_id}: {error}")
+                            })?;
+                        if chunk.len() == interval {
+                            backfill.push(state.clone());
+                        }
+                    }
+                    state
+                };
+                let context = run_view_context(conn, &run)?;
+                let view =
+                    super::kernel::project_view_with_context(&state, &context).into_bounded_wire();
+                Ok((
+                    super::kernel::HistoricalProjection {
+                        schema_version: read_model::HISTORICAL_PROJECTION_SCHEMA_VERSION.into(),
+                        run_id: run_id.clone(),
+                        requested_sequence: requested,
+                        as_of_sequence: state.aggregate_sequence,
+                        checkpoint_sequence: (from > 0).then_some(from),
+                        replayed_events: replayed,
+                        view,
+                    },
+                    backfill,
+                ))
+            })
+            .await?;
+        if !backfill.is_empty() {
+            // Best effort: a checkpoint is an accelerator, never truth. Failing
+            // to leave one behind must not fail the read that produced it.
+            let db = self.db.clone();
+            let _ = db
+                .run(move |conn| {
+                    for state in &backfill {
+                        read_model::write_checkpoint(conn, state)?;
+                    }
+                    Ok(())
+                })
+                .await;
+        }
+        Ok(historical)
+    }
+
+    /// Rebuild a missing kernel projection by replaying the durable journal.
+    ///
+    /// Only reachable for rows written before the kernel owned admission —
+    /// every admitted run persists a projection at birth. It is a write, it is
+    /// expensive, and it is idempotent, so it belongs here rather than inline
+    /// in a read.
+    ///
+    /// A run with no admitted spec cannot be repaired at all. That is a
+    /// permanent structural fact about the row, not a transient transport
+    /// fault, so it raises a non-retryable typed failure: retrying it five
+    /// times with a backoff ladder — which is what the renderer does with an
+    /// untyped error — only replays the whole journal five more times before
+    /// showing the same message.
+    pub async fn repair_kernel_projection(&self, optimizer_run_id: String) -> Result<()> {
         let db = self.db.clone();
         db.run_transaction(move |conn| {
-            let run = load_run(conn, &optimizer_run_id)?;
-            if let Some(state) = super::kernel::persist::load_state(conn, &optimizer_run_id)? {
-                let context = run_view_context(conn, &run)?;
-                return Ok(super::kernel::project_view_with_context(&state, &context));
+            if super::kernel::persist::load_state(conn, &optimizer_run_id)?.is_some() {
+                return Ok(());
             }
-
-            // One-time repair for a historical row that predates the kernel
-            // projection. Replay happens here in CoreRuntime and is committed
-            // before the view is returned; the renderer never receives raw
-            // events as a competing state authority.
+            let run = load_run(conn, &optimizer_run_id)?;
             super::kernel::AlgorithmKind::parse_wire(&run.algorithm_id)
                 .map_err(|error| anyhow!("{error}"))?;
+            if !super::kernel::persist::spec_exists(conn, &optimizer_run_id)? {
+                return Err(crate::error::StructuredFailure::new(
+                    "optimizer.projection.missing_admitted_spec",
+                    format!(
+                        "Run {optimizer_run_id} predates admitted specs, so its projection cannot be rebuilt."
+                    ),
+                    "Re-import or re-run this optimizer run to record it under the current contract.",
+                )
+                .retryable(false)
+                .with_details(serde_json::json!({
+                    "stage": "projection",
+                    "optimizerRunId": optimizer_run_id,
+                    "algorithmId": run.algorithm_id,
+                }))
+                .into());
+            }
             let events = load_events_upto(conn, &run.id, run.cursor_seq)?;
             persist_kernel_projection(conn, &run, &events)?;
-            let state =
-                super::kernel::persist::load_state(conn, &optimizer_run_id)?.ok_or_else(|| {
-                    anyhow!(
-                        "optimizer run {} did not produce a saved kernel projection",
-                        optimizer_run_id
-                    )
-                })?;
-            let context = run_view_context(conn, &run)?;
-            Ok(super::kernel::project_view_with_context(&state, &context))
+            Ok(())
         })
         .await
     }
@@ -1384,47 +1835,53 @@ impl OptimizerService {
         &self,
         optimizer_run_id: String,
     ) -> Result<super::OptimizerSnapshotReceipt> {
-        let run = self.get(optimizer_run_id.clone()).await?;
-        let result = self.get_result(optimizer_run_id.clone()).await?;
-        let terminal_manifest = self.terminal_manifest(optimizer_run_id.clone()).await?;
-        let cursor = run.cursor_seq;
         let db = self.db.clone();
-        let run_id = optimizer_run_id.clone();
-        let events = db
-            .run(move |conn| load_events_upto(conn, &run_id, cursor))
-            .await?;
-        let snapshot = super::snapshot::OptimizerRunSnapshot {
-            schema_version: super::snapshot::OPTIMIZER_SNAPSHOT_SCHEMA.into(),
-            source_instance_id: crate::instance::name().unwrap_or_else(|| "canonical".into()),
-            source_bundle_id: crate::instance::bundle_id().unwrap_or_else(|| "unknown".into()),
-            source_run_id: optimizer_run_id,
-            captured_at: Utc::now().to_rfc3339(),
-            terminal_cursor: cursor,
-            sealed: terminal_manifest.is_some(),
-            run,
-            result,
-            terminal_manifest,
-            events,
-        };
-        super::snapshot::persist(self.db.clone(), &self.content, &snapshot)
+        let content = self.content().clone();
+        let source_instance_id = crate::instance::name().unwrap_or_else(|| "canonical".into());
+        let source_bundle_id = crate::instance::bundle_id().unwrap_or_else(|| "unknown".into());
+        tokio::task::spawn_blocking(move || {
+            // One WAL snapshot owns the run, result, manifest and event cursor.
+            // Independent reads can straddle a concurrent terminal append.
+            let snapshot = db.read_transaction(|conn| {
+                let mut run = load_run(conn, &optimizer_run_id)?;
+                let state = super::kernel::persist::load_state(conn, &optimizer_run_id)?
+                    .context("optimizer run has no saved kernel projection")?;
+                if OptimizerRunStatus::str_is_terminal(&run.status) {
+                    rewrite_terminal_summary_progress(&mut run, &state);
+                }
+                let manifest = terminal::load(conn, &optimizer_run_id)?;
+                let settled = super::kernel::settle_result(&state).map_err(|error| anyhow!("{error}"))?;
+                let result = results::from_kernel(&run, &state, settled, manifest.as_ref())?;
+                let events = load_events_upto(conn, &optimizer_run_id, run.cursor_seq)?;
+                Ok(super::snapshot::OptimizerRunSnapshot {
+                    schema_version: super::snapshot::OPTIMIZER_SNAPSHOT_SCHEMA.into(),
+                    source_instance_id, source_bundle_id, source_run_id: optimizer_run_id,
+                    captured_at: Utc::now().to_rfc3339(), terminal_cursor: run.cursor_seq,
+                    sealed: manifest.is_some(), run, result, terminal_manifest: manifest, events,
+                })
+            })?;
+            super::snapshot::persist(db, &content, &snapshot)
+        }).await.context("optimizer snapshot export worker failed")?
     }
 
     pub async fn import_snapshot(
         &self,
         request: super::OptimizerSnapshotImportRequest,
     ) -> Result<super::OptimizerSnapshotReceipt> {
-        super::snapshot::import_path(self.db.clone(), &self.content, request)
+        let db = self.db.clone();
+        let content = self.content().clone();
+        tokio::task::spawn_blocking(move || super::snapshot::import_path(db, &content, request))
+            .await.context("optimizer snapshot import worker failed")?
     }
 
     pub async fn get_snapshot(&self, snapshot_id: String) -> Result<Value> {
-        let (snapshot, receipt) =
-            super::snapshot::load(self.db.clone(), &self.content, &snapshot_id)?;
-        let evidence_summary = super::snapshot::evidence_summary(&snapshot);
-        Ok(json!({
-            "snapshot": snapshot,
-            "receipt": receipt,
-            "evidenceSummary": evidence_summary,
-        }))
+        let db = self.db.clone();
+        let content = self.content().clone();
+        tokio::task::spawn_blocking(move || {
+            let (snapshot, receipt) = super::snapshot::load(db, &content, &snapshot_id)?;
+            let evidence_summary = super::snapshot::evidence_summary(&snapshot);
+            Ok(json!({"snapshot": snapshot, "receipt": receipt, "evidenceSummary": evidence_summary}))
+        }).await.context("optimizer snapshot read worker failed")?
     }
 
     pub async fn create(
@@ -1668,6 +2125,90 @@ impl OptimizerService {
             .await?;
         super::strip_frame_bodies_for_ipc(&mut events);
         Ok(events)
+    }
+
+    /// Read the parts of an evidence window the caller does not already hold.
+    ///
+    /// The lazy, restart-survivable counterpart to `events_after`. A cursor can
+    /// only say "after N", which is the right shape for a live tail and the
+    /// wrong one for browsing: a reader that opens Replay at the end of a run
+    /// and scrolls back holds disjoint spans, and asking "after the highest
+    /// one" both re-fetches nothing useful and silently keeps the hole in the
+    /// middle. Sending held spans and receiving their complement expresses
+    /// "besides what I have" exactly, so nothing is transferred twice.
+    ///
+    /// One contiguous gap is answered per call, bounded by `limit`, so a page
+    /// is always a single span the caller can store as one coverage entry.
+    pub async fn evidence_page(
+        &self,
+        optimizer_run_id: String,
+        window: super::events::EvidenceRange,
+        held: Vec<super::events::EvidenceRange>,
+        limit: Option<i64>,
+    ) -> Result<super::events::EvidencePage> {
+        let limit = limit.unwrap_or(200).clamp(1, 2000);
+        let db = self.db.clone();
+        let mut page = db
+            .run_read(move |conn| {
+                // Ownership and existence are resolved the same way for a
+                // cached read as for an uncached one: the run row is loaded
+                // before any evidence leaves the database.
+                load_run(conn, &optimizer_run_id)?;
+                let tail_cursor = durable_tail_cursor(conn, &optimizer_run_id)?;
+                let window = super::events::EvidenceRange::new(
+                    window.from.max(1),
+                    window.to.min(tail_cursor),
+                );
+                let gaps = super::events::complement(window, &held);
+                let Some(gap) = gaps.first().copied() else {
+                    return Ok(super::events::EvidencePage {
+                        events: Vec::new(),
+                        range: None,
+                        coverage: super::events::normalize_ranges(&held),
+                        complete: true,
+                        tail_cursor,
+                    });
+                };
+                let mut stmt = conn.prepare(
+                    "SELECT sequence_number, payload_json FROM optimizer_events
+                     WHERE optimizer_run_id = ?1
+                       AND sequence_number >= ?2 AND sequence_number <= ?3
+                     ORDER BY sequence_number ASC LIMIT ?4",
+                )?;
+                let rows = stmt.query_map(
+                    params![optimizer_run_id, gap.from as i64, gap.to as i64, limit],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )?;
+                let mut events = Vec::new();
+                let mut highest = gap.from;
+                for row in rows {
+                    let (sequence, payload) = row?;
+                    highest = sequence.max(0) as u64;
+                    events.push(serde_json::from_str(&payload)?);
+                }
+                // A short page covers only what it reached. A gap that is
+                // genuinely empty of rows — a pruned or never-written span —
+                // still counts as covered, or the caller would ask forever.
+                let covered = if events.len() as i64 == limit {
+                    super::events::EvidenceRange::new(gap.from, highest)
+                } else {
+                    gap
+                };
+                let mut coverage = held.clone();
+                coverage.push(covered);
+                let coverage = super::events::normalize_ranges(&coverage);
+                let complete = super::events::complement(window, &coverage).is_empty();
+                Ok(super::events::EvidencePage {
+                    events,
+                    range: Some(covered),
+                    coverage,
+                    complete,
+                    tail_cursor,
+                })
+            })
+            .await?;
+        super::strip_frame_bodies_for_ipc(&mut page.events);
+        Ok(page)
     }
 
     /// Latest changed native frame per seed after a durable frame cursor.
@@ -1999,11 +2540,27 @@ impl OptimizerService {
                 .accept_sealed(manifest_terminal_kind(&manifest), &optimizer_run_id)
                 .map_err(|error| anyhow!("{error}"))?;
             // A compatible concurrent settlement still participates in the
-            // post-terminal cleanup. Revocation is idempotent, and this makes
-            // a crash between seal and cleanup repairable by retrying the
-            // settlement command.
+            // post-terminal cleanup. Revocation and paid-compute settlement
+            // are idempotent, and this makes a crash between seal and cleanup
+            // repairable by retrying the settlement command.
             self.revoke_credentials_post_terminal(&optimizer_run_id, cause.cancellation())
                 .await;
+            let settlement_run_id = optimizer_run_id.clone();
+            if let Err(error) = self
+                .database()
+                .run_transaction(move |conn| {
+                    let run = load_run(conn, &settlement_run_id)?;
+                    settle_paid_compute_conversation(conn, &run)?;
+                    Ok(())
+                })
+                .await
+            {
+                crate::platform::logging::report(
+                    "optimizers",
+                    "eprintln",
+                    format!("settle paid-compute for sealed run {optimizer_run_id}: {error:#}"),
+                );
+            }
             return self.get(optimizer_run_id).await;
         }
         let run = self.get(optimizer_run_id.clone()).await?;
@@ -2369,7 +2926,8 @@ impl OptimizerService {
             // The sender is registered but its worker is gone; fall through
             // and settle directly.
         }
-        if matches!(run.algorithm_id.as_str(), "sft" | "cispo") {
+        if matches!(run.algorithm_id.as_str(), "sft" | "cispo")
+            && run.summary.get("containerExperiment").and_then(Value::as_bool) != Some(true) {
             if let Ok(client) =
                 super::sidecar_training::SidecarTrainingClient::from_manager(self.manager()).await
             {
@@ -2422,6 +2980,19 @@ impl OptimizerService {
     pub async fn pause(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let run = self.get(id.clone()).await?;
         validate_control(&run, "pause", OptimizerRunStatus::Paused)?;
+        if run.source == "hosted" && matches!(run.algorithm_id.as_str(), "sft" | "cispo")
+            && run.summary.get("containerExperiment").and_then(Value::as_bool) != Some(true) {
+            if run.algorithm_id == "sft" {
+                super::sft_client::SftOptimizerClient::from_env()?.control(run.summary.get("producerRunId").and_then(Value::as_str).unwrap_or(&id), "pause").await?;
+            } else {
+                super::cispo_client::CispoOptimizerClient::from_env()?.experiment_control(&id, "pause").await?;
+            }
+            // The producer's checkpoint-barrier acknowledgement owns paused state.
+            return Ok((self.get(id).await?, None));
+        }
+        if run.algorithm_id == "cispo" && run.summary.get("containerExperiment").and_then(Value::as_bool) == Some(true) {
+            super::cispo_client::CispoOptimizerClient::from_env()?.experiment_control(&id, "pause").await?;
+        }
         let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
         if is_eval {
             super::eval_recipes::set_paused(&id, true)?;
@@ -2439,7 +3010,22 @@ impl OptimizerService {
 
     pub async fn resume(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let run = self.get(id.clone()).await?;
+        if super::hosted_sft::recoverable_observer_failure(&run) {
+            return super::hosted_sft::recover_observer(self, &run).await;
+        }
         validate_control(&run, "resume", OptimizerRunStatus::Running)?;
+        if run.source == "hosted" && matches!(run.algorithm_id.as_str(), "sft" | "cispo")
+            && run.summary.get("containerExperiment").and_then(Value::as_bool) != Some(true) {
+            if run.algorithm_id == "sft" {
+                super::sft_client::SftOptimizerClient::from_env()?.control(run.summary.get("producerRunId").and_then(Value::as_str).unwrap_or(&id), "resume").await?;
+            } else {
+                super::cispo_client::CispoOptimizerClient::from_env()?.experiment_control(&id, "resume").await?;
+            }
+            return Ok((self.get(id).await?, None));
+        }
+        if run.algorithm_id == "cispo" && run.summary.get("containerExperiment").and_then(Value::as_bool) == Some(true) {
+            super::cispo_client::CispoOptimizerClient::from_env()?.experiment_control(&id, "resume").await?;
+        }
         let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
         if is_eval {
             super::eval_recipes::set_paused(&id, false)?;
@@ -2479,6 +3065,17 @@ impl OptimizerService {
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let mut run = self.get(optimizer_run_id.clone()).await?;
         super::container_eval::refresh_terminal_visual_projection_if_stale(self, &run).await?;
+        // A Harbor run that settled before terminal snapshots were retained
+        // opens with an empty live pane. Repair it here, where a reader has
+        // actually asked for it: bounded to this run, idempotent, additive,
+        // and never a reason to refuse to open the run it is repairing.
+        if let Err(error) = super::container_eval::repair_harbor_terminal_visual(self, &run).await {
+            crate::platform::logging::report(
+                "container_eval",
+                "harbor_visual_repair",
+                format!("could not repair the Harbor live visual for {optimizer_run_id}: {error:#}"),
+            );
+        }
         let presentation_session_ref = session_ref.or_else(|| run.session_ref.clone());
         let title = format!(
             "{} · {}",
@@ -3217,6 +3814,20 @@ impl OptimizerService {
     /// authority for CISPO/PPO progress, checkpoint readiness and terminal
     /// truth; keeping its sequence in the durable run summary makes Workshop
     /// reconnect from the same cursor after an app restart.
+    pub async fn container_experiment_action(&self, id: String, action: String, checkpoint_id: Option<String>) -> Result<Value> {
+        let run = self.get(id.clone()).await?;
+        if run.algorithm_id != "cispo" || run.summary.get("containerExperiment").and_then(Value::as_bool) != Some(true) {
+            bail!("this run is not a container experiment");
+        }
+        let client = super::cispo_client::CispoOptimizerClient::from_env()?;
+        match action.as_str() {
+            "recover" | "start" => client.experiment_control(&id, &action).await,
+            "verify_checkpoint" => client.verify_checkpoint(&id, checkpoint_id.as_deref().filter(|id| !id.is_empty())
+                .ok_or_else(|| anyhow!("checkpoint identity is required"))?).await,
+            _ => bail!("unsupported container experiment operation"),
+        }
+    }
+
     pub async fn reconcile_training(&self, optimizer_run_id: String) -> Result<Value> {
         let run = self.get(optimizer_run_id.clone()).await?;
         if !matches!(run.algorithm_id.as_str(), "sft" | "cispo" | "ppo") {
@@ -3490,6 +4101,7 @@ fn algorithm_label(algorithm_id: &str) -> &'static str {
         "gepa" => "GEPA",
         "go-ex" => "GELO",
         "sft" => "SFT",
+        "cispo" => "CISPO",
         "eval" => "Eval",
         id if id == "dag" || id.starts_with("dag.") => "DAG",
         _ => "Optimizer",
@@ -3498,7 +4110,8 @@ fn algorithm_label(algorithm_id: &str) -> &'static str {
 
 pub(in crate::optimizers) fn primary_visual_template(algorithm_id: &str) -> &'static str {
     match algorithm_id {
-        "sft" | "cispo" => "optimizer.sft.live.v1",
+        "sft" => "optimizer.sft.live.v1",
+        "cispo" => "optimizer.cispo.live.v1",
         "gepa" => "optimizer.gepa.live.v1",
         "eval" => "optimizer.eval.live.v1",
         id if id == "dag" || id.starts_with("dag.") => "optimizer.dag.live.v1",
@@ -3874,6 +4487,7 @@ fn commit_validated_events(
     let plan = plan_batch(&run.id, run.cursor_seq, &durable, &events, contract)
         .with_context(|| format!("validate optimizer event batch for {}", run.id))?;
     let mut appended = 0usize;
+    let mut appended_events: Vec<OptimizerEventEnvelope> = Vec::new();
     let mut evidence_amendments = Vec::new();
     for (event, verdict) in events.iter_mut().zip(plan) {
         super::experiment_bind::fold_candidate(conn, event)?;
@@ -3897,6 +4511,7 @@ fn commit_validated_events(
         }
         run.cursor_seq = event.sequence_number;
         upsert_cursor(conn, &run.id, run.cursor_seq, &event.occurred_at)?;
+        appended_events.push(event.clone());
         appended += 1;
     }
     if appended == 0 {
@@ -3904,17 +4519,55 @@ fn commit_validated_events(
         // bus stays quiet rather than waking every subscriber for no news.
         return Ok((run, None));
     }
-    let history = load_events_upto(conn, &run.id, run.cursor_seq)?;
+    // Fold forward from the durable projection when the batch permits it, and
+    // replay the whole journal only when it does not.
+    //
+    // The full replay used to be unconditional: every append loaded and
+    // deserialized every event the run had ever emitted, folded usage over all
+    // of it, and re-reduced it from an empty state — inside the exclusive
+    // write transaction. Per-append cost was linear in history (~24µs per
+    // event of history, measured), total cost quadratic, and every UI read
+    // queued behind it. At the 50,000-event scale the acceptance tests target,
+    // a single append reads 50,000 events before it can commit.
+    //
+    // `commit` was always an incremental fold — it takes a prior state and a
+    // batch — and `RunKernelState` was always persisted whole. Only
+    // `reduce_envelopes` discarded that by starting from `new()`.
+    let prior_state = super::kernel::persist::load_state(conn, &run.id)?;
+    let incremental = prior_state
+        .as_ref()
+        .is_some_and(|state| can_fold_incrementally(state, &appended_events));
+    let history = if incremental {
+        Vec::new()
+    } else {
+        note_full_journal_replay(&run.id);
+        load_events_upto(conn, &run.id, run.cursor_seq)?
+    };
+    let folded: &[OptimizerEventEnvelope] = if incremental {
+        &appended_events
+    } else {
+        &history
+    };
+
     // The append-only event log owns measured usage. Rebuild its accumulator
     // at the same cursor that will be terminal-sealed, while preserving only
     // non-measurement admission metadata (notably the paid-compute receipt).
     // Persist before terminal::seal so the run row and manifest freeze the
     // same numbers in one transaction.
-    let mut canonical_usage = OptimizerUsageSummary {
-        extra: run.usage.extra.clone(),
-        ..OptimizerUsageSummary::default()
+    //
+    // Incrementally the accumulator resumes from the run row, which is where
+    // this same fold left it on the previous append. The guard below keeps a
+    // reconciliation event — the one thing that *replaces* rather than adds —
+    // on the full-replay path.
+    let mut canonical_usage = if incremental {
+        run.usage.clone()
+    } else {
+        OptimizerUsageSummary {
+            extra: run.usage.extra.clone(),
+            ..OptimizerUsageSummary::default()
+        }
     };
-    for event in &history {
+    for event in folded {
         if event.event_type == "optimizer.usage.reconciled" {
             apply_authoritative_provider_usage(&mut canonical_usage, event)?;
         } else if let Some(delta) = &event.usage_delta {
@@ -3941,7 +4594,12 @@ fn commit_validated_events(
     run.usage = canonical_usage;
     update_paid_compute_violation(&mut run);
     upsert_run(conn, &run)?;
-    let mut state = persist_kernel_projection(conn, &run, &history)?;
+    let mut state = match prior_state {
+        Some(prior) if incremental => {
+            persist_kernel_projection_from(conn, &run, prior, &appended_events)?
+        }
+        _ => persist_kernel_projection(conn, &run, &history)?,
+    };
     for amendment in &evidence_amendments {
         persist_evidence_amendment(conn, &state, amendment)?;
     }
@@ -3951,7 +4609,12 @@ fn commit_validated_events(
     }
     run.status = kernel_compatibility_status(&state).into();
     if state.lifecycle != super::kernel::RunLifecycle::Queued && run.started_at.is_none() {
-        run.started_at = history.first().map(|event| event.occurred_at.clone());
+        // The run's first event, not the batch's: an incremental fold never
+        // holds the head of the journal, so read it rather than infer it.
+        run.started_at = match history.first() {
+            Some(event) => Some(event.occurred_at.clone()),
+            None => first_event_occurred_at(conn, &run.id)?,
+        };
     }
     run.finished_at = state
         .terminal
@@ -4273,6 +4936,89 @@ async fn reconcile_via_driver(
     }
 }
 
+
+#[cfg(not(test))]
+fn note_full_journal_replay(_run_id: &str) {}
+
+/// Event types whose kernel treatment is decided across the whole history
+/// rather than within one batch.
+///
+/// `envelopes_to_producer` demotes an algorithm settlement to non-lifecycle
+/// evidence when a canonical terminal fact appears *later in the same slice*.
+/// Fold those incrementally and a settlement arriving in one batch would seal
+/// the run before the canonical terminal arrived in the next, which is a
+/// different — and wrong — answer. Evidence amendments and usage
+/// reconciliation likewise rewrite earlier facts rather than extend them.
+///
+/// These are a handful of events per run. Keeping them on the full-replay path
+/// costs one replay each and preserves settlement semantics exactly, while the
+/// ordinary progress events — which is essentially all of them — fold forward.
+fn batch_forces_full_replay(events: &[OptimizerEventEnvelope]) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "optimizer.run.completed"
+                | "optimizer.run.failed"
+                | "optimizer.run.degraded"
+                | "optimizer.run.cancelled"
+                | "gepa.run.finished"
+                | "goex.run_finished"
+                | "go-ex.run.finished"
+                | "run.completed"
+                | "optimizer.evidence.amended"
+                | "optimizer.usage.reconciled"
+        )
+    })
+}
+
+/// Whether this batch may fold forward from the durable projection.
+fn can_fold_incrementally(
+    prior: &super::kernel::RunKernelState,
+    batch: &[OptimizerEventEnvelope],
+) -> bool {
+    if batch.is_empty() {
+        return false;
+    }
+    // A sealed run only accepts post-terminal evidence, which the guard above
+    // already routes to full replay. Anything else reaching a terminal state
+    // must be evaluated against the whole history so the refusal is the one
+    // the kernel intends.
+    if prior.terminal.is_some() || prior.lifecycle.is_terminal() {
+        return false;
+    }
+    !batch_forces_full_replay(batch)
+}
+
+/// Fold `batch` onto the durable projection and persist the result.
+///
+/// The incremental twin of [`persist_kernel_projection`]. Both end in
+/// `upsert_projection`, so the durable row, its revision, and the outbox entry
+/// are produced the same way; only the reduction differs.
+fn persist_kernel_projection_from(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+    prior: super::kernel::RunKernelState,
+    batch: &[OptimizerEventEnvelope],
+) -> Result<super::kernel::RunKernelState> {
+    let state = super::kernel::bridge::fold_envelopes(prior, &run.id, batch)
+        .map_err(|error| anyhow!("kernel fold failed for {}: {error}", run.id))?;
+    super::kernel::persist::upsert_projection(conn, &state)
+        .with_context(|| format!("persist kernel projection for {}", run.id))?;
+    Ok(state)
+}
+
+/// The run's earliest durable event time.
+fn first_event_occurred_at(conn: &Connection, run_id: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT occurred_at FROM optimizer_events
+         WHERE optimizer_run_id = ?1 ORDER BY sequence_number ASC LIMIT 1",
+        params![run_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .context("load first optimizer event time")
+}
+
 fn persist_kernel_projection(
     conn: &Connection,
     run: &OptimizerRunRecord,
@@ -4389,6 +5135,16 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
     instance_id: &str,
     now: DateTime<Utc>,
 ) -> Result<Vec<OptimizerRunRecord>> {
+    // A crash can occur after a capability is granted but before the run row
+    // is inserted. At boot there is no legitimate worker for such an orphan.
+    conn.execute(
+        "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
+         WHERE status IN ('granted','active')
+           AND NOT EXISTS (
+               SELECT 1 FROM optimizer_runs WHERE optimizer_runs.id=secret_capabilities.run_id
+           )",
+        params![now.to_rfc3339()],
+    )?;
     let mut stmt =
         conn.prepare("SELECT payload_json FROM optimizer_runs WHERE source = 'local'")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
@@ -4401,6 +5157,25 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
     for payload in payloads {
         let mut run: OptimizerRunRecord = serde_json::from_str(&payload)?;
         if is_terminal_status(&run.status) {
+            // A previous process may have crashed after terminal settlement
+            // but before its in-memory capability guard ran.
+            conn.execute(
+                "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
+                 WHERE run_id=?2 AND status IN ('granted','active')",
+                params![now.to_rfc3339(), run.id],
+            )?;
+            seal_durable_credential_chain(conn, &mut run)?;
+            upsert_run(conn, &run)?;
+            continue;
+        }
+        // `waiting_for_viewer` is a durable prepared state, not active work.
+        // It intentionally has no worker ownership while Workshop waits for a
+        // visual-readiness receipt and native paid-compute approval. A restart
+        // expires the in-memory approval request, but must leave the immutable
+        // preparation available for a fresh bounded approval. Treating it as
+        // abandoned work sealed the run `interrupted` before approval could be
+        // retried, forcing users to create a duplicate preparation.
+        if run.status == "waiting_for_viewer" {
             continue;
         }
         if crate::recovery::ownership::optimizer_run_is_live(conn, &run.id, instance_id, now)? {
@@ -4414,6 +5189,15 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
         }));
         upsert_run(conn, &run)?;
         crate::recovery::ownership::release_optimizer_run(conn, &run.id)?;
+        // CoreRuntime performs this reconciliation before the live secret
+        // broker exists. Revoke the persisted capability rows here so a crash
+        // between grant and worker startup cannot leave usable authority
+        // behind. The capability store is rebuilt from this database state.
+        conn.execute(
+            "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
+             WHERE run_id=?2 AND status IN ('granted','active')",
+            params![now.to_rfc3339(), run.id],
+        )?;
         let events = load_events_upto(conn, &run.id, run.cursor_seq)?;
         let manifest = terminal::derive(&run, &events, "interrupted", None);
         let sealed = terminal::seal(conn, &run.id, &manifest)?;
@@ -4425,7 +5209,43 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
         super::experiment_bind::settle_run(conn, &run)?;
         recovered.push(run);
     }
+    reconcile_orphaned_paid_compute_reservations(conn)?;
     Ok(recovered)
+}
+
+/// Repair the user-facing credential receipt from durable capability state.
+/// This is the restart-safe counterpart to the live broker's chain seal: a
+/// crash can erase the in-memory chain after the capability row was revoked,
+/// but it must not leave a terminal run claiming that authority is granted.
+fn seal_durable_credential_chain(conn: &Connection, run: &mut OptimizerRunRecord) -> Result<()> {
+    let Some(chain) = run
+        .summary
+        .get_mut("credentialChain")
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+    let Some(capability_id) = chain
+        .get("capabilityId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return Ok(());
+    };
+    let lifecycle = conn
+        .query_row(
+            "SELECT status, revoked_at FROM secret_capabilities WHERE id=?1",
+            [&capability_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?;
+    let Some((status, revoked_at)) = lifecycle else {
+        return Ok(());
+    };
+    chain.insert("capabilityStatus".into(), json!(status));
+    chain.insert("revokedAt".into(), json!(revoked_at));
+    chain.insert("capabilityRevoked".into(), json!(status == "revoked"));
+    Ok(())
 }
 
 /// The `sequence -> event_id` map for exactly the sequences a batch touches.
@@ -4452,6 +5272,71 @@ fn durable_event_ids(
         }
     }
     Ok(out)
+}
+
+/// The tail an evidence reader may page up to.
+///
+/// The run's own cursor and the highest durable event can disagree when an
+/// older build rewound one of them; the higher of the two is the only safe
+/// floor, which is the same rule the append path applies when allocating.
+/// Read a typed render receipt out of the renderer's untyped ready payload.
+///
+/// Returns `None` rather than erroring when the payload predates the typed
+/// shape: an old renderer posting an old receipt must keep working, it simply
+/// does not get the stronger guarantee.
+fn visual_render_receipt_from(
+    optimizer_run_id: &str,
+    receipt: &Value,
+) -> Option<super::models::VisualRenderReceipt> {
+    let object = receipt.as_object()?;
+    let visual_id = object.get("visualId").and_then(Value::as_str)?.to_string();
+    let visual_revision = object
+        .get("visualRevision")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let projection_revision = object.get("projectionRevision").and_then(Value::as_u64)?;
+    let data_digest = object
+        .get("dataDigest")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if data_digest.is_empty() {
+        return None;
+    }
+    Some(super::models::VisualRenderReceipt {
+        visual_id,
+        visual_revision,
+        optimizer_run_id: optimizer_run_id.to_string(),
+        template_id: object
+            .get("templateId")
+            .and_then(Value::as_str)
+            .unwrap_or("optimizer.run.v1")
+            .to_string(),
+        template_version: object
+            .get("templateDigest")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        projection_revision,
+        data_digest,
+        tail_cursor: object
+            .get("replayedThrough")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        rendered_at: Utc::now().to_rfc3339(),
+    })
+}
+
+fn durable_tail_cursor(conn: &Connection, run_id: &str) -> Result<u64> {
+    let cursor: Option<i64> = conn
+        .query_row(
+            "SELECT cursor_seq FROM optimizer_event_cursors WHERE optimizer_run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let cursor = cursor.unwrap_or(0).max(0) as u64;
+    Ok(cursor.max(max_event_sequence(conn, run_id)?))
 }
 
 fn max_event_sequence(conn: &Connection, run_id: &str) -> Result<u64> {
@@ -4674,6 +5559,99 @@ fn load_cached_slice(
     Ok(payload.map(|raw| serde_json::from_str(&raw)).transpose()?)
 }
 
+/// Events in `(after, upto]`, in sequence order.
+fn load_events_between(
+    conn: &Connection,
+    run_id: &str,
+    after: u64,
+    upto: u64,
+) -> Result<Vec<OptimizerEventEnvelope>> {
+    if upto <= after {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT payload_json FROM optimizer_events
+         WHERE optimizer_run_id = ?1 AND sequence_number > ?2 AND sequence_number <= ?3
+         ORDER BY sequence_number ASC",
+    )?;
+    let rows = stmt.query_map(params![run_id, after as i64, upto as i64], |row| {
+        row.get::<_, String>(0)
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(serde_json::from_str(&row?)?);
+    }
+    Ok(out)
+}
+
+/// `(projection_revision, aggregate_sequence)` from the run row: the two
+/// integers a collection page needs to stamp itself, without loading the
+/// projection payload the page exists to avoid.
+fn projection_position(conn: &Connection, run_id: &str) -> Result<(u64, u64)> {
+    let (revision, sequence): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT projection_revision, aggregate_sequence FROM optimizer_runs WHERE id = ?1",
+            params![run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("optimizer run not found"))?;
+    Ok((
+        revision.unwrap_or(0).max(0) as u64,
+        sequence.unwrap_or(0).max(0) as u64,
+    ))
+}
+
+/// The summary read. `None` means no durable projection exists yet and the
+/// caller should repair it in a write transaction of its own.
+fn read_run_summary(
+    conn: &Connection,
+    run_id: &str,
+    if_newer_than: Option<u64>,
+) -> Result<Option<super::kernel::OptimizerRunSummaryEnvelope>> {
+    use super::kernel::read_model;
+    if let Some(cached_revision) = if_newer_than {
+        if let Some(durable) = super::kernel::persist::load_projection_revision(conn, run_id)? {
+            if durable == cached_revision {
+                return Ok(Some(super::kernel::OptimizerRunSummaryEnvelope {
+                    unchanged: true,
+                    summary: None,
+                    projection_revision: durable,
+                    tail_cursor: durable_tail_cursor(conn, run_id)?,
+                }));
+            }
+        }
+    }
+    let run = load_run(conn, run_id)?;
+    let Some(state) = super::kernel::persist::load_state(conn, run_id)? else {
+        return Ok(None);
+    };
+    let context = run_view_context(conn, &run)?;
+    let tail_cursor = durable_tail_cursor(conn, run_id)?;
+    let counts = read_model::collection_counts(conn, &state, context.artifacts.len() as u64)?;
+    let summary = read_model::summarize(
+        &state,
+        &run,
+        &context,
+        counts,
+        tail_cursor,
+        Utc::now().timestamp_millis(),
+    );
+    if !summary.budget.within {
+        bail!(
+            "optimizer run summary exceeded its byte budget: {} > {} bytes",
+            summary.budget.bytes,
+            summary.budget.limit
+        );
+    }
+    Ok(Some(super::kernel::OptimizerRunSummaryEnvelope {
+        unchanged: false,
+        projection_revision: state.projection_revision,
+        tail_cursor,
+        summary: Some(summary),
+    }))
+}
+
 fn load_events_upto(
     conn: &Connection,
     run_id: &str,
@@ -4696,48 +5674,123 @@ fn load_events_upto(
 
 
 fn settle_paid_compute_conversation(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
-    let Some(session_id) = run
+    let targets = paid_compute_settlement_targets(conn, run)?;
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let outcome = paid_compute_settlement_outcome(conn, run)?;
+    for (index, (approval_id, session_id)) in targets.iter().enumerate() {
+        let this_outcome = if index == 0 {
+            outcome
+        } else {
+            crate::session::paid_compute_budget::SettlementOutcome::Exact { cost_usd_micros: 0 }
+        };
+        let Some(snapshot) = crate::session::paid_compute_budget::settle(
+            conn,
+            session_id,
+            approval_id,
+            this_outcome,
+        )?
+        else {
+            continue;
+        };
+        if run
+            .usage
+            .extra
+            .get("paidComputeApproval")
+            .and_then(|value| value.get("receiptViolation"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            crate::session::paid_compute_budget::disable_auto(conn, session_id)?;
+        }
+        crate::session::paid_compute_budget::append_settlement_receipt(
+            conn,
+            session_id,
+            approval_id,
+            this_outcome,
+            &snapshot,
+        )?;
+    }
+    Ok(())
+}
+
+fn paid_compute_settlement_targets(
+    conn: &Connection,
+    run: &OptimizerRunRecord,
+) -> Result<Vec<(String, String)>> {
+    let mut targets = Vec::new();
+    let run_session = run
         .session_ref
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(());
-    };
-    let Some(approval_id) = run
-        .usage
-        .extra
-        .get("paidComputeApproval")
-        .and_then(|value| value.get("approvalId"))
+        .filter(|value| !value.is_empty());
+    if let (Some(approval_id), Some(session_id)) = (
+        run.usage
+            .extra
+            .get("paidComputeApproval")
+            .and_then(|value| value.get("approvalId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        run_session,
+    ) {
+        targets.push((approval_id.to_string(), session_id.to_string()));
+    }
+    if let Some(digest) = run
+        .summary
+        .get("preparationDigest")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    else {
-        return Ok(());
-    };
-    let outcome = paid_compute_settlement_outcome(conn, run)?;
-    let Some(snapshot) =
-        crate::session::paid_compute_budget::settle(conn, session_id, approval_id, outcome)?
-    else {
-        return Ok(());
-    };
-    if run
-        .usage
-        .extra
-        .get("paidComputeApproval")
-        .and_then(|value| value.get("receiptViolation"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
     {
-        crate::session::paid_compute_budget::disable_auto(conn, session_id)?;
+        for (approval_id, session_id) in
+            crate::session::paid_compute_budget::reserved_rows_for_digest(conn, digest)?
+        {
+            if !targets.iter().any(|(id, _)| id == &approval_id) {
+                targets.push((approval_id, session_id));
+            }
+        }
     }
-    crate::session::paid_compute_budget::append_settlement_receipt(
-        conn,
-        session_id,
-        approval_id,
-        outcome,
-        &snapshot,
-    )?;
+    Ok(targets)
+}
+
+fn reconcile_orphaned_paid_compute_reservations(conn: &Connection) -> Result<()> {
+    let reserved = crate::session::paid_compute_budget::list_reserved(conn)?;
+    if reserved.is_empty() {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare("SELECT payload_json FROM optimizer_runs")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut runs = Vec::new();
+    for row in rows {
+        runs.push(serde_json::from_str::<OptimizerRunRecord>(&row?)?);
+    }
+    drop(stmt);
+    for (approval_id, session_id, digest) in reserved {
+        let matched = digest.as_deref().and_then(|digest| {
+            runs.iter().find(|run| {
+                run.summary.get("preparationDigest").and_then(Value::as_str) == Some(digest)
+            })
+        });
+        match matched {
+            Some(run) if is_terminal_status(&run.status) => {
+                settle_paid_compute_conversation(conn, run)?;
+            }
+            Some(run)
+                if matches!(
+                    run.status.as_str(),
+                    "running" | "queued" | "cancelling" | "paused"
+                ) =>
+            {
+                // Live work still holds the ceiling.
+            }
+            Some(_) | None => {
+                crate::session::paid_compute_budget::release_reservation(conn, &approval_id)?;
+                let _ = session_id;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -4747,23 +5800,16 @@ fn paid_compute_settlement_outcome(
 ) -> Result<crate::session::paid_compute_budget::SettlementOutcome> {
     use crate::session::paid_compute_budget::{micros_from_reported_cost, SettlementOutcome};
     if let Ok(Some(receipt)) = crate::secrets::capability::provider_usage_receipt(conn, &run.id) {
-        return Ok(match receipt.cost_usd.and_then(micros_from_reported_cost) {
-            Some(cost_usd_micros) => SettlementOutcome::Exact { cost_usd_micros },
-            None => SettlementOutcome::Unknown,
-        });
-    }
-    let complete = run
-        .usage
-        .extra
-        .get("costTelemetryComplete")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    if !complete {
-        return Ok(SettlementOutcome::Unknown);
+        if let Some(cost_usd_micros) = receipt.cost_usd.and_then(micros_from_reported_cost) {
+            return Ok(SettlementOutcome::Exact { cost_usd_micros });
+        }
+        // Some providers report token/call usage without a monetary amount.
+        // A poisoned receipt must not retain the reservation after the run is
+        // terminal: GEPA still records a durable costUsd aggregate.
     }
     match run.usage.cost_usd.and_then(micros_from_reported_cost) {
         Some(cost_usd_micros) => Ok(SettlementOutcome::Exact { cost_usd_micros }),
-        None => Ok(SettlementOutcome::Unknown),
+        None => Ok(SettlementOutcome::Exact { cost_usd_micros: 0 }),
     }
 }
 

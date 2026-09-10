@@ -1,37 +1,4 @@
 //! W0 live-eval bind contract: input `stream` only; never guess Craftax/Harbor URLs.
-//!
-//! # Sealing a live stream
-//!
-//! A seal over a live-eval visual has to contain the evidence, not a URL that
-//! will stop answering. That evidence has to come from somewhere the *host*
-//! holds, because the alternative — a `snapshot` key a caller is expected to
-//! remember to attach — is the shape that left sealing dead: `freeze_bindings`
-//! required the key, nothing wrote it, and the MCP bind schema could not
-//! express it, so every Harbor and Craftax visual failed to seal with a
-//! message about a snapshot no caller had ever heard of.
-//!
-//! So the host keeps the evidence itself. [`record_live_evidence`] is called
-//! from the one seam every polled envelope already passes through, folds each
-//! page with the canonical [`crate::stream_fold::LiveFold`], and retains the
-//! accepted evidence bodies per `(visual, revision, stream)`. At seal time
-//! [`observed_stream_evidence`] hands that prefix back, the seal writes it to
-//! the CAS as a `synth.live-eval-spool.v2` blob and freezes it into the
-//! binding. Nothing has to be remembered by a caller, so nothing can be
-//! forgotten by one.
-//!
-//! The store is process-global and in-memory, deliberately: it is an
-//! observation of a running process, and a restart must not let it claim
-//! evidence this process never saw. The durable copy is the CAS blob the seal
-//! writes, which is why the seal writes one.
-//!
-//! That store is [`crate::visuals::stream_receipt`]'s, and there is one of it.
-//! The evidence and the receipt were written a week apart into two
-//! process-globals keyed the same way, fed from the same poll seam, reset on
-//! the same revision — so the poll path took two locks in a fixed order to
-//! record one delivery twice, and the two could answer differently about what
-//! a duplicate was. What lives here is the *responsibility*: what a seal is
-//! owed, what the retention bound is for, and the projection a frozen runtime
-//! renders. Where the bytes sit is not a second design.
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -42,7 +9,13 @@ pub const FORBIDDEN_LIVE_EVAL_SLOTS: &[&str] = &["live", "jobs"];
 pub const LIVE_CRAFTAX_TEMPLATE: &str = "live.craftax.v1";
 pub const LIVE_HARBOR_TEMPLATE: &str = "live.harbor_eval.v1";
 pub const CRAFTAX_TEN_LANE_SEEDS: [i64; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-const SECRET_BINDING_KEYS: &[&str] = &["authorization", "api_token", "worker_token", "bearer"];
+const SECRET_BINDING_KEYS: &[&str] = &[
+    "authorization",
+    "api_key",
+    "api_token",
+    "worker_token",
+    "bearer",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiveEvalFamily {
@@ -106,6 +79,15 @@ pub fn classify_live_eval_family(
         if let Some(value) = info.get(key).and_then(Value::as_str) {
             tokens.push(value.to_ascii_lowercase());
         }
+    }
+    if let Some(value) = info.pointer("/liveEval/family").and_then(Value::as_str) {
+        tokens.push(value.to_ascii_lowercase());
+    }
+    if let Some(value) = info
+        .pointer("/metadata/liveEval/family")
+        .and_then(Value::as_str)
+    {
+        tokens.push(value.to_ascii_lowercase());
     }
     if let Some(chain) = info.get("adapter_chain").and_then(Value::as_array) {
         for item in chain {
@@ -184,7 +166,16 @@ pub fn assert_harbor_live_frames(info: &Value) -> Result<()> {
     let Some(frames) = advertised_live_frames(info) else {
         return Ok(());
     };
-    if frames.eq_ignore_ascii_case("native") || frames.eq_ignore_ascii_case("true") {
+    let content_reference = [
+        "/liveEval/frameTransport",
+        "/metadata/liveEval/frameTransport",
+    ]
+    .iter()
+    .filter_map(|path| info.pointer(path).and_then(Value::as_str))
+    .any(|transport| transport.eq_ignore_ascii_case("content-reference"));
+    if (frames.eq_ignore_ascii_case("native") || frames.eq_ignore_ascii_case("true"))
+        && !content_reference
+    {
         bail!(
             "Harbor must not advertise live_frames={frames}; refusing registration of a \
              contradictory capability declaration"
@@ -408,14 +399,35 @@ pub fn live_eval_bind_metadata(
         LiveEvalFamily::Harbor => assert_harbor_live_frames(info)?,
         LiveEvalFamily::Craftax => {}
     }
-    let mut bind = serde_json::Map::new();
+    // Preserve the observed producer contract. Cached registration defaults
+    // must not replace its benchmark, policy pins or capture capabilities.
+    let advertised = info
+        .get("liveEval")
+        .or_else(|| info.get("live_eval"))
+        .or_else(|| info.pointer("/metadata/liveEval"))
+        .or_else(|| info.pointer("/metadata/live_eval"));
+    let policy_refs = advertised
+        .and_then(|value| value.get("policyRefs"))
+        .or(policy_refs);
+    let mut bind = advertised
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
     bind.insert("family".into(), json!(family.as_str()));
     bind.insert("templateId".into(), json!(family.template_id()));
     bind.insert("input".into(), json!(LIVE_EVAL_INPUT));
     bind.insert("slot".into(), json!(LIVE_EVAL_SLOT));
     match family {
         LiveEvalFamily::Harbor => {
-            bind.insert("liveFrames".into(), json!("unsupported"));
+            let live_frames = if advertised_live_frames(info).is_some_and(|frames| {
+                frames.eq_ignore_ascii_case("native") || frames.eq_ignore_ascii_case("true")
+            }) {
+                "supported"
+            } else {
+                "unsupported"
+            };
+            bind.entry("liveFrames")
+                .or_insert_with(|| json!(live_frames));
         }
         LiveEvalFamily::Craftax => {
             if let Some(frames) = info.get("live_frames") {
@@ -447,10 +459,6 @@ pub fn live_eval_bind_metadata(
     assert_no_live_secrets(&bind)?;
     Ok(bind)
 }
-
-// ===========================================================================
-// Host-observed live evidence: what makes a live-eval seal possible.
-// ===========================================================================
 
 /// The projection schema a sealed live-eval view carries.
 pub const LIVE_EVAL_PROJECTION_SCHEMA: &str = "synth.live-eval-projection.v1";
@@ -505,6 +513,7 @@ pub fn observed_projection(
     cutoff: Option<&crate::stream_fold::CursorVector>,
 ) -> Option<Result<crate::stream_fold::LiveEvalProjection>> {
     let (events, _) = super::stream_receipt::observed_evidence_log(visual_id, revision)?;
+    if events.is_empty() { return None; }
     Some(crate::stream_fold::project_live_eval(&events, cutoff))
 }
 

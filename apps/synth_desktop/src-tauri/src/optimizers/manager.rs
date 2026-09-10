@@ -31,7 +31,10 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::State;
@@ -49,7 +52,7 @@ pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = OPTIMIZERS_CONTRACT.recipe_schem
 /// `{package}-{official}`. Spelled out because `format!` is not const and ten
 /// call sites want `&'static str`; `algorithm_version_matches_the_contract`
 /// fails if it drifts from the table.
-pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.19";
+pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.22";
 /// Optimizer-family visuals bind this slot. `live` and `jobs` are refused.
 pub const OPTIMIZER_VISUAL_SLOT: &str = "optimizer_run";
 const MAX_CONCURRENT_GEPA_RECIPES: usize = 2;
@@ -61,15 +64,16 @@ const MANIFEST_FILE: &str = "manifest.json";
 const WHEELHOUSE_MANIFEST_FILE: &str = "wheelhouse-manifest.json";
 const EMBEDDED_DISTRIBUTION_MANIFEST_FILE: &str = "manifest.json";
 const EMBEDDED_DISTRIBUTION_SCHEMA: &str = "synth.optimizer-runtime-distribution.v1";
-const OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "686f41c413b9368e0dee5bcefa91bc89a2631084";
+const OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "c34bb0ccfcbbe510d0caf6f45f05d9d12c1a06b7";
 const OPTIMIZER_DISTRIBUTION_LOCK_SHA256: &str =
-    "b2c0d9b7c9920ea2cc3d51619709f247b00e3f5919bf15538a6f9d41022e43dd";
+    "69c62fd0d2fdfc5a64f33677e6af76e56b666a6835bf04669a8cd47ebb2be081";
 const RUNTIME_LEASE_FILE: &str = "runtime-lease.json";
 
 
 thread_local! {
     static TEST_FORCE_DIGEST_MISMATCH: Cell<bool> = const { Cell::new(false) };
     static TEST_INTERRUPT_INSTALL: Cell<bool> = const { Cell::new(false) };
+    static TEST_CACHE_EMPTY_DURING_INSTALL: Cell<bool> = const { Cell::new(false) };
 }
 
 fn force_digest_mismatch() -> bool {
@@ -173,6 +177,7 @@ struct EmbeddedOptimizerDistribution {
     source_revision: String,
     lock_sha256: String,
     artifact: WheelArtifact,
+    dependency_artifacts: Vec<WheelArtifact>,
 }
 
 impl Default for OptimizerSidecarInstallSpec {
@@ -214,6 +219,7 @@ fn catalog_spec(version: &str) -> OptimizerSidecarInstallSpec {
 }
 
 struct SidecarRuntime {
+    generation: u64,
     proxy_task: tokio::task::JoinHandle<()>,
     child: Option<Child>,
     child_pid: Option<u32>,
@@ -234,10 +240,17 @@ struct RunSpoolState {
 
 pub struct OptimizerManager {
     home: PathBuf,
+    /// Verified distributions are immutable for this process. Renderer status
+    /// polling must not re-hash the entire wheelhouse on every request.
+    discovery_cache: StdMutex<Option<Vec<OptimizerSidecarVersion>>>,
     status: Arc<RwLock<OptimizerSidecarStatus>>,
     ensure_lock: Mutex<()>,
     updates: broadcast::Sender<OptimizerSidecarStatus>,
     runtime: Mutex<Option<SidecarRuntime>>,
+    /// Invalidates exit watchers before an intentional stop can signal their
+    /// child. A watcher from generation N must never overwrite generation
+    /// N+1's ready status during a restart.
+    runtime_generation: Arc<AtomicU64>,
     /// First missed `/health` while the cached phase is still `ready`. After
     /// `2 × OPTIMIZER_SIDECAR_HEALTH_TIMEOUT` the projection becomes `degraded`.
     missed_ready_since: StdMutex<Option<tokio::time::Instant>>,
@@ -274,6 +287,7 @@ impl OptimizerManager {
         let (updates, _) = broadcast::channel(32);
         Self {
             home,
+            discovery_cache: StdMutex::new(None),
             status: Arc::new(RwLock::new(OptimizerSidecarStatus {
                 phase: "unknown".into(),
                 base_url: None,
@@ -285,6 +299,7 @@ impl OptimizerManager {
             ensure_lock: Mutex::new(()),
             updates,
             runtime: Mutex::new(None),
+            runtime_generation: Arc::new(AtomicU64::new(0)),
             missed_ready_since: StdMutex::new(None),
             gepa_workers: Mutex::new(HashMap::new()),
             gepa_capacity: Arc::new(Semaphore::new(MAX_CONCURRENT_GEPA_RECIPES)),
@@ -432,6 +447,15 @@ impl OptimizerManager {
         status.updated_at = now_ms();
         let previous = {
             let mut current = self.status.write().await;
+            // A read refresh must not emit an event for an unchanged status:
+            // the renderer responds to optimizer:status by reading plugins_list.
+            // Ignore the poll timestamp when deciding whether anything changed.
+            let mut comparable = status.clone();
+            comparable.updated_at = current.updated_at;
+            if *current == comparable {
+                current.updated_at = status.updated_at;
+                return;
+            }
             let previous = current.phase.clone();
             *current = status.clone();
             previous
@@ -560,6 +584,16 @@ impl OptimizerManager {
 
     pub fn discover(&self) -> Result<Vec<OptimizerSidecarVersion>> {
         let selected = read_selected_version(&self.home)?;
+        let mut cache_guard = self.discovery_cache.lock().ok();
+        if let Some(cache) = cache_guard.as_ref() {
+            if let Some(cached) = cache.as_ref() {
+                let mut hits = cached.clone();
+                for hit in &mut hits {
+                    hit.selected = selected.as_deref() == Some(hit.version.as_str());
+                }
+                return Ok(hits);
+            }
+        }
         let versions_root = self.home.join("versions");
         let Ok(entries) = fs::read_dir(&versions_root) else {
             return Ok(Vec::new());
@@ -588,6 +622,9 @@ impl OptimizerManager {
             }
         }
         hits.sort_by(|a, b| a.version.cmp(&b.version));
+        if let Some(cache) = cache_guard.as_mut() {
+            **cache = Some(hits.clone());
+        }
         Ok(hits)
     }
 
@@ -673,6 +710,9 @@ impl OptimizerManager {
         &self,
         spec: OptimizerSidecarInstallSpec,
     ) -> Result<OptimizerSidecarVersion> {
+        if let Ok(mut cache) = self.discovery_cache.lock() {
+            *cache = None;
+        }
         validate_version_id(&spec.version)?;
         enforce_version_floor(&spec.version)?;
         fs::create_dir_all(&self.home)?;
@@ -703,6 +743,13 @@ impl OptimizerManager {
         }
         fs::rename(&staging, &dest)
             .with_context(|| format!("activate optimizer version {}", dest.display()))?;
+
+        // A status refresh may have populated discovery_cache while the verified
+        // distribution was still under its hidden staging name. Invalidate once
+        // more after activation so selection observes the newly installed path.
+        if let Ok(mut cache) = self.discovery_cache.lock() {
+            *cache = None;
+        }
         for template_id in &spec.template_ids {
             retain_template_package(&self.home, template_id, &spec.version, &installed.digest)?;
         }
@@ -712,25 +759,6 @@ impl OptimizerManager {
             Some(spec.version.clone())
         );
         let _ = previous_selected;
-        // An install is not finished until what it installed can be used.
-        // Eval consumes this same distribution but keeps its own manifest and
-        // digest, and it used to be provisioned lazily by the first caller who
-        // happened to need it -- so the first workflow attempt after an install
-        // reported the runtime as missing, and only the second one worked.
-        //
-        // Eval is a sub-capability of this package, not the package: a sidecar
-        // that provisions GEPA correctly is still a good install, so a fault
-        // here is reported rather than raised.
-        match super::eval_runtime::provision_and_verify(&selected) {
-            Ok(manifest) => eprintln!(
-                "synth-desktop: provisioned eval runtime {} ({})",
-                manifest.version, manifest.digest
-            ),
-            Err(fault) => eprintln!(
-                "synth-desktop: optimizer {} installed without a usable eval runtime: {fault}",
-                spec.version
-            ),
-        }
         Ok(selected)
     }
 
@@ -804,7 +832,9 @@ impl OptimizerManager {
                 );
             }
         });
+        let generation = self.runtime_generation.fetch_add(1, Ordering::SeqCst) + 1;
         *self.runtime.lock().await = Some(SidecarRuntime {
+            generation,
             proxy_task,
             child_pid: child.as_ref().and_then(Child::id),
             child,
@@ -985,7 +1015,18 @@ impl OptimizerManager {
     /// healthy. Recipe entry points use this rather than spawning a package on
     /// their own.
     pub async fn ensure_ready(&self) -> Result<OptimizerSidecarStatus> {
-        if self.version()?.is_none() {
+        // Reinstall when the installed sidecar is below the contract floor, not
+        // only when nothing is installed at all. Checking presence alone made a
+        // version pin inert on every instance that already had an older sidecar:
+        // raising `min_supported` shipped a new wheel in the bundle that no
+        // existing instance ever installed, so runs kept executing on the old
+        // code while the app reported the new pin. A floor that only applies to
+        // first installs is not a floor.
+        let installed = self.version()?;
+        let below_floor = installed
+            .as_ref()
+            .is_some_and(|hit| !OPTIMIZERS_CONTRACT.meets_floor(&hit.version));
+        if installed.is_none() || below_floor {
             self.install(None)?;
         }
         self.start().await
@@ -1001,6 +1042,7 @@ impl OptimizerManager {
     pub async fn spawn_gepa_recipe(
         &self,
         run_id: &str,
+        recipe_source: &Path,
         cookbook: &Path,
         config_path: &Path,
         stdout: fs::File,
@@ -1041,7 +1083,14 @@ impl OptimizerManager {
         ) {
             bail!("GEPA supervisor cancelled `{run_id}` while it was queued");
         }
-        match launch_gepa_recipe_process(
+        // Capacity waits must not block native source revocation. Check only
+        // after admission, then serialize the check and synchronous spawn.
+        let resolution = crate::project_sources::requests::RESOLUTION.lock().await;
+        if let Err(error) = crate::project_sources::require_manifest(recipe_source, crate::project_sources::Capability::Recipes) {
+            self.gepa_workers.lock().await.remove(run_id);
+            return Err(error);
+        }
+        let launched = launch_gepa_recipe_process(
             &self.home,
             &selected.version,
             cookbook,
@@ -1051,7 +1100,9 @@ impl OptimizerManager {
             openai_api_key,
             openai_base_url,
             extra_env,
-        ) {
+        );
+        drop(resolution);
+        match launched {
             Ok(mut child) => {
                 let pid = child
                     .id()
@@ -1192,6 +1243,9 @@ impl OptimizerManager {
             clear_stored_capabilities(&self.home);
             clear_env_sh(&self.home);
         }
+        if let Ok(mut cache) = self.discovery_cache.lock() {
+            *cache = None;
+        }
         Ok(self.refresh().await)
     }
 
@@ -1330,6 +1384,18 @@ impl OptimizerManager {
     }
 
     async fn abort_runtime(&self) {
+        // Retire the watcher before signalling its child. Without this order,
+        // the intentional SIGTERM can win the restart race and publish an
+        // error over the replacement runtime's starting/ready state.
+        self.runtime_generation.fetch_add(1, Ordering::SeqCst);
+        let mut runtime = self.runtime.lock().await.take();
+        if let Some(task) = runtime
+            .as_mut()
+            .and_then(|runtime| runtime.exit_watcher.take())
+        {
+            task.abort();
+            let _ = task.await;
+        }
         // The exported address describes a service that is about to stop
         // existing. Every teardown goes through here.
         clear_env_sh(&self.home);
@@ -1354,10 +1420,7 @@ impl OptimizerManager {
         if let Some(pid) = leased_pid {
             terminate_process_groups(&[pid]).await;
         }
-        if let Some(mut runtime) = self.runtime.lock().await.take() {
-            if let Some(task) = runtime.exit_watcher.take() {
-                task.abort();
-            }
+        if let Some(mut runtime) = runtime {
             runtime.proxy_task.abort();
             if let Some(child) = runtime.child.as_mut() {
                 terminate_child(child).await;
@@ -1378,12 +1441,17 @@ impl OptimizerManager {
             return;
         };
         runtime.child_pid = child.id().or(runtime.child_pid);
+        let generation = runtime.generation;
+        let runtime_generation = self.runtime_generation.clone();
         let home = self.home.clone();
         let status = self.status.clone();
         let updates = self.updates.clone();
         let diagnostics = self.diagnostics.clone();
         runtime.exit_watcher = Some(tokio::spawn(async move {
             let exit = child.wait().await;
+            if runtime_generation.load(Ordering::SeqCst) != generation {
+                return;
+            }
             clear_env_sh(&home);
             clear_runtime_lease(&home);
             let previous = status.read().await.clone();
@@ -2502,6 +2570,8 @@ fn materialize_uv_runtime(
             "-d",
         ])
         .arg(&wheels)
+        .arg("--find-links")
+        .arg(package_source.parent().context("optimizer wheel directory")?)
         .arg(&package_source)
         .status()
         .context("download optimizer wheel")?;
@@ -2592,6 +2662,16 @@ fn read_embedded_optimizer_wheel(
         || distribution.lock_sha256 != OPTIMIZER_DISTRIBUTION_LOCK_SHA256
     {
         bail!("embedded Optimizers distribution does not match the release pin");
+    }
+    for dependency in &distribution.dependency_artifacts {
+        if dependency.file_name.contains('/') || dependency.file_name.contains('\\') {
+            bail!("embedded Optimizers dependency has an unsafe wheel name");
+        }
+        let bytes = fs::read(root.join("wheels").join(&dependency.file_name))
+            .context("read embedded Optimizers dependency")?;
+        if bytes.len() as u64 != dependency.size_bytes || sha256_hex(&bytes) != dependency.sha256 {
+            bail!("embedded Optimizers dependency failed digest verification");
+        }
     }
     let artifact = distribution.artifact;
     if artifact.file_name.contains('/') || artifact.file_name.contains('\\') {

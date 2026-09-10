@@ -5,7 +5,6 @@
 //! Missing metrics serialize as `null` plus coverage, never numeric zero.
 
 use super::models::{OptimizerEventEnvelope, OptimizerRunRecord, TrainingJobStatus};
-use super::training_adapter::is_step_metrics_event;
 use super::OptimizerService;
 use anyhow::Result;
 use serde_json::{json, Map, Value};
@@ -39,16 +38,9 @@ pub fn project_sft_result(
     let usage = usage_from(run, events);
     json!({
         "schemaVersion": "optimizer_result.v1",
-        // `resultType` names the *shape* of this body — the SFT-shaped result
-        // contract — and CISPO is projected through it deliberately: the two
-        // share a dataset, a step-metric stream and a checkpoint ladder.
-        // `algorithmId` names the run that produced it, and those are not the
-        // same claim. Hardcoding both made a CISPO run report itself as an SFT
-        // run to every reader of this envelope, so the algorithm comes from the
-        // run and only the shape stays constant.
         "resultType": "sft",
         "optimizerRunId": run.id,
-        "algorithmId": run.algorithm_id,
+        "algorithmId": "sft",
         "status": run.status,
         "finalCursor": run.cursor_seq,
         "dataset": dataset,
@@ -210,10 +202,7 @@ fn metrics_from(events: &[OptimizerEventEnvelope]) -> Value {
     let mut validation_loss = None;
     let mut validation_coverage = "missing";
     for event in events {
-        // Not a name list. `training_adapter` owns the one rule that names a
-        // step-metrics event and the closed set of names one can carry, so a
-        // CISPO run reaches this reader on either placement.
-        if !is_step_metrics_event(&event.event_type) {
+        if event.event_type != "sft.training.metrics" {
             continue;
         }
         if let Some(value) = json_f64(event.delta.get("train_loss")) {

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 pub const VISUAL_SCHEMA_VERSION: &str = "synth.desktop-visual.v1";
 pub const VISUAL_BINDINGS_SCHEMA_VERSION: &str = "synth.visual-bindings.v1";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum VisualStatus {
     Draft,
@@ -36,7 +36,7 @@ impl VisualStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RendererKind {
     Template,
@@ -62,19 +62,27 @@ impl RendererKind {
     }
 
     pub fn parse(value: &str) -> Self {
+        Self::try_parse(value).unwrap_or(Self::Template)
+    }
+
+    /// Parse an authored renderer declaration without silently converting a
+    /// typo into the generic template renderer. `parse` remains permissive for
+    /// historical database rows written before renderer registration existed.
+    pub fn try_parse(value: &str) -> Option<Self> {
         match value {
-            "tsx" => Self::Tsx,
-            "html" => Self::Html,
-            "mermaid" => Self::Mermaid,
-            "systems" => Self::Systems,
-            "systems-dynamic" => Self::SystemsDynamic,
-            "chart" => Self::Chart,
-            _ => Self::Template,
+            "template" => Some(Self::Template),
+            "tsx" => Some(Self::Tsx),
+            "html" => Some(Self::Html),
+            "mermaid" => Some(Self::Mermaid),
+            "systems" => Some(Self::Systems),
+            "systems-dynamic" => Some(Self::SystemsDynamic),
+            "chart" => Some(Self::Chart),
+            _ => None,
         }
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualRecord {
     pub schema_version: String,
@@ -82,6 +90,10 @@ pub struct VisualRecord {
     #[specta(type = specta_typescript::Number)]
     pub current_revision: i64,
     pub title: String,
+    /// Short, human-readable label chosen by the authoring agent. The full
+    /// title remains the descriptive/technical fallback for older visuals.
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub template_id: String,
     pub status: VisualStatus,
     pub renderer_kind: RendererKind,
@@ -89,6 +101,9 @@ pub struct VisualRecord {
     pub bindings: Value,
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Durable owner for visuals authored in the shared local workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     #[serde(default)]
     pub message_id: Option<String>,
     #[serde(default)]
@@ -131,7 +146,7 @@ pub struct VisualRevision {
     #[serde(default)]
     pub author_agent_id: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub parent_revision: Option<i64>,
     pub created_at: String,
 }
@@ -211,7 +226,7 @@ pub struct VisualUpload {
     pub receipt_digest: String,
     pub collection_id: Option<String>,
     pub publication_id: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub publication_revision: Option<i64>,
     pub state: String,
     pub committed_url: Option<String>,
@@ -266,9 +281,9 @@ pub struct VisualQuery {
     pub session_id: Option<String>,
     pub template_id: Option<String>,
     pub search: Option<String>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub limit: Option<i64>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub offset: Option<i64>,
 }
 
@@ -278,6 +293,7 @@ pub struct VisualQuery {
 /// visual must never bind to a live query: it would return different rows on
 /// every render and the page could not state what the reader is looking at.
 pub const VISUAL_BINDING_KINDS: &[&str] = &[
+    "workspace_file",
     "inline",
     "trace_v5",
     "local_cas",
@@ -285,13 +301,9 @@ pub const VISUAL_BINDING_KINDS: &[&str] = &[
     "live_sse",
     "fixture",
     "optimizer_run",
-    "optimizer_snapshot",
     "query_snapshot",
-    // The document pane's grant: the one workspace path a visual declares. It
-    // is resolved by the host on every read through the conversation's session
-    // roots, never by `bindTemplateSlots`, which is why the TypeScript arm
-    // throws rather than fetching.
-    "workspace_file",
+    "annotation_evidence_head",
+    "verifier_result_v2",
 ];
 
 /// How an authored bindings value reached the canonical envelope.

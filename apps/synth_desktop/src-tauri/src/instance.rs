@@ -676,7 +676,6 @@ fn instance_data_root() -> Option<PathBuf> {
     }
 }
 
-
 /// Product-owned durable data. Named instances always resolve to their private
 /// root; the unset path preserves the canonical installed-app location.
 pub fn data_root() -> PathBuf {
@@ -724,8 +723,10 @@ pub fn diagnostics() -> InstanceDiagnostics {
         name: instance_name,
         display_name: display_name(),
         app_version: env!("CARGO_PKG_VERSION").into(),
-        source_revision: env::var("SYNTH_DESKTOP_SOURCE_REVISION")
-            .unwrap_or_else(|_| build_revision.into()),
+        // Certification provenance is immutable executable metadata. The
+        // launcher environment may describe the requested source, but it must
+        // never rewrite what the running binary claims it was built from.
+        source_revision: build_revision.into(),
         build_revision: build_revision.into(),
         build_timestamp: build_timestamp.into(),
         executable_digest: executable_digest(),

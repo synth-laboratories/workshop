@@ -40,6 +40,15 @@ pub const EVENTS_SEMANTIC: &str = "events.semantic";
 pub const FRAMES_REPLAY: &str = "frames.replay";
 pub const CHECKPOINT_RESTORE: &str = "checkpoint.restore";
 pub const ROLLOUTS_FORK: &str = "rollouts.fork";
+/// Observe-only live annotation: a digest-pinned protocol tails the rollout
+/// stream inside the container and publishes provisional findings on a sibling
+/// stream the rollout descriptor declares. Advertised, never inferred.
+pub const ANNOTATION_LIVE: &str = "annotation.live";
+pub const ANNOTATION_PROTOCOL_PUT: &str = "annotation.protocol.put";
+/// Advertised flags outside the closed live-eval operation set. They are
+/// recorded verbatim so a recipe can require them; they do not take part in
+/// `complete`, so an older container is not marked incomplete for lacking one.
+const ADVERTISED_FLAGS: [&str; 2] = [ANNOTATION_LIVE, ANNOTATION_PROTOCOL_PUT];
 
 /// Registry metadata key holding the computed projection. Host-owned: the
 /// hydration writer always overwrites it, so a caller-supplied value can never
@@ -430,6 +439,10 @@ fn parse_normalized_block(block: &Value, source: CapabilitySource) -> ContainerC
         for (name, value) in operations {
             if let Some(operation) = ContainerOperation::parse(name) {
                 capabilities.set(operation, CapabilityState::from_advertised(value));
+            } else if ADVERTISED_FLAGS.contains(&name.as_str()) {
+                capabilities
+                    .operations
+                    .insert(name.clone(), CapabilityState::from_advertised(value));
             }
         }
     }

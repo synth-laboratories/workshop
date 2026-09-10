@@ -32,6 +32,12 @@ pub struct TraceBundleIngestRequest {
     pub source_kind: Option<String>,
     pub title: Option<String>,
     pub source_uri: Option<String>,
+    /// Immutable registry id of the container that sealed this trace, when the
+    /// importer knows it (container-driven imports do; a bare file import does
+    /// not). Persisted on `traces.container_id` so paid annotation can name the
+    /// owning container on the approval card. Never a URL.
+    #[serde(default)]
+    pub container_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, specta::Type)]

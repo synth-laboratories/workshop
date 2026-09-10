@@ -223,7 +223,7 @@ fn mcp_groups(current: &ContextSettings) -> Vec<McpContextGroup> {
             "Bundled",
             &["synth_containers", "synth_visuals", "synth_optimizers"],
             &[
-                ("synth_containers", &["container_manage"]),
+                ("synth_containers", &[]),
                 ("synth_visuals", &["visual_manage"]),
                 (
                     "synth_optimizers",

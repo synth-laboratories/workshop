@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 
 export type PaneResizeDirection = "output" | "sidebar" | "primary";
 
@@ -6,10 +6,14 @@ type Props = {
 	value: number;
 	onChange: (value: number) => void;
 	minPrimary?: number;
+	maxPrimary?: number;
 	minSecondary?: number;
 	ariaLabel?: string;
 	direction?: PaneResizeDirection;
 	resetValue?: number;
+	allowPrimaryCollapse?: boolean;
+	primaryCollapsed?: boolean;
+	onPrimaryCollapsedChange?: (collapsed: boolean) => void;
 };
 
 /**
@@ -74,17 +78,37 @@ export function PaneResizeHandle({
 	value,
 	onChange,
 	minPrimary = 360,
+	maxPrimary,
 	minSecondary = 340,
 	ariaLabel = "Resize container inspector",
 	direction = "output",
-	resetValue
+	resetValue,
+	allowPrimaryCollapse = false,
+	primaryCollapsed = false,
+	onPrimaryCollapsedChange
 }: Props) {
 	const handleRef = useRef<HTMLDivElement>(null);
 	const activePointer = useRef<number | null>(null);
 	const settling = useRef(false);
 	const settleFrame = useRef<number | null>(null);
+	const geometryFrame = useRef<number | null>(null);
 	const valueRef = useRef(value);
 	const onChangeRef = useRef(onChange);
+	const publishOutputWidth = (target: HTMLElement, width: number, primaryWidth?: number) => {
+		if (direction !== "output") return;
+		const mainPane = target.closest<HTMLElement>(".main-pane");
+		if (!mainPane) return;
+		mainPane.style.setProperty("--live-side-panel-width", `${width}px`);
+		const resolvedPrimaryWidth = primaryWidth ?? target.getBoundingClientRect().left - mainPane.getBoundingClientRect().left;
+		mainPane.style.setProperty("--live-transcript-width", `${resolvedPrimaryWidth}px`);
+	};
+	useLayoutEffect(() => {
+		const target = handleRef.current;
+		if (!target || direction !== "output") return;
+		const panel = namedPaneElement(target, direction);
+		if (!panel) return;
+		publishOutputWidth(target, panel.getBoundingClientRect().width);
+	}, [direction, value]);
 	const [maximum, setMaximum] = useState(value);
 	const [realized, setRealized] = useState<number | null>(null);
 	const resolvedResetValue = resetValue ?? (direction === "sidebar" ? 260 : direction === "primary" ? 560 : 420);
@@ -99,8 +123,19 @@ export function PaneResizeHandle({
 		}
 		const parent = target.parentElement;
 		const floor = direction === "primary" ? minPrimary : minSecondary;
-		return parent ? Math.max(floor, parent.getBoundingClientRect().width - (direction === "primary" ? minSecondary : minPrimary)) : floor;
-	}, [direction, minPrimary, minSecondary]);
+		const available = parent ? Math.max(floor, parent.getBoundingClientRect().width - (direction === "primary" ? minSecondary : minPrimary)) : floor;
+		return direction === "primary" && maxPrimary != null ? Math.min(maxPrimary, available) : available;
+	}, [direction, maxPrimary, minPrimary, minSecondary]);
+
+	const persistRealized = useCallback((target: HTMLElement) => {
+		if (target.getClientRects().length === 0 || getComputedStyle(target).display === "none") return;
+		const named = namedPaneElement(target, direction);
+		if (!named) return;
+		const cssWidth = Math.round(named.getBoundingClientRect().width);
+		if (!Number.isFinite(cssWidth) || cssWidth < 1) return;
+		setRealized(cssWidth);
+		if (Math.abs(cssWidth - valueRef.current) >= 1) onChangeRef.current(cssWidth);
+	}, [direction]);
 
 	const cancelSettlement = useCallback(() => {
 		if (settleFrame.current !== null) cancelAnimationFrame(settleFrame.current);
@@ -108,19 +143,20 @@ export function PaneResizeHandle({
 		settling.current = false;
 	}, []);
 
-	const settleAfterLayout = useCallback(() => {
+	const settleAfterLayout = useCallback((target: HTMLElement) => {
 		cancelSettlement();
 		settling.current = true;
-		// Pointer release can precede React's final paint. Suppress observer
-		// reconciliation for two frames; reading and persisting geometry here can
-		// capture the stale pre-drag box and snap the pane back to its old width.
+		// Pointer capture is released before React is guaranteed to have painted
+		// the final drag value. Reconcile only after two layout frames so a stale
+		// pre-release box cannot overwrite the user's resize and snap the pane back.
 		settleFrame.current = requestAnimationFrame(() => {
 			settleFrame.current = requestAnimationFrame(() => {
 				settleFrame.current = null;
 				settling.current = false;
+				persistRealized(target);
 			});
 		});
-	}, [cancelSettlement]);
+	}, [cancelSettlement, persistRealized]);
 
 	const resize = useCallback((clientX: number, target: HTMLElement) => {
 		const max = measureMaximum(target);
@@ -128,28 +164,44 @@ export function PaneResizeHandle({
 			const parent = target.parentElement;
 			if (!parent) return;
 			const bounds = parent.getBoundingClientRect();
-			onChangeRef.current(clampPaneWidth(clientX - bounds.left, minPrimary, max));
+			onChange(clampPaneWidth(clientX - bounds.left, minPrimary, max));
 			return;
 		}
 		if (direction === "sidebar") {
 			const appRow = target.parentElement?.parentElement;
 			if (!appRow) return;
 			const bounds = appRow.getBoundingClientRect();
-			onChangeRef.current(clampPaneWidth(clientX - bounds.left, minSecondary, max));
+			onChange(clampPaneWidth(clientX - bounds.left, minSecondary, max));
 			return;
 		}
 		const parent = target.parentElement;
 		if (!parent) return;
 		const bounds = parent.getBoundingClientRect();
-		onChangeRef.current(clampPaneWidth(bounds.right - clientX, minSecondary, max));
-	}, [direction, measureMaximum, minPrimary, minSecondary]);
+		const requestedPrimaryWidth = clientX - bounds.left;
+		if (allowPrimaryCollapse && requestedPrimaryWidth <= 72) {
+			onPrimaryCollapsedChange?.(true);
+			return;
+		}
+		if (primaryCollapsed) onPrimaryCollapsedChange?.(false);
+		const next = clampPaneWidth(bounds.right - clientX, minSecondary, max);
+		// Use the clamped grid request, not the unconstrained pointer. Pointer
+		// capture continues beyond the grid's min/max, but the transcript does not.
+		publishOutputWidth(target, next, bounds.width - next - 7);
+		onChange(next);
+		if (geometryFrame.current !== null) cancelAnimationFrame(geometryFrame.current);
+		geometryFrame.current = requestAnimationFrame(() => {
+			geometryFrame.current = null;
+			const panel = namedPaneElement(target, direction);
+			if (panel) publishOutputWidth(target, panel.getBoundingClientRect().width);
+		});
+	}, [allowPrimaryCollapse, direction, measureMaximum, minPrimary, minSecondary, onChange, onPrimaryCollapsedChange, primaryCollapsed]);
 
 	const release = useCallback(() => {
 		const target = handleRef.current;
 		const pointerId = activePointer.current;
 		activePointer.current = null;
 		if (target && pointerId !== null && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
-		if (target) settleAfterLayout();
+		if (target) settleAfterLayout(target);
 	}, [settleAfterLayout]);
 
 	useEffect(() => {
@@ -180,35 +232,12 @@ export function PaneResizeHandle({
 			observer.disconnect();
 			window.removeEventListener("blur", release);
 			cancelSettlement();
+			if (geometryFrame.current !== null) cancelAnimationFrame(geometryFrame.current);
 			const pointerId = activePointer.current;
 			activePointer.current = null;
 			if (pointerId !== null && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
 		};
 	}, [cancelSettlement, direction, measureMaximum, release]);
-
-	useEffect(() => {
-		// Pointer capture is the primary path, but a React/layout commit can make
-		// browsers release capture while a physical gesture is still active.
-		// The window fallback keeps that same pointer authoritative until up or
-		// cancel; unrelated pointers are ignored.
-		const move = (event: globalThis.PointerEvent) => {
-			const target = handleRef.current;
-			if (!target || activePointer.current !== event.pointerId) return;
-			resize(event.clientX, target);
-		};
-		const end = (event: globalThis.PointerEvent) => {
-			if (activePointer.current !== event.pointerId) return;
-			release();
-		};
-		window.addEventListener("pointermove", move);
-		window.addEventListener("pointerup", end);
-		window.addEventListener("pointercancel", end);
-		return () => {
-			window.removeEventListener("pointermove", move);
-			window.removeEventListener("pointerup", end);
-			window.removeEventListener("pointercancel", end);
-		};
-	}, [release, resize]);
 
 	const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
 		event.preventDefault();
@@ -228,6 +257,12 @@ export function PaneResizeHandle({
 	};
 
 	const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+		if (primaryCollapsed && (event.key === "ArrowRight" || event.key === "Enter" || event.key === " ")) {
+			event.preventDefault();
+			onPrimaryCollapsedChange?.(false);
+			onChange(resolvedResetValue);
+			return;
+		}
 		const current = realizedPaneWidth(value, minimum, maximum, realized);
 		const next = applyKeyboardResize({
 			key: event.key,
@@ -238,16 +273,18 @@ export function PaneResizeHandle({
 		});
 		if (next == null) return;
 		event.preventDefault();
-		onChangeRef.current(next);
+		publishOutputWidth(event.currentTarget, next);
+		onChange(next);
 	};
 
 	const reported = realizedPaneWidth(value, minimum, maximum, realized);
 
 	return <div
 		ref={handleRef}
-		className={`pane-resize-handle${direction === "sidebar" ? " sidebar-resize-handle" : ""}${direction === "primary" ? " primary-resize-handle" : ""}`}
+		className={`pane-resize-handle${direction === "sidebar" ? " sidebar-resize-handle" : ""}${direction === "primary" ? " primary-resize-handle" : ""}${primaryCollapsed ? " is-primary-collapsed" : ""}`}
 		role="separator"
-		aria-label={ariaLabel}
+		aria-label={primaryCollapsed ? "Restore chat transcript" : ariaLabel}
+		data-primary-collapsed={primaryCollapsed ? "true" : "false"}
 		aria-orientation="vertical"
 		aria-valuemin={minimum}
 		aria-valuemax={maximum}
@@ -259,6 +296,11 @@ export function PaneResizeHandle({
 		onPointerMove={onPointerMove}
 		onPointerUp={onPointerUp}
 		onPointerCancel={onPointerUp}
+		onLostPointerCapture={() => {
+			activePointer.current = null;
+			const target = handleRef.current;
+			if (target) settleAfterLayout(target);
+		}}
 		onKeyDown={onKeyDown}
 		onDoubleClick={() => onChange(clampPaneWidth(resolvedResetValue, minimum, maximum))}
 	/>;

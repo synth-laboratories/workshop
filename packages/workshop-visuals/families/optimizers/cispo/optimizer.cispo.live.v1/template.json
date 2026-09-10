@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "optimizer.cispo.live.v1",
+  "title": "CISPO live",
+  "genre": "optimizer",
+  "version": "1.0.0",
+  "description": "CISPO clip identity, group advantages, and training curves. Hydrates metric_points, candidates, evaluations, and rollouts — never a reconstructed journal chart.",
+  "accent": "#5B4CFF",
+  "shell": "shell.tsx",
+  "tags": [
+    "optimizer",
+    "cispo",
+    "live"
+  ],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "replaying",
+        "error",
+        "connecting",
+        "reconnecting"
+      ],
+      "minimumRolloutCount": 0,
+      "minimumRenderedFrameCount": 0,
+      "minimumSemanticEventCount": 1,
+      "requireTerminal": true
+    }
+  },
+  "inputs": [
+    {
+      "name": "optimizer_run",
+      "description": "Optimizer run + optimizer_event.v1 CISPO training events",
+      "accepts": [
+        "optimizer_run",
+        "fixture",
+        "inline"
+      ],
+      "required": true,
+      "schema": "optimizer_event.v1"
+    }
+  ]
+}

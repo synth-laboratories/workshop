@@ -1,10 +1,11 @@
 //! First-class Optimizer noun: durable local mirror, cursor, relationships, and projection.
 
 pub mod admission;
+pub(crate) mod annotation_stage;
 mod artifacts;
 mod cispo;
+mod cispo_client;
 pub(crate) mod cloud;
-pub(crate) mod container_catalog;
 mod container_eval;
 pub(crate) mod container_lifecycle;
 mod container_training;
@@ -14,8 +15,9 @@ mod eval_recipes;
 mod eval_relay;
 pub(crate) mod eval_runtime;
 mod event_contract;
-mod events;
+pub mod events;
 pub mod inline_eval;
+pub(crate) mod live_annotation;
 pub(crate) use events::strip_frame_bodies_for_ipc;
 mod experiment_bind;
 mod frames;
@@ -30,16 +32,17 @@ mod local_lora;
 pub(crate) mod manager;
 pub mod mlx_runtime;
 mod mlx_sft;
-mod models;
+pub mod models;
 mod normalize;
 mod recipes;
 mod results;
 mod service;
+mod snapshot;
+pub use snapshot::{OptimizerSnapshotImportRequest, OptimizerSnapshotReceipt};
 mod sft_client;
 mod sft_recipes;
 mod sft_result;
 mod sidecar_training;
-mod snapshot;
 mod terminal;
 mod tinker_catalog;
 mod training;
@@ -74,7 +77,6 @@ pub use models::{
 pub(crate) use service::reconcile_stale_local_runs_in_tx;
 pub use service::OptimizerService;
 pub(crate) use sidecar_training::launch_artifact_inference;
-pub use snapshot::{OptimizerSnapshotImportRequest, OptimizerSnapshotReceipt};
 pub use training::{TrainingEvent, TrainingLifecycle, TrainingProjection};
 
 /// The adapter-tree digest the catalog keys on. Re-exported so the installer
@@ -88,3 +90,4 @@ pub use local_lora::durable_lora_root;
 pub fn local_lora_is_laguna_compatible(checkpoint: &SavedLoraCheckpoint) -> bool {
     local_lora::is_laguna_compatible(checkpoint)
 }
+

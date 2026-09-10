@@ -6,7 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import type { TerminalEvent, TerminalInfo } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
 import { publicError } from "../runtime/publicError";
-import { restoreFocusIfLost } from "../runtime/restoreFocus";
+import { MittenFrame } from "./MittenFrame";
 
 type Props = {
 	open: boolean;
@@ -19,9 +19,57 @@ type Props = {
 	onHeightChange(height: number): void;
 };
 
+const TERMINAL_THEME = {
+	background: "#ffffff",
+	foreground: "#2d2a27",
+	cursor: "#e45b2b",
+	cursorAccent: "#ffffff",
+	selectionBackground: "#f2d7c8",
+	selectionInactiveBackground: "#f7e9e1",
+	black: "#2d2a27",
+	brightBlack: "#7b746d",
+	red: "#b74732",
+	brightRed: "#d9654d",
+	green: "#26835f",
+	brightGreen: "#3a9a73",
+	yellow: "#95651d",
+	brightYellow: "#b37d2c",
+	blue: "#a85f39",
+	brightBlue: "#c7794d",
+	magenta: "#9b5147",
+	brightMagenta: "#bd6a5c",
+	cyan: "#8b674d",
+	brightCyan: "#a77e5d",
+	white: "#ede9e5",
+	brightWhite: "#ffffff"
+};
+
 function decode(value: string): Uint8Array {
 	const binary = atob(value);
 	return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function frameFor(element: HTMLElement) {
+	const rect = element.getBoundingClientRect();
+	return {
+		x: rect.left,
+		top: rect.top,
+		width: rect.width,
+		height: rect.height
+	};
+}
+
+function ghosttyFontFamily(value: string): string {
+	const family = value.split(",")[0]?.trim().replace(/^['"]|['"]$/g, "");
+	if (!family || family === "ui-monospace" || family === "monospace") return "Menlo";
+	return family;
+}
+
+function TerminalTabIcon({ kind }: { kind: "new" | "close" }) {
+	const path = kind === "new" ? "M8 3v10M3 8h10" : "M4 4l8 8m0-8-8 8";
+	return <svg className="terminal-tab-action-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+		<path d={path} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+	</svg>;
 }
 
 export function TerminalPanel({
@@ -31,7 +79,6 @@ export function TerminalPanel({
 	height,
 	fontFamily,
 	fontSize,
-	onOpenChange,
 	onHeightChange
 }: Props) {
 	const [terminals, setTerminals] = useState<TerminalInfo[]>([]);
@@ -44,9 +91,11 @@ export function TerminalPanel({
 	 * dead in the tab strip.
 	 */
 	const [connection, setConnection] = useState<"live" | "reconnecting">("live");
+	const [renderer, setRenderer] = useState<"mounting" | "ghostty" | "xterm">("mounting");
 	const viewport = useRef<HTMLDivElement>(null);
 	const xterm = useRef<Terminal | null>(null);
 	const fit = useRef<FitAddon | null>(null);
+	const seen = useRef(new Set<number>());
 	const resizeStart = useRef<{ y: number; height: number } | null>(null);
 
 	const createTerminal = useCallback(async () => {
@@ -76,95 +125,106 @@ export function TerminalPanel({
 
 	useEffect(() => {
 		if (!open || !activeId || !viewport.current) return;
+		let disposed = false;
+		const terminalId = activeId;
+		const surface = viewport.current;
+		setRenderer("mounting");
+		if (!bridges.terminal.mountNative) {
+			setRenderer("xterm");
+			return;
+		}
+		void bridges.terminal.mountNative({
+			terminalId,
+			frame: frameFor(surface),
+			fontFamily: ghosttyFontFamily(fontFamily),
+			fontSize
+		}).then((mounted) => {
+			if (disposed) {
+				if (mounted) void bridges.terminal.unmountNative?.(terminalId);
+				return;
+			}
+			setRenderer(mounted ? "ghostty" : "xterm");
+		}).catch(() => {
+			if (!disposed) setRenderer("xterm");
+		});
+		return () => {
+			disposed = true;
+			void bridges.terminal.unmountNative?.(terminalId);
+		};
+	}, [activeId, fontFamily, fontSize, open]);
+
+	useEffect(() => {
+		if (renderer !== "ghostty" || !activeId || !viewport.current) return;
+		const terminalId = activeId;
+		const surface = viewport.current;
+		let scheduled = 0;
+		const syncFrame = () => {
+			cancelAnimationFrame(scheduled);
+			scheduled = requestAnimationFrame(() => {
+				void bridges.terminal.setNativeFrame?.(terminalId, frameFor(surface));
+			});
+		};
+		const resize = new ResizeObserver(syncFrame);
+		resize.observe(surface);
+		window.addEventListener("resize", syncFrame);
+		syncFrame();
+		void bridges.terminal.setNativeVisible?.(terminalId, true);
+		void bridges.terminal.focusNative?.(terminalId);
+		return () => {
+			cancelAnimationFrame(scheduled);
+			resize.disconnect();
+			window.removeEventListener("resize", syncFrame);
+		};
+	}, [activeId, renderer]);
+
+	useEffect(() => {
+		if (!open || !activeId) return;
+		return bridges.terminal.onEvent((event) => {
+			if (event.terminalId !== activeId) return;
+			if (event.dataBase64) setConnection("live");
+			if (event.kind === "exit") {
+				setTerminals((current) => current.map((item) => item.id === activeId
+					? { ...item, status: "exited", exitCode: event.exitCode }
+					: item));
+			}
+			if (event.kind === "error") setConnection("reconnecting");
+		});
+	}, [activeId, open]);
+
+	useEffect(() => {
+		if (renderer !== "xterm" || !open || !activeId || !viewport.current) return;
 		const terminal = new Terminal({
 			convertEol: true,
 			cursorBlink: true,
 			fontFamily,
 			fontSize,
 			lineHeight: 1.18,
-			theme: {
-				background: "#111318",
-				foreground: "#dce2ea",
-				cursor: "#ff8656",
-				cursorAccent: "#111318",
-				selectionBackground: "#33455dcc",
-				selectionInactiveBackground: "#2a354480",
-				black: "#252a33",
-				brightBlack: "#667080",
-				red: "#ef7d8e",
-				brightRed: "#ff9aa8",
-				green: "#78d19c",
-				brightGreen: "#9ae7b5",
-				yellow: "#e5bd78",
-				brightYellow: "#f5d899",
-				blue: "#82a9ff",
-				brightBlue: "#acc8ff",
-				magenta: "#c39bff",
-				brightMagenta: "#d9bdff",
-				cyan: "#70ced5",
-				brightCyan: "#9ce5eb",
-				white: "#dce2ea",
-				brightWhite: "#ffffff"
-			}
+			theme: TERMINAL_THEME
 		});
 		const addon = new FitAddon(); terminal.loadAddon(addon); terminal.open(viewport.current); addon.fit();
-		xterm.current = terminal; fit.current = addon;
-		const write = (event: TerminalEvent) => {
-			if (event.dataBase64) { setConnection("live"); terminal.write(decode(event.dataBase64)); }
-			if (event.kind === "exit") {
-				setTerminals((current) => current.map((item) => item.id === activeId
-					? { ...item, status: "exited", exitCode: event.exitCode }
-					: item));
-				terminal.writeln(`\r\n[process exited${event.exitCode == null ? "" : ` ${event.exitCode}`}]`);
-			}
-			if (event.kind === "error") {
-				setConnection("reconnecting");
-				if (event.message) terminal.writeln(`\r\n[terminal error: ${event.message}]`);
-			}
-		};
-		/**
-		 * The snapshot and the live subscription are two deliveries of one
-		 * journal, and they overlap by design: the listener is installed first
-		 * so nothing is lost, which means anything emitted while the snapshot
-		 * is in flight arrives twice.
-		 *
-		 * This used to be a `seen` set of every sequence ever written — durable
-		 * state invented in the renderer, and wrong twice over: an event that
-		 * arrived live before the snapshot was written *before* the earlier
-		 * bytes the snapshot then supplied, so the pane rendered the tail of
-		 * the output ahead of its head. Buffer the live edge instead, merge it
-		 * with the replay page on sequence, write the result in order once,
-		 * and then run live. The renderer keeps a replay buffer for one turn,
-		 * not a fold for the lifetime of the tab.
-		 */
-		let replaying = true;
-		const buffered: TerminalEvent[] = [];
+		xterm.current = terminal; fit.current = addon; seen.current = new Set();
 		const apply = (event: TerminalEvent) => {
-			if (event.terminalId !== activeId) return;
-			if (replaying) { buffered.push(event); return; }
-			write(event);
+			if (event.terminalId !== activeId || seen.current.has(event.sequence)) return;
+			seen.current.add(event.sequence);
+			if (event.dataBase64) terminal.write(decode(event.dataBase64));
+			if (event.kind === "exit") terminal.writeln(`\r\n[process exited${event.exitCode == null ? "" : ` ${event.exitCode}`}]`);
+			if (event.kind === "error" && event.message) terminal.writeln(`\r\n[terminal error: ${event.message}]`);
 		};
 		const unlisten = bridges.terminal.onEvent(apply);
-		void bridges.terminal.snapshot(activeId).then((events) => {
-			const merged = new Map<number, TerminalEvent>();
-			for (const event of [...events, ...buffered]) {
-				if (event.terminalId === activeId) merged.set(event.sequence, event);
-			}
-			buffered.length = 0;
-			replaying = false;
-			[...merged.keys()].sort((left, right) => left - right).forEach((key) => write(merged.get(key)!));
-		});
+		void bridges.terminal.snapshot(activeId).then((events) => events.sort((a, b) => a.sequence - b.sequence).forEach(apply));
 		const data = terminal.onData((value) => void bridges.terminal.write(activeId, value));
 		const resize = new ResizeObserver(() => { addon.fit(); void bridges.terminal.resize(activeId, terminal.cols, terminal.rows); });
 		resize.observe(viewport.current);
 		terminal.focus();
 		return () => { unlisten(); data.dispose(); resize.disconnect(); terminal.dispose(); xterm.current = null; fit.current = null; };
-	}, [activeId, fontFamily, fontSize, open]);
+	}, [activeId, fontFamily, fontSize, open, renderer]);
 
-	const closeActive = async () => {
-		if (!activeId) return;
-		await bridges.terminal.close(activeId).catch((reason) => setError(publicError(reason)));
-		setTerminals((current) => { const next = current.filter((item) => item.id !== activeId); setActiveId(next[0]?.id ?? null); return next; });
+	const closeTerminal = async (terminalId: string) => {
+		const closingIndex = terminals.findIndex((item) => item.id === terminalId);
+		await bridges.terminal.close(terminalId).catch((reason) => setError(publicError(reason)));
+		const next = terminals.filter((item) => item.id !== terminalId);
+		setTerminals(next);
+		if (terminalId === activeId) setActiveId(next[Math.min(Math.max(closingIndex, 0), next.length - 1)]?.id ?? null);
 	};
 
 	const clampHeight = (next: number) => Math.round(Math.min(
@@ -181,7 +241,8 @@ export function TerminalPanel({
 	const runningCount = terminals.filter((item) => item.status === "running").length;
 
 	if (!open) return null;
-	return <section className="terminal-panel" aria-label="Terminal panel" data-testid="terminal-panel" data-status={activeTerminal?.status ?? "idle"} data-connection={connection}>
+	return <section className="terminal-panel" aria-label="Terminal panel" data-testid="terminal-panel" data-status={activeTerminal?.status ?? "idle"} data-connection={connection} data-renderer={renderer}>
+		<MittenFrame thumbSelector=".terminal-head .terminal-tab-shell.is-active" bodySelector=".terminal-viewport, .terminal-empty" />
 		<div
 			className="terminal-resize-handle"
 			role="separator"
@@ -218,18 +279,16 @@ export function TerminalPanel({
 				<span className="terminal-label">Terminal</span>
 				<span className="terminal-session-count">{runningCount || terminals.length}</span>
 			</div>
-			<div className="terminal-tabs" role="tablist" aria-label="Terminal sessions">
-				{terminals.map((item) => <button type="button" role="tab" aria-selected={item.id === activeId} className={`terminal-tab${item.id === activeId ? " is-active" : ""}`} key={item.id} onClick={() => setActiveId(item.id)} title={`${item.title} · ${item.status}`}><span className={`terminal-dot ${item.status}`} /><span className="terminal-tab-title">{item.title}</span></button>)}
-			</div>
-			<div className="terminal-actions" aria-label="Terminal controls">
-				<button type="button" className="terminal-action" aria-label="New terminal" title="New terminal (⌘⇧T)" onClick={() => void createTerminal()}><span aria-hidden>+</span></button>
-				<button type="button" className="terminal-action terminal-close-action" aria-label="Close terminal" title="Close active terminal" disabled={!activeId} onClick={() => void closeActive()}><span aria-hidden>×</span></button>
-				<button type="button" className="terminal-action terminal-hide-action" aria-label="Hide terminal" title="Hide terminal (⌘J)" onClick={() => {
-					onOpenChange(false);
-					restoreFocusIfLost('[data-testid="toggle-terminal"]');
-				}}><span aria-hidden>⌄</span></button>
+			<div className="terminal-tab-strip">
+				<div className="terminal-tabs" role="tablist" aria-label="Terminal sessions">
+					{terminals.map((item) => <div className={`terminal-tab-shell${item.id === activeId ? " is-active" : ""}`} key={item.id}>
+						<button type="button" role="tab" aria-selected={item.id === activeId} className="terminal-tab" onClick={() => setActiveId(item.id)} title={`${item.title} · ${item.status}`}><span className="terminal-tab-icon" aria-hidden>{">_"}</span><span className={`terminal-dot ${item.status}`} /><span className="terminal-tab-title">{item.title}</span></button>
+						{item.id === activeId ? <button type="button" className="terminal-tab-close" aria-label={`Close ${item.title} terminal`} title="Close terminal" onClick={() => void closeTerminal(item.id)}><TerminalTabIcon kind="close" /></button> : null}
+					</div>)}
+				</div>
+				<button type="button" className="terminal-tab-add" aria-label="New terminal" title="New terminal (⌘⇧T)" onClick={() => void createTerminal()}><TerminalTabIcon kind="new" /></button>
 			</div>
 		</header>
-		{!bridges.terminal.available ? <div className="terminal-empty">Terminal is available in the desktop app.</div> : error ? <div className="terminal-empty" role="alert">{error}</div> : <div className="terminal-viewport" ref={viewport} />}
+		{!bridges.terminal.available ? <div className="terminal-empty">Terminal is available in the desktop app.</div> : error ? <div className="terminal-empty" role="alert">{error}</div> : <div className={`terminal-viewport is-${renderer}`} ref={viewport}>{renderer === "mounting" ? <span className="terminal-renderer-status">Starting terminal…</span> : null}</div>}
 	</section>;
 }

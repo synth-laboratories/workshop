@@ -1,0 +1,88 @@
+{
+  "schemaVersion": "synth.annotation-workbench.v1",
+  "campaign": {
+    "id": "acmp_deepswe_det",
+    "status": "sealed",
+    "label": "post_rollout",
+    "domain": "deepswe",
+    "title": "DeepSWE · Patch-quality analysis"
+  },
+  "coverage": { "jobs": 7, "sealed": 7, "abstained": 0, "failed": 0, "rejected": 0 },
+  "validation": { "selectorsResolved": 16, "unresolvedSelectors": 0, "validationFailures": 0 },
+  "evidenceHead": {
+    "bundleId": "evb_deepswe_det",
+    "digest": "sha256:deepswe-det-evidence-head",
+    "annotationCount": 16
+  },
+  "rubric": { "available": false, "reason": "verifier_result_not_configured", "digest": null, "criteria": [] },
+  "findings": [
+    {
+      "id": "ann_cmd_1",
+      "annotatorId": "deepswe.command_facts",
+      "label": "command.applied",
+      "severity": "info",
+      "status": "applied",
+      "target": { "kind": "span", "id": "span_cmd_1", "selector": "span:span_cmd_1" },
+      "summary": "pytest invoked against the failing file."
+    },
+    {
+      "id": "ann_patch_1",
+      "annotatorId": "deepswe.patch_facts",
+      "label": "patch.staged",
+      "severity": "info",
+      "status": "applied",
+      "target": { "kind": "span", "id": "span_patch", "selector": "span:span_patch" },
+      "summary": "Candidate patch written under /workspace."
+    },
+    {
+      "id": "ann_f2p",
+      "annotatorId": "deepswe.test_outcomes",
+      "label": "test.fail_to_pass",
+      "severity": "info",
+      "status": "applied",
+      "target": { "kind": "event", "id": "evt_f2p", "selector": "event:evt_f2p" },
+      "summary": "Fail-to-pass tests flipped after the patch."
+    },
+    {
+      "id": "ann_ver",
+      "annotatorId": "deepswe.verifier_status",
+      "label": "verifier.passed",
+      "severity": "info",
+      "status": "applied",
+      "target": { "kind": "event", "id": "evt_verifier", "selector": "event:evt_verifier" },
+      "summary": "Objective verifier artifacts remain authoritative."
+    }
+  ],
+  "taxonomy": [
+    { "label": "command.applied", "count": 3 },
+    { "label": "file.read", "count": 2 },
+    { "label": "patch.staged", "count": 1 },
+    { "label": "test.fail_to_pass", "count": 2 },
+    { "label": "test.pass_to_pass", "count": 2 },
+    { "label": "verifier.passed", "count": 1 },
+    { "label": "milestone.verified", "count": 4 },
+    { "label": "integrity.ok", "count": 1 }
+  ],
+  "milestones": [
+    { "id": "repro", "label": "Reproduce failure", "state": "verified", "engineVerified": true },
+    { "id": "edit", "label": "Stage patch", "state": "verified", "engineVerified": true },
+    { "id": "f2p", "label": "Fail-to-pass", "state": "verified", "engineVerified": true },
+    { "id": "verifier", "label": "Verifier passed", "state": "verified", "engineVerified": true }
+  ],
+  "spans": [
+    { "id": "span_cmd_1", "sequence": 4, "title": "pytest failing file", "kind": "span" },
+    { "id": "span_patch", "sequence": 9, "title": "Write patch", "kind": "span" },
+    { "id": "evt_f2p", "sequence": 12, "title": "F2P results", "kind": "event" },
+    { "id": "evt_verifier", "sequence": 13, "title": "Verifier", "kind": "event" }
+  ],
+  "jobs": [
+    { "id": "ajob_cmd", "annotatorId": "deepswe.command_facts", "state": "sealed" },
+    { "id": "ajob_files", "annotatorId": "deepswe.file_reads", "state": "sealed" },
+    { "id": "ajob_patch", "annotatorId": "deepswe.patch_facts", "state": "sealed" },
+    { "id": "ajob_tests", "annotatorId": "deepswe.test_outcomes", "state": "sealed" },
+    { "id": "ajob_ver", "annotatorId": "deepswe.verifier_status", "state": "sealed" },
+    { "id": "ajob_int", "annotatorId": "deepswe.episode_integrity", "state": "sealed" },
+    { "id": "ajob_ms", "annotatorId": "deepswe.milestone_progress", "state": "sealed" }
+  ],
+  "audit": { "abstentions": [], "rejected": [], "unresolvedSelectors": [], "consensus": [] }
+}

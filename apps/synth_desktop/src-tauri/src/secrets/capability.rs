@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use super::audit::{self, SecretAuditEvent};
@@ -38,6 +37,10 @@ pub(crate) struct ProviderUsageReceipt {
     pub calls: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// False when the run billed provider calls but no response ever carried a
+    /// readable usage object. Zero tokens against a non-zero call count is a
+    /// telemetry gap, not a measurement, and must never render as `0`.
+    pub tokens_complete: bool,
     pub cost_usd: Option<f64>,
     pub digest: String,
 }
@@ -255,63 +258,13 @@ pub struct MeasuredUsage {
     pub cost_usd: Option<f64>,
 }
 
-/// Trusted provider accounting summed across every capability issued to one
-/// optimizer run.
-#[derive(Clone, Debug, Default, Serialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct CapabilityLedger {
-    pub capabilities: u32,
-    pub status: Option<String>,
-    pub used_calls: u32,
-    pub max_calls: u32,
-    #[specta(type = specta_typescript::Number)]
-    pub used_input_tokens: u64,
-    #[specta(type = specta_typescript::Number)]
-    pub used_output_tokens: u64,
-    pub used_cost_usd: Option<f64>,
-    pub max_cost_usd: f64,
-}
-
-impl CapabilityLedger {
-    pub fn from_capabilities(rows: &[LiveCapability]) -> Self {
-        let mut ledger = Self {
-            capabilities: rows.len() as u32,
-            ..Self::default()
-        };
-        let mut billed_micros = 0u64;
-        for row in rows {
-            ledger.used_calls = ledger.used_calls.saturating_add(row.used_calls);
-            ledger.max_calls = ledger.max_calls.saturating_add(row.max_calls);
-            ledger.used_input_tokens = ledger
-                .used_input_tokens
-                .saturating_add(row.used_input_tokens);
-            ledger.used_output_tokens = ledger
-                .used_output_tokens
-                .saturating_add(row.used_output_tokens);
-            ledger.max_cost_usd += row.max_cost_usd_micros as f64 / 1_000_000.0;
-            billed_micros = billed_micros.saturating_add(row.used_cost_usd_micros.unwrap_or(0));
-            ledger.status = Some(row.status.clone());
-        }
-        ledger.used_cost_usd = (billed_micros > 0).then(|| billed_micros as f64 / 1_000_000.0);
-        ledger
-    }
-
-    pub fn has_accounting(&self) -> bool {
-        self.used_calls > 0
-            || self.used_input_tokens > 0
-            || self.used_output_tokens > 0
-            || self.used_cost_usd.is_some()
-    }
-}
-
 #[derive(Default)]
 pub struct CapabilityStore {
     by_handle: Mutex<HashMap<String, LiveCapability>>,
-    next_request_at: Mutex<HashMap<String, Instant>>,
-    adaptive_interval: Mutex<HashMap<String, Duration>>,
 }
 
 impl CapabilityStore {
+    const REUSE_MIN_REMAINING_MS: i64 = 30_000;
     pub fn new() -> Self {
         Self::default()
     }
@@ -343,10 +296,6 @@ impl CapabilityStore {
                 live.status = CapabilityStatus::Revoked.as_str().into();
             }
         }
-        self.next_request_at
-            .lock()
-            .expect("capability request pacer")
-            .remove(handle);
     }
 
     pub fn revoke_run(&self, run_id: &str) -> Vec<String> {
@@ -372,85 +321,30 @@ impl CapabilityStore {
                 handles.push(live.handle.clone());
             }
         }
-        let mut pacing = self
-            .next_request_at
-            .lock()
-            .expect("capability request pacer");
-        for handle in &handles {
-            pacing.remove(handle);
-        }
         handles
     }
 
-    /// Claim the provider request-start boundary only when it is currently
-    /// eligible. Waiters observe the same boundary without pushing later
-    /// requests into speculative future slots.
-    fn request_start_delay_at(&self, handle: &str, now: Instant, interval: Duration) -> Duration {
-        let mut next = self
-            .next_request_at
-            .lock()
-            .expect("capability request pacer");
-        let eligible_at = next.get(handle).copied().unwrap_or(now);
-        let delay = eligible_at.saturating_duration_since(now);
-        if delay.is_zero() {
-            next.insert(handle.to_owned(), now + interval);
-        }
-        delay
-    }
-
-    pub async fn pace_request_start(&self, handle: &str) {
-        loop {
-            let delay = self.request_start_delay_at(
-                handle,
-                Instant::now(),
-                crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL,
-            );
-            if delay.is_zero() {
-                return;
+    /// Mark time-expired capabilities before any caller treats them as live.
+    ///
+    /// Prepared runs may wait at the paid-compute approval boundary longer
+    /// than the capability lifetime. Returning such a capability from
+    /// `find_active` makes the worker bind a dead proxy route and fail every
+    /// rollout. Keep expiry enforcement at both selection and call time.
+    pub fn expire_stale(&self) -> Vec<LiveCapability> {
+        let now = Utc::now().timestamp_millis();
+        let mut store = self.by_handle.lock().expect("capability store");
+        let mut expired = Vec::new();
+        for live in store.values_mut() {
+            if (live.status == "granted" || live.status == "active") && now >= live.expires_at_ms {
+                live.status = "expired".into();
+                expired.push(live.clone());
             }
-            tokio::time::sleep(delay).await;
         }
-    }
-
-    pub fn request_interval(&self, handle: &str) -> Duration {
-        self.adaptive_interval
-            .lock()
-            .expect("capability request pacer")
-            .get(handle)
-            .copied()
-            .unwrap_or(crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL)
-    }
-
-    pub fn observe_rate_limit(&self, handle: &str, reset: Option<Duration>) -> Duration {
-        let floor = crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL;
-        let ceiling = crate::limits::CREDENTIAL_UPSTREAM_MAX_INTERVAL;
-        let mut intervals = self
-            .adaptive_interval
-            .lock()
-            .expect("capability request pacer");
-        let current = intervals.get(handle).copied().unwrap_or(floor);
-        let raised = reset
-            .unwrap_or(current.saturating_mul(2))
-            .max(current)
-            .max(floor)
-            .min(ceiling);
-        intervals.insert(handle.to_owned(), raised);
-        raised
-    }
-
-    pub fn observe_admitted(&self, handle: &str) -> Duration {
-        let floor = crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL;
-        let mut intervals = self
-            .adaptive_interval
-            .lock()
-            .expect("capability request pacer");
-        let current = intervals.get(handle).copied().unwrap_or(floor);
-        let decayed = Duration::from_millis(current.as_millis() as u64 / 2).max(floor);
-        intervals.insert(handle.to_owned(), decayed);
-        decayed
+        expired
     }
 
     pub fn list_active(&self) -> Vec<LiveCapability> {
+        self.expire_stale();
         self.by_handle
             .lock()
             .expect("capability store")
@@ -460,23 +354,25 @@ impl CapabilityStore {
             .collect()
     }
 
-    /// Return every capability issued for a run, including terminal entries.
-    /// Revocation deliberately leaves the metering counters in memory so the
-    /// run's sealed receipt can preserve the authoritative proxy totals.
-    pub fn list_for_run(&self, run_id: &str) -> Vec<LiveCapability> {
-        self.by_handle
-            .lock()
-            .expect("capability store")
-            .values()
-            .filter(|live| live.run_id == run_id)
-            .cloned()
-            .collect()
-    }
-
     pub fn find_active(&self, secret_id: &str, run_id: &str) -> Option<LiveCapability> {
         self.list_active()
             .into_iter()
             .find(|live| live.secret_id == secret_id && live.run_id == run_id)
+    }
+
+    /// Return a live capability only when it has enough lifetime left to be
+    /// safely rebound into a worker. This closes the approval-boundary race
+    /// where a capability is technically live during selection but expires
+    /// between config binding and the first provider call.
+    pub fn find_reusable(&self, secret_id: &str, run_id: &str) -> Option<LiveCapability> {
+        let reuse_deadline = Utc::now()
+            .timestamp_millis()
+            .saturating_add(Self::REUSE_MIN_REMAINING_MS);
+        self.list_active().into_iter().find(|live| {
+            live.secret_id == secret_id
+                && live.run_id == run_id
+                && live.expires_at_ms > reuse_deadline
+        })
     }
 
     /// Reserve one call. Fail closed at the call ceiling.
@@ -771,6 +667,9 @@ pub(crate) fn provider_usage_receipt(
         calls,
         input_tokens,
         output_tokens,
+        // Derived, not stored: the digest above stays over the same canonical
+        // fields it always covered, so existing receipts keep their identity.
+        tokens_complete: calls == 0 || input_tokens > 0,
         cost_usd: cost_usd_micros.map(|micros| micros as f64 / 1_000_000.0),
         digest,
     }))
@@ -853,14 +752,10 @@ pub fn authorize_request(
     }
     if let Some(model) = model {
         if !live.models.is_empty()
-            && !live.models.iter().any(|allowed| {
-                allowed.eq_ignore_ascii_case(model)
-                    || (live.provider.eq_ignore_ascii_case("openrouter")
-                        && !model.contains('/')
-                        && allowed
-                            .strip_prefix("openai/")
-                            .is_some_and(|bare| bare.eq_ignore_ascii_case(model)))
-            })
+            && !live
+                .models
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(model))
         {
             anyhow::bail!("model {model} is not allowed for this capability");
         }

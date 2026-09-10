@@ -43,6 +43,7 @@ pub enum EventSource {
     Remote,
     Intern,
     Codex,
+    Acp,
     System,
     Mlx,
     Visual,
@@ -56,6 +57,7 @@ impl EventSource {
             Self::Remote => "remote",
             Self::Intern => "intern",
             Self::Codex => "codex",
+            Self::Acp => "acp",
             Self::System => "system",
             Self::Mlx => "mlx",
             Self::Visual => "visual",
@@ -68,6 +70,7 @@ impl EventSource {
             "remote" => Self::Remote,
             "intern" => Self::Intern,
             "codex" => Self::Codex,
+            "acp" => Self::Acp,
             "system" => Self::System,
             "mlx" => Self::Mlx,
             "visual" => Self::Visual,
@@ -87,7 +90,7 @@ pub struct AppEvent {
     #[serde(default)]
     pub session_id: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub session_sequence: Option<i64>,
     #[serde(default)]
     pub run_id: Option<String>,
@@ -96,7 +99,7 @@ pub struct AppEvent {
     #[specta(type = specta_typescript::Unknown)]
     pub payload: Value,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub remote_sequence: Option<i64>,
     #[serde(default)]
     pub command_id: Option<String>,
@@ -119,7 +122,7 @@ pub struct SessionRecord {
     pub remote_id: Option<String>,
     pub codex_thread_id: Option<String>,
     pub status: String,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub state_generation: Option<i64>,
     #[specta(type = specta_typescript::Number)]
     pub latest_cursor: i64,
@@ -173,7 +176,7 @@ pub struct CommandReceiptRecord {
     pub request: Value,
     #[specta(type = specta_typescript::Unknown)]
     pub response: Option<Value>,
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub remote_cursor: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
@@ -196,4 +199,33 @@ pub struct CoreDiagnostics {
     #[specta(type = specta_typescript::Number)]
     pub visual_count: i64,
     pub migration_complete: bool,
+    /// Transaction lock-acquisition wait, split by intent.
+    ///
+    /// The interval between asking for a transaction and getting one — not
+    /// query, deserialize, or IPC time. It is the number that made a busy
+    /// producer look like a dead one from the renderer, and until now nothing
+    /// measured it. Reads should sit near zero: in WAL mode a deferred read
+    /// takes a snapshot rather than queueing, so a rising read wait means a
+    /// read path is still opening `Immediate` somewhere.
+    pub lock_wait: LockWaitDiagnostics,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LockWaitDiagnostics {
+    #[specta(type = specta_typescript::Number)]
+    pub read_transactions: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub read_wait_avg_us: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub read_wait_max_us: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub write_transactions: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub write_wait_avg_us: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub write_wait_max_us: i64,
+    /// Transactions that gave up rather than acquiring.
+    #[specta(type = specta_typescript::Number)]
+    pub timeouts: i64,
 }

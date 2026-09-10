@@ -88,32 +88,7 @@ function liveGepaQaEvents() {
 	};
 }
 
-// Build-maturity envelope (contracts/release-tiers-v1.toml). The renderer
-// bundle compiles one tier: WORKSHOP_TIER, else dev on the dev server and
-// stable for production builds — matching the host's cargo default
-// (tier-stable). The __TIER_HAS_*__ booleans are literals at transform time,
-// so code gated on them is structurally eliminated from narrower bundles.
-const TIER_ORDER = ["core", "stable", "beta", "alpha", "dev"] as const;
-type WorkshopTier = (typeof TIER_ORDER)[number];
-
-function resolveTier(command: "build" | "serve"): WorkshopTier {
-	const requested = process.env.WORKSHOP_TIER ?? (command === "serve" ? "dev" : "stable");
-	if (!TIER_ORDER.includes(requested as WorkshopTier)) {
-		throw new Error(`WORKSHOP_TIER must be one of ${TIER_ORDER.join("/")}, got "${requested}"`);
-	}
-	return requested as WorkshopTier;
-}
-
-export default defineConfig(({ command }) => {
-	const tier = resolveTier(command);
-	const rank = TIER_ORDER.indexOf(tier);
-	return {
-	define: {
-		__WORKSHOP_TIER__: JSON.stringify(tier),
-		__TIER_HAS_BETA__: JSON.stringify(rank >= TIER_ORDER.indexOf("beta")),
-		__TIER_HAS_ALPHA__: JSON.stringify(rank >= TIER_ORDER.indexOf("alpha")),
-		__TIER_HAS_DEV__: JSON.stringify(rank >= TIER_ORDER.indexOf("dev"))
-	},
+export default defineConfig({
 	root: resolve("src/renderer"),
 	// Parallel Playwright workers each own a Vite server. Their dependency
 	// optimizer state must not share a cache; the fixture supplies a private
@@ -122,8 +97,8 @@ export default defineConfig(({ command }) => {
 	resolve: {
 		alias: {
 			"@": resolve("src/renderer/src"),
-			"@synth/visuals": resolve("../../visuals/registry/index.ts"),
-			"@synth/visual-templates": resolve("../../visuals/families")
+			"@synth/visuals": resolve("../../packages/workshop-visuals/registry/index.ts"),
+			"@synth/visual-templates": resolve("../../packages/workshop-visuals/families")
 		}
 	},
 	plugins: [react(), liveGepaQaEvents()],
@@ -136,5 +111,4 @@ export default defineConfig(({ command }) => {
 		outDir: resolve("dist"),
 		emptyOutDir: true
 	}
-	};
 });

@@ -1126,7 +1126,6 @@ impl SecretsService {
     }
 
     pub fn seal_run_chain(&self, run_id: &str) -> Result<Option<Value>> {
-        let provider_usage = self.provider_usage_for_run(run_id);
         let _ = self.revoke_run(run_id);
         let mut chain = {
             let chains = self.chains.lock().expect("credential chains");
@@ -1149,9 +1148,6 @@ impl SecretsService {
                 "capabilityRevoked".into(),
                 json!(lifecycle.status == CapabilityStatus::Revoked),
             );
-            if let Some(provider_usage) = provider_usage {
-                object.insert("providerUsage".into(), provider_usage);
-            }
         }
         self.chains
             .lock()

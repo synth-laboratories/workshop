@@ -160,12 +160,13 @@ function textValue(params: Record<string, unknown>): string | undefined {
 	return candidates.find((value): value is string => typeof value === "string" && value.length > 0);
 }
 
-function completedTurnActuallyFailed(params: Record<string, unknown>): boolean {
+function completedTurnOutcome(params: Record<string, unknown>): string {
 	const turn = params.turn && typeof params.turn === "object"
 		? params.turn as Record<string, unknown>
 		: params;
 	const status = typeof turn.status === "string" ? turn.status.toLowerCase() : "";
-	return status === "failed" || status === "error" || ("error" in turn && turn.error != null);
+	if (["interrupted", "cancelled", "canceled"].includes(status)) return "run.cancelled";
+	return status === "failed" || status === "error" || ("error" in turn && turn.error != null) ? "run.failed" : "run.completed";
 }
 
 export function codexEventToRuntime(event: CodexEvent, sequence: number): RuntimeEvent {
@@ -182,7 +183,7 @@ export function codexEventToRuntime(event: CodexEvent, sequence: number): Runtim
 	} else if (lower.includes("reasoning") || itemType === "reasoning") eventKind = "agent.reasoning";
 	else if (lower.includes("commandexecution") || itemType === "commandexecution") eventKind = "command.execution";
 	else if (lower.includes("filechange") || itemType === "filechange") eventKind = "file.change";
-	else if (lower === "turn/completed") eventKind = completedTurnActuallyFailed(event.params) ? "run.failed" : "run.completed";
+	else if (lower === "turn/completed") eventKind = completedTurnOutcome(event.params);
 	else if (lower === "turn/failed") eventKind = "run.failed";
 	else if (lower === "turn/interrupted") eventKind = "run.cancelled";
 	else if (lower === "turn/started") eventKind = "run.started";
@@ -218,7 +219,7 @@ export function coreEventToRuntime(event: AppEvent): RuntimeEvent | null {
 		};
 	}
 	return codexEventToRuntime(
-		{ sessionId: event.sessionId, method: event.kind, params: event.payload },
+		{ sessionId: event.sessionId, method: event.kind, params: event.payload, createdAt: event.createdAt },
 		event.sessionSequence
 	);
 }

@@ -1,16 +1,18 @@
+import { runtimeStorage } from "../preferences/runtimeStorage";
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { InferencePanel } from "./InferencePanel";
 import { UsagePanel } from "./UsagePanel";
+import { InferencePanel } from "./InferencePanel";
+import { CodexTracesPanel } from "./CodexTracesPanel";
 import type {
 	ContainerDeployment,
+	Session,
 	TraceV5Record,
 	UsageLedgerEntry,
 	VisualRecord
 } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
-import { formatVisualAdmissionIdentity } from "../types/landing";
-import { VisualOpsLine } from "./VisualOpsLine";
+import { PluginEmptyState, PluginPage, PluginPageHeader, PluginTabs } from "./PluginPage";
 
 import { CONTAINER_POLL_MS } from "../limits";
 import { bridges } from "../runtime/desktopBridge";
@@ -23,7 +25,7 @@ import {
 	TRACE_INSPECTOR_TEMPLATE
 } from "../runtime/traceInspector";
 
-export type DataTab = "containers" | "traces" | "visuals" | "usage" | "inference";
+export type DataTab = "containers" | "runtime" | "traces" | "usage";
 
 const CONTAINER_GONE_GRACE_MS = 30_000;
 
@@ -34,10 +36,13 @@ function visibleContainerStatus(status: ContainerDeployment["status"]): { label:
 }
 
 type Props = {
+	surface?: "data" | "inference";
 	initialTab?: DataTab;
 	onOpenVisual: (visual: VisualRecord) => void;
 	onOpenContainer: (containerId: string) => void;
 	openContainerId?: string | null;
+	sessions?: Session[];
+	activeSessionId?: string | null;
 	onBack: () => void;
 };
 
@@ -79,26 +84,39 @@ function formatDuration(durationMs: number): string {
 }
 
 export function DataPage({
-	initialTab = "containers",
+	surface = "data",
+	initialTab,
 	onOpenVisual,
 	onOpenContainer,
 	openContainerId = null,
+	sessions = [],
+	activeSessionId = null,
 	onBack
 }: Props) {
-	const [tab, setTab] = useState<DataTab>(initialTab);
+	const [tab, setTab] = useState<DataTab>(initialTab ?? (surface === "inference" ? "runtime" : "containers"));
 	const [containers, setContainers] = useState<ContainerDeployment[]>([]);
 	const containersRef = useRef<ContainerDeployment[]>([]);
 	const goneSinceRef = useRef(new Map<string, number>());
 	const [archivedContainerIds, setArchivedContainerIds] = useState<Set<string>>(() => {
 		try {
-			const saved = JSON.parse(window.localStorage.getItem("synth.archivedContainerIds") ?? "[]");
+			const saved = JSON.parse(runtimeStorage.getItem("synth.archivedContainerIds") ?? "[]");
 			return new Set(Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : []);
 		} catch { return new Set(); }
 	});
+
+    useEffect(() => {
+        const refresh = () => {
+            try {
+                const saved: unknown = JSON.parse(runtimeStorage.getItem("synth.archivedContainerIds") ?? "[]");
+                setArchivedContainerIds(new Set(Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : []));
+            } catch { /* Leave the last valid projection visible. */ }
+        };
+        window.addEventListener("workshop:state-changed", refresh);
+        return () => window.removeEventListener("workshop:state-changed", refresh);
+    }, []);
 	const [traces, setTraces] = useState<TraceV5Record[]>([]);
-	const [visuals, setVisuals] = useState<VisualRecord[]>([]);
 	const [usage, setUsage] = useState<UsageLedgerEntry[]>([]);
-	const [counts, setCounts] = useState({ containers: 0, traces: 0, usage: 0 });
+	const codexSessionCount = useMemo(() => sessions.filter((session) => session.metadata?.runtime === "codex-app-server").length, [sessions]);
 	const [error, setError] = useState<string | null>(null);
 	const [busyId, setBusyId] = useState<string | null>(null);
 	const [attachOpen, setAttachOpen] = useState(false);
@@ -158,25 +176,26 @@ export function DataPage({
 	const refresh = useCallback(async () => {
 		setError(null);
 		try {
-			if (!bridges.inventory || !bridges.visuals) {
+			if (!bridges.inventory) {
 				throw new Error("Rust Data store is unavailable");
 			}
-			const [nextContainers, nextTraces, nextVisuals, nextUsage, nextCounts] = await Promise.all([
+			if (surface === "data") {
+				const [nextContainers, nextTraces] = await Promise.all([bridges.inventory.listContainers(), bridges.inventory.listTraces()]);
+				setContainers(nextContainers);
+				setTraces(nextTraces);
+				return;
+			}
+			const [nextContainers, nextUsage] = await Promise.all([
 				bridges.inventory.listContainers(),
-				bridges.inventory.listTraces(),
-				bridges.visuals.list({ limit: 500 }),
-				bridges.inventory.listUsage(100),
-				bridges.inventory.counts()
+				bridges.inventory.listUsage(100)
 			]);
 			setContainers(nextContainers);
-			setTraces(nextTraces);
-			setVisuals(nextVisuals);
+			setTraces([]);
 			setUsage(nextUsage);
-			setCounts(nextCounts);
 		} catch (reason) {
 			setError(publicError(reason));
 		}
-	}, []);
+	}, [surface]);
 
 	useEffect(() => {
 		void refresh();
@@ -185,6 +204,7 @@ export function DataPage({
 	useEffect(() => { containersRef.current = containers; }, [containers]);
 
 	useEffect(() => {
+		if (surface !== "data") return;
 		let cancelled = false;
 		const poll = async () => {
 			const candidates = containersRef.current.filter((container) => container.baseUrl && !archivedContainerIds.has(container.id));
@@ -213,14 +233,14 @@ export function DataPage({
 				}
 				const changed = next.size !== current.size || [...next].some((id) => !current.has(id));
 				if (!changed) return current;
-				window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
+				runtimeStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
 				return next;
 			});
 		};
 		void poll();
 		const timer = window.setInterval(() => void poll(), CONTAINER_POLL_MS);
 		return () => { cancelled = true; window.clearInterval(timer); };
-	}, [archivedContainerIds]);
+	}, [archivedContainerIds, surface]);
 
 	const probe = async (containerId: string) => {
 		setBusyId(containerId);
@@ -233,7 +253,7 @@ export function DataPage({
 					goneSinceRef.current.delete(result.id);
 					setArchivedContainerIds((current) => {
 						const next = new Set(current); next.delete(result.id);
-						window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
+						runtimeStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
 						return next;
 					});
 				}
@@ -252,10 +272,10 @@ export function DataPage({
 			const attached = await bridges.inventory?.registerContainer({ name: attachName, baseUrl: attachUrl, location: "local" });
 			if (attached) setArchivedContainerIds((current) => {
 				const next = new Set(current); next.delete(attached.id);
-				window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
+				runtimeStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
 				return next;
 			});
-			const liveEval = attached?.metadata?.liveEval as { templateId?: string; family?: string } | undefined;
+			const liveEval = (attached?.metadata as Record<string, unknown> | undefined)?.liveEval as { templateId?: string; family?: string } | undefined;
 			if (attached && liveEval?.templateId && bridges.visuals) {
 				const visual = await bridges.visuals.create({
 					templateId: liveEval.templateId,
@@ -311,10 +331,6 @@ export function DataPage({
 				}
 			}
 			const shown = await bridges.visuals.show(visual.id).catch(() => visual!);
-			setVisuals((current) => {
-				const without = current.filter((candidate) => candidate.id !== shown.id);
-				return [shown, ...without];
-			});
 			onOpenVisual(shown);
 		} catch (reason) {
 			setError(publicError(reason));
@@ -324,21 +340,18 @@ export function DataPage({
 	};
 
 	return (
-		<div className="ws-page" data-testid="inventory-page">
-			<header className="ws-page-head">
-				<button type="button" className="desk-back ws-btn ws-btn-ghost" onClick={onBack}>
-					← Back
-				</button>
-				<div className="ws-page-head-text">
-					<h1 className="ws-title">Data</h1>
-					<p className="ws-lede">
-						Local containers, Trace V5 records, and visual instances from the runtime vault.
-					</p>
-				</div>
-				<button type="button" className="ws-btn ws-btn-secondary ws-page-head-actions" onClick={() => void refresh()}>
-					Refresh
-				</button>
-			</header>
+		<PluginPage testId={surface === "inference" ? "inference-page" : "inventory-page"}>
+			<PluginPageHeader
+				title={surface === "inference" ? "Inference" : "Data"}
+				description={surface === "inference" ? "Model runtime, Codex traces, generation activity, usage, and request health." : "Local containers and recorded traces available to Workshop."}
+				onBack={onBack}
+				actions={surface === "data" ? <button type="button" className="ws-btn ws-btn-secondary" onClick={() => void refresh()}>Refresh</button> : null}
+			/>
+
+			<PluginTabs tabs={surface === "inference"
+				? [{ id: "runtime", label: "Runtime" }, { id: "traces", label: "Codex traces", count: codexSessionCount }, { id: "usage", label: "Usage", count: usage.length }]
+				: [{ id: "containers", label: "Containers", count: activeContainers.length }, { id: "traces", label: "Recorded traces", count: traces.length }]}
+				selected={tab} onSelect={setTab} label={surface === "inference" ? "Inference sections" : "Data sections"} testIdPrefix="inventory-tab" />
 
 			{error ? (
 				<div className="ws-note ws-note-danger" role="alert">
@@ -346,40 +359,10 @@ export function DataPage({
 				</div>
 			) : null}
 
-			<div className="ws-tabs" role="tablist" aria-label="Data sections">
-				{(
-					[
-						["containers", "Containers", activeContainers.length],
-						["traces", "Traces", traces.length],
-						["visuals", "Visuals", visuals.length]
-						,["usage", "Usage", usage.length]
-						,["inference", "Inference", null]
-					] as const
-				).map(([id, label, count]) => (
-					<button
-						key={id}
-						type="button"
-						role="tab"
-						aria-selected={tab === id}
-						className="ws-tab"
-						onClick={() => setTab(id)}
-						data-testid={`inventory-tab-${id}`}
-					>
-						{label}
-						{count == null ? null : <span className="ws-tab-count">{count}</span>}
-					</button>
-				))}
-			</div>
+			{surface === "inference" && tab === "runtime" ? <InferencePanel visible /> : null}
+			{surface === "inference" && tab === "traces" ? <CodexTracesPanel sessions={sessions} activeSessionId={activeSessionId} /> : null}
 
-			{tab === "inference" ? (
-				<div data-testid="inventory-inference">
-					{/* The panel owns its own subscription and only runs while it
-					    is the selected tab. */}
-					<InferencePanel visible />
-				</div>
-			) : null}
-
-			{tab === "containers" ? (
+			{surface === "data" && tab === "containers" ? (
 				<div className="ws-stack" data-testid="inventory-containers">
 					<div className="ws-stack-tight">
 						<button type="button" className="ws-btn ws-btn-secondary" data-testid="attach-container" onClick={() => setAttachOpen((value) => !value)}>Attach container</button>
@@ -390,7 +373,7 @@ export function DataPage({
 						</form> : null}
 					</div>
 					{activeContainers.length === 0 ? (
-						<div className="ws-empty"><p>No containers yet.</p></div>
+						<PluginEmptyState title="No containers yet" description="Containers attached to Workshop will appear here with their health and runtime details." />
 					) : (
 						<ul className="ws-list">
 							{activeContainers.map((c) => {
@@ -425,14 +408,14 @@ export function DataPage({
 						<ul className="ws-list">
 							{archivedContainers.map((container) => <li key={container.id} className="ws-item">
 								<div className="ws-item-main"><strong className="ws-item-title">{container.name}</strong><span className="ws-item-meta"><span className="ws-dot ws-dot-danger" aria-hidden="true" />known gone · {container.baseUrl}</span></div>
-								<button type="button" className="ws-btn ws-btn-secondary ws-btn-small" onClick={() => { setArchivedContainerIds((current) => { const next = new Set(current); next.delete(container.id); window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next])); return next; }); void probe(container.id); }}>Retry</button>
+								<button type="button" className="ws-btn ws-btn-secondary ws-btn-small" onClick={() => { setArchivedContainerIds((current) => { const next = new Set(current); next.delete(container.id); runtimeStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next])); return next; }); void probe(container.id); }}>Retry</button>
 							</li>)}
 						</ul>
 					</details> : null}
 				</div>
 			) : null}
 
-			{tab === "traces" ? (
+			{surface === "data" && tab === "traces" ? (
 				<div className="ws-stack ws-stack-loose" data-testid="inventory-traces">
 					<section className="ws-card ws-card-split" aria-label="Trace catalog summary">
 						<div className="ws-card-body">
@@ -519,50 +502,7 @@ export function DataPage({
 				</div>
 			) : null}
 
-			{tab === "visuals" ? (
-				<div data-testid="inventory-visuals">
-					{visuals.length === 0 ? (
-						<div className="ws-empty"><p>No visuals yet.</p></div>
-					) : (
-						<ul className="ws-list">
-							{visuals.map((v) => (
-								<li key={v.id} className="ws-item" data-testid={`inventory-visual-${v.id}`}>
-									<div className="ws-item-main">
-										<strong className="ws-item-title">{v.title}</strong>
-										<span className="ws-item-meta" data-testid={`inventory-visual-identity-${v.id}`}>
-											{formatVisualAdmissionIdentity({
-												visualId: v.id,
-												revision: v.currentRevision,
-												contentDigest: v.contentDigest,
-												receiptDigest: typeof v.receiptDigest === "string" ? v.receiptDigest : undefined
-											})}
-										</span>
-										<VisualOpsLine
-											sessionId={v.sessionId}
-											runId={v.runId}
-											traceId={v.traceId}
-											testId={`visual-ops-${v.id}`}
-											compact
-										/>
-										<span className="ws-item-meta">{v.templateId}</span>
-										<span className="ws-item-meta ws-faint">{formatWhen(v.updatedAt)}</span>
-									</div>
-									<button
-										type="button"
-										className="ws-btn ws-btn-secondary ws-btn-small"
-										onClick={() => onOpenVisual(v)}
-										data-testid={`open-visual-${v.id}`}
-									>
-										Open
-									</button>
-								</li>
-							))}
-						</ul>
-					)}
-				</div>
-			) : null}
-
-			{tab === "usage" ? (
+			{surface === "inference" && tab === "usage" ? (
 				<div className="ws-stack" data-testid="inventory-usage">
 					{/* The dashboard reduces the whole ledger in Rust. The raw
 					    rows below stay as the receipt behind it — the most
@@ -572,7 +512,7 @@ export function DataPage({
 					<details className="usage-ledger">
 						<summary data-testid="inventory-usage-ledger-toggle">
 							Recent ledger entries
-							<span className="ws-item-meta ws-faint">{counts.containers} containers · {counts.traces} traces · {counts.usage} usage entries</span>
+							<span className="ws-item-meta ws-faint">{usage.length} usage entries</span>
 						</summary>
 						{usage.length === 0 ? <div className="ws-empty"><p>No usage entries yet.</p></div> : (
 							<ul className="ws-list">
@@ -586,6 +526,6 @@ export function DataPage({
 					</details>
 				</div>
 			) : null}
-		</div>
+		</PluginPage>
 	);
 }

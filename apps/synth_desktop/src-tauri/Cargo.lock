@@ -3883,7 +3883,7 @@ dependencies = [
 
 [[package]]
 name = "synth-desktop"
-version = "0.8.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3908,6 +3908,7 @@ dependencies = [
  "rand 0.9.5",
  "reqwest 0.12.28",
  "rusqlite",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha2",
@@ -3923,6 +3924,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "toml 0.8.2",
+ "toml_edit 0.20.2",
  "uuid",
  "zip",
 ]

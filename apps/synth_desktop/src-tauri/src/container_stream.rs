@@ -168,6 +168,37 @@ pub fn declared_sse_url(stream: &Value) -> Result<String> {
         .context("stream descriptor omitted transports.sse.url; refusing to guess /events")
 }
 
+/// Poll URL for the reward-calculation stream (`rubric.grade`, `reward_signal`).
+/// Absent when the producer omitted `reward.events`; never guess `/reward/events`.
+pub fn declared_reward_poll_url(stream: &Value) -> Option<String> {
+    stream
+        .pointer("/reward/events")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+}
+
+/// Poll URL for the live annotation stream a bound protocol publishes beside the
+/// rollout (`annotation.*` kinds). Absent when no protocol is bound to the
+/// rollout; never guess `/annotations/events`.
+pub fn declared_annotation_poll_url(stream: &Value) -> Option<String> {
+    stream
+        .pointer("/annotation/events")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+}
+
+/// SSE URL for the live annotation stream, declared beside `annotation.events`
+/// when the rollout bound an SSE or WebSocket transport. Never guessed.
+pub fn declared_annotation_sse_url(stream: &Value) -> Option<String> {
+    stream
+        .pointer("/annotation/stream")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+}
+
 pub fn resolve_declared_url(base: &str, declared: &str) -> Result<String> {
     let base_url = reqwest::Url::parse(base).context("invalid container base URL")?;
     Ok(base_url
@@ -430,6 +461,28 @@ pub fn require_task_instance(body: &Value) -> Result<String> {
         return Ok(format!("seed:{seed}"));
     }
     bail!("start requires task_instance_id or seed; the host does not default seed 0")
+}
+
+/// Preserve execution identity at preparation, before the container seals it.
+pub fn prepared_rollout_request(body: &Value, rollout_id: &str, telemetry: Value) -> Result<Value> {
+    let mut request = json!({"rollout_id": rollout_id, "telemetry": telemetry});
+    if body.get("seed").is_some() || body.get("task_instance_id").is_some() {
+        request["task_instance_id"] = json!(require_task_instance(body)?);
+    }
+    if let Some(policy) = body.get("policy_ref").or_else(|| body.get("policyRef")) {
+        request["policy_ref"] = policy.clone();
+    }
+    for key in ["policy_revision_id", "annotation_protocol_revision_id"] {
+        if let Some(value) = body.get(key) {
+            request[key] = value.clone();
+        }
+    }
+    if let Some(value) = body.get("max_steps") {
+        let limit = value.as_u64().filter(|limit| *limit > 0)
+            .context("max_steps must be a positive integer")?;
+        request["max_steps"] = json!(limit);
+    }
+    Ok(request)
 }
 
 pub fn authoritative_poll_telemetry() -> Value {

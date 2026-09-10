@@ -90,6 +90,8 @@ impl InlineRequest {
                 "session_ref",
                 "openVisual",
                 "open_visual",
+                "idempotencyKey",
+                "idempotency_key",
                 "request",
             ] {
                 object.remove(field);
@@ -115,10 +117,6 @@ pub struct ContainerCandidate {
     pub container_id: ContainerId,
     pub registration_id: ContainerRegistrationId,
     pub source_revision: SourceRevision,
-    /// What the running container reports about the build it loaded, when it
-    /// reports anything. Absent is "did not say", never "matches".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_revision: Option<SourceRevision>,
     /// Health as observed, verbatim. `"ready"` is the only admissible value;
     /// anything else, including an unknown string, fails closed.
     pub health: String,
@@ -586,7 +584,6 @@ pub fn draft_inline(
             container_id: container.container_id.clone(),
             registration_id: container.registration_id.clone(),
             source_revision: container.source_revision.clone(),
-            runtime_revision: container.runtime_revision.clone(),
             declaration_digest,
         },
         protocol,
@@ -768,60 +765,6 @@ impl ExecutionSpecDraft {
             ));
         }
 
-        // A runtime that loaded a different build than the declaration named
-        // is stale, whatever the declaration digest says. Caught here so a
-        // stale container is refused at admission rather than discovered from
-        // a result that does not match the source anyone is reading.
-        if recipe.container.runtime_is_fresh() == Some(false) {
-            return Err(AdmissionError::container_runtime_stale(
-                &recipe.container.container_id,
-                recipe.container.source_revision.as_str(),
-                recipe
-                    .container
-                    .runtime_revision
-                    .as_ref()
-                    .map(SourceRevision::as_str)
-                    .unwrap_or_default(),
-            ));
-        }
-
-        // A call ceiling nobody can reach is not a ceiling. The capability's
-        // lifetime and the pacing floor together fix how many request starts
-        // the run can ever make; approving a larger number puts a figure on the
-        // sheet that the run will never spend, and hides the real bound (time)
-        // behind a fake one (calls).
-        let lifetime_seconds =
-            u64::from(recipe.credential_route.capability_scope().lifetime_seconds);
-        let realizable = crate::limits::realizable_provider_calls(
-            std::time::Duration::from_secs(lifetime_seconds),
-            crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL,
-        );
-        let declared_calls = u64::from(
-            recipe
-                .resource_limits
-                .maximum_model_calls_per_rollout
-                .0
-                .get(),
-        )
-        .saturating_mul(u64::from(recipe.rollout_plan.maximum_rollouts.0.get()));
-        if declared_calls > u64::from(realizable) {
-            return Err(AdmissionError::requested_limit_unsupported(
-                "maximum_model_calls_per_rollout",
-                u64::from(realizable),
-                Some(declared_calls),
-            )
-            .with_context(json!({
-                "declaredTotalCalls": declared_calls,
-                "realizableTotalCalls": realizable,
-                "capabilityLifetimeSeconds": lifetime_seconds,
-                "pacingFloorSeconds":
-                    crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL.as_secs(),
-                "requiredLifetimeSeconds": declared_calls
-                    .saturating_sub(1)
-                    .saturating_mul(crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL.as_secs()),
-            })));
-        }
-
         if recipe.output_contract.requires_reward
             && !recipe
                 .output_contract
@@ -899,12 +842,7 @@ impl AdmissibleExecutionSpec {
             "container": {
                 "containerId": recipe.container.container_id.as_str(),
                 "registrationId": recipe.container.registration_id.as_str(),
-                // Freshness reads from three facts, not one. A declaration
-                // digest that did not move says nothing about whether the
-                // managed container was replaced.
                 "sourceRevision": recipe.container.source_revision.as_str(),
-                "runtimeRevision": recipe.container.runtime_revision.as_ref().map(SourceRevision::as_str),
-                "runtimeFresh": recipe.container.runtime_is_fresh(),
                 "declarationDigest": recipe.container.declaration_digest.as_str(),
             },
             "protocol": recipe.protocol.as_str(),
@@ -935,24 +873,6 @@ impl AdmissibleExecutionSpec {
                 "kind": recipe.credential_route.kind(),
                 "provider": recipe.credential_route.provider().as_str(),
                 "capabilityScope": recipe.credential_route.capability_scope(),
-            },
-            // What the declared ceilings mean in wall-clock terms. Shown so the
-            // sheet cannot advertise a call ceiling the approved lifetime
-            // cannot reach, which is the shape the prior rollout approved.
-            "pacing": {
-                "capabilityLifetimeSeconds":
-                    recipe.credential_route.capability_scope().lifetime_seconds,
-                "minimumRequestIntervalSeconds":
-                    crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL.as_secs(),
-                "declaredTotalCalls": u64::from(
-                    recipe.resource_limits.maximum_model_calls_per_rollout.0.get()
-                ) * u64::from(recipe.rollout_plan.maximum_rollouts.0.get()),
-                "realizableTotalCalls": crate::limits::realizable_provider_calls(
-                    std::time::Duration::from_secs(u64::from(
-                        recipe.credential_route.capability_scope().lifetime_seconds
-                    )),
-                    crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL,
-                ),
             },
         })
     }
@@ -1080,19 +1000,9 @@ impl ApprovedExecutionSpec {
     /// inputs still match that moment.
     pub fn reverify(
         &self,
-        current_source_revision: &SourceRevision,
         current_declaration_digest: &DeclarationDigest,
         current_policy_revision: &PolicyRevision,
     ) -> Result<(), ExecutionDriftError> {
-        if current_source_revision != &self.spec.recipe.container.source_revision {
-            return Err(ExecutionDriftError::new(
-                DriftCode::ContainerSourceChanged,
-                json!({
-                    "approvedSourceRevision": self.spec.recipe.container.source_revision.as_str(),
-                    "currentSourceRevision": current_source_revision.as_str(),
-                }),
-            ));
-        }
         if current_declaration_digest != &self.spec.recipe.container.declaration_digest {
             return Err(ExecutionDriftError::new(
                 DriftCode::ContainerDeclarationChanged,
@@ -1143,7 +1053,6 @@ impl ApprovedExecutionSpec {
 #[serde(rename_all = "snake_case")]
 pub enum DriftCode {
     ApprovedSpecDigestMismatch,
-    ContainerSourceChanged,
     ContainerDeclarationChanged,
     PolicyRevisionChanged,
     ApprovalBoundsExceeded,
@@ -1153,7 +1062,6 @@ impl DriftCode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ApprovedSpecDigestMismatch => "approved_spec_digest_mismatch",
-            Self::ContainerSourceChanged => "container_source_changed",
             Self::ContainerDeclarationChanged => "container_declaration_changed",
             Self::PolicyRevisionChanged => "policy_revision_changed",
             Self::ApprovalBoundsExceeded => "approval_bounds_exceeded",

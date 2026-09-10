@@ -1,6 +1,7 @@
 //! Built-in Workshop product plugins. Optimizers is the first registered module.
 
 pub(crate) mod policy;
+pub mod jesterky;
 mod registry;
 mod service;
 pub mod types;

@@ -3,6 +3,7 @@
 //! See `notes/specifications/workshop/failure_runtime.md`.
 
 pub mod approval;
+pub mod desktop_runtime;
 pub mod failure;
 pub mod logging;
 pub mod operations;

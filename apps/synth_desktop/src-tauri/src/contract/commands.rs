@@ -9,6 +9,7 @@
 pub struct Commands;
 
 impl Commands {
+    pub const DATA_TRACE_RESEARCH_REQUEST: &'static str = "data_trace_research_request";
     pub const CORE_DIAGNOSTICS: &'static str = "core_diagnostics";
     pub const CORE_EVENTS_AFTER: &'static str = "core_events_after";
     pub const CORE_SESSION_EVENTS_AFTER: &'static str = "core_session_events_after";
@@ -53,6 +54,13 @@ impl Commands {
     pub const MODEL_MULTI_AGENT_LIST: &'static str = "model_multi_agent_list";
     pub const MODEL_MULTI_AGENT_UPDATE: &'static str = "model_multi_agent_update";
     pub const WORKSPACE_ACCESS_GET: &'static str = "workspace_access_get";
+    pub const WORKSPACE_READ_FILE: &'static str = "workspace_read_file";
+    pub const WORKSPACE_LIST_DIR: &'static str = "workspace_list_dir";
+    pub const DOCUMENT_SHOW: &'static str = "document_show";
+    pub const VISUALS_TEMPLATE_SHELL_SOURCE: &'static str = "visuals_template_shell_source";
+    pub const VISUALS_TEMPLATE_SAVE: &'static str = "visuals_template_save";
+    pub const VISUALS_TEMPLATE_CREATE: &'static str = "visuals_template_create";
+    pub const VISUALS_TEMPLATE_VALIDATE: &'static str = "visuals_template_validate";
     pub const WORKSPACE_ACCESS_UPDATE: &'static str = "workspace_access_update";
     pub const WORKSPACE_SCOPE_GET: &'static str = "workspace_scope_get";
     pub const WORKSPACE_SCOPE_CHOOSE_AND_ATTACH: &'static str = "workspace_scope_choose_and_attach";
@@ -62,13 +70,6 @@ impl Commands {
     pub const WORKSPACE_SCOPE_GRANTS_LIST: &'static str = "workspace_scope_grants_list";
     pub const WORKSPACE_SCOPE_APPROVE_REQUEST: &'static str = "workspace_scope_approve_request";
     pub const WORKSPACE_SCOPE_DENY_REQUEST: &'static str = "workspace_scope_deny_request";
-    pub const PROJECT_SOURCES_GET: &'static str = "project_sources_get";
-    pub const PROJECT_SOURCES_REFRESH: &'static str = "project_sources_refresh";
-    pub const PROJECT_SOURCE_ADD: &'static str = "project_source_add";
-    pub const PROJECT_SOURCE_REMOVE: &'static str = "project_source_remove";
-    pub const PROJECT_SOURCE_REQUESTS_LIST: &'static str = "project_source_requests_list";
-    pub const PROJECT_SOURCE_APPROVE: &'static str = "project_source_approve";
-    pub const PROJECT_SOURCE_DENY: &'static str = "project_source_deny";
     pub const LAGUNA_GET_STATUS: &'static str = "laguna_get_status";
     pub const LAGUNA_RELOAD: &'static str = "laguna_reload";
     pub const LAGUNA_REGISTER_POLICY: &'static str = "laguna_register_policy";
@@ -105,6 +106,11 @@ impl Commands {
     pub const TERMINAL_SNAPSHOT: &'static str = "terminal_snapshot";
     pub const TERMINAL_WRITE: &'static str = "terminal_write";
     pub const TERMINAL_RESIZE: &'static str = "terminal_resize";
+    pub const TERMINAL_GHOSTTY_MOUNT: &'static str = "terminal_ghostty_mount";
+    pub const TERMINAL_GHOSTTY_SET_FRAME: &'static str = "terminal_ghostty_set_frame";
+    pub const TERMINAL_GHOSTTY_SET_VISIBLE: &'static str = "terminal_ghostty_set_visible";
+    pub const TERMINAL_GHOSTTY_FOCUS: &'static str = "terminal_ghostty_focus";
+    pub const TERMINAL_GHOSTTY_UNMOUNT: &'static str = "terminal_ghostty_unmount";
     pub const TERMINAL_CLOSE: &'static str = "terminal_close";
     pub const DATA_CONTAINERS_LIST: &'static str = "data_containers_list";
     pub const DATA_CONTAINERS_GET: &'static str = "data_containers_get";
@@ -136,10 +142,6 @@ impl Commands {
     pub const CONTEXT_COOKBOOKS_UNINSTALL: &'static str = "context_cookbooks_uninstall";
     pub const VISUALS_TEMPLATES_LIST: &'static str = "visuals_templates_list";
     pub const VISUALS_TEMPLATES_GET: &'static str = "visuals_templates_get";
-    pub const VISUALS_TEMPLATE_SHELL_SOURCE: &'static str = "visuals_template_shell_source";
-    pub const VISUALS_TEMPLATE_SAVE: &'static str = "visuals_template_save";
-    pub const VISUALS_TEMPLATE_CREATE: &'static str = "visuals_template_create";
-    pub const VISUALS_TEMPLATE_VALIDATE: &'static str = "visuals_template_validate";
     pub const VISUALS_LIST: &'static str = "visuals_list";
     pub const VISUALS_GET: &'static str = "visuals_get";
     pub const VISUALS_OBSERVATION_REPORT: &'static str = "visuals_observation_report";
@@ -197,6 +199,13 @@ impl Commands {
     pub const OPTIMIZERS_LIST: &'static str = "optimizers_list";
     pub const OPTIMIZERS_GET: &'static str = "optimizers_get";
     pub const OPTIMIZERS_RUN_VIEW_V2: &'static str = "optimizers_run_view_v2";
+    pub const OPTIMIZERS_RUN_VIEW: &'static str = "optimizers_run_view";
+    pub const OPTIMIZERS_EVIDENCE_PAGE: &'static str = "optimizers_evidence_page";
+    pub const OPTIMIZERS_RUN_SUMMARY: &'static str = "optimizers_run_summary";
+    pub const OPTIMIZERS_RUN_COLLECTION: &'static str = "optimizers_run_collection";
+    pub const OPTIMIZERS_RUN_COLLECTION_ITEM: &'static str = "optimizers_run_collection_item";
+    pub const OPTIMIZERS_PROJECTION_AT: &'static str = "optimizers_projection_at";
+    pub const OPTIMIZERS_VISUAL_RENDER_RECEIPT: &'static str = "optimizers_visual_render_receipt";
     pub const OPTIMIZERS_CREATE: &'static str = "optimizers_create";
     pub const OPTIMIZERS_REFRESH: &'static str = "optimizers_refresh";
     pub const OPTIMIZERS_EVENTS_AFTER: &'static str = "optimizers_events_after";
@@ -232,6 +241,7 @@ impl Commands {
     pub const BROWSER_RUNTIME_STATUS: &'static str = "browser_runtime_status";
     pub const BROWSER_POLICY_ALLOW_ORIGIN: &'static str = "browser_policy_allow_origin";
     pub const BROWSER_POLICY_REVOKE_ORIGIN: &'static str = "browser_policy_revoke_origin";
+    pub const JESTERKY_ANALYSIS_SETTINGS: &'static str = "jesterky_analysis_settings";
     pub const PLUGINS_MANAGE: &'static str = "plugins_manage";
     pub const PLUGINS_SET_RELEASE_CHANNEL: &'static str = "plugins_set_release_channel";
     pub const VISUAL_SUBSCRIPTION_READY: &'static str = "visual_subscription_ready";
@@ -254,9 +264,6 @@ impl Commands {
     pub const DESKTOP_PERMISSIONS_GET: &'static str = "desktop_permissions_get";
     pub const DESKTOP_PERMISSIONS_UPDATE: &'static str = "desktop_permissions_update";
     pub const WORKSPACE_CHOOSE_DIRECTORY: &'static str = "workspace_choose_directory";
-    pub const WORKSPACE_READ_FILE: &'static str = "workspace_read_file";
-    pub const WORKSPACE_LIST_DIR: &'static str = "workspace_list_dir";
-    pub const DOCUMENT_SHOW: &'static str = "document_show";
     pub const LAGUNA_MODELS_SET_DIRECTORY: &'static str = "laguna_models_set_directory";
     pub const LAGUNA_MODELS_CLEAR_DIRECTORY: &'static str = "laguna_models_clear_directory";
     pub const LAGUNA_MODEL_DELETE: &'static str = "laguna_model_delete";

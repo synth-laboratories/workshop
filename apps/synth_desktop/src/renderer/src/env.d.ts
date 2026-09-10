@@ -7,6 +7,7 @@
 
 import type {
 	CodexBridge,
+	AnalysisBridge,
 	CodexOauthBridge,
 	ContextBridge,
 	CoreBridge,
@@ -22,8 +23,6 @@ import type {
 	BrowserAdminBridge,
 	PluginsBridge,
 	ProductTelemetryBridge,
-	ReleaseTier,
-	ReleaseTierBridge,
 	RuntimeBridge,
 	SemanticEvalApi,
 	SkillsBridge,
@@ -40,20 +39,13 @@ import type {
 	WhisperBridge,
 	WorkspaceScopeBridge,
 	ComposerImageAttachment,
-	SecretsBridge
+	SecretsBridge,
+	HumanAnnotationsBridge
 } from "./bridge/types";
 
 export {};
 
 declare global {
-	/** Build-tier constants injected by vite.config.ts `define`. Gate code on
-	 * the `__TIER_HAS_*__` booleans directly for structural elimination from
-	 * narrower bundles; see flags/tier.ts. */
-	const __WORKSHOP_TIER__: ReleaseTier;
-	const __TIER_HAS_BETA__: boolean;
-	const __TIER_HAS_ALPHA__: boolean;
-	const __TIER_HAS_DEV__: boolean;
-
 	interface Window {
 		synthDesktop: {
 			platform: string;
@@ -64,6 +56,7 @@ declare global {
 		};
 		/** Browser fixture/explicit compatibility bridge; not installed by Tauri. */
 		synthRuntime?: RuntimeBridge;
+		synthAnalysis?: AnalysisBridge;
 		synthLaguna?: LagunaBridge;
 		synthTrainingModels?: TrainingModelsBridge;
 		synthTrainingArtifacts?: TrainingArtifactsBridge;
@@ -71,8 +64,8 @@ declare global {
 		synthSkills?: SkillsBridge;
 		synthContext?: ContextBridge;
 		synthConfig?: SynthConfigBridge;
-		synthWorkspaceScope?: WorkspaceScopeBridge;
 		synthProjectSources?: ProjectSourcesBridge;
+		synthWorkspaceScope?: WorkspaceScopeBridge;
 		synthAccount?: SynthAccountBridge;
 		synthCodex?: CodexBridge;
 		synthCodexOauth?: CodexOauthBridge;
@@ -92,7 +85,7 @@ declare global {
 		synthTerminal: TerminalBridge;
 		synthSecrets?: SecretsBridge;
 		synthTelemetry?: ProductTelemetryBridge;
-		synthReleaseTier?: ReleaseTierBridge;
+		synthHumanAnnotations?: HumanAnnotationsBridge;
 		/** Dev/test semantic eval API — tree-shaken from packaged production builds. */
 		__synthEval?: SemanticEvalApi;
 		__synthPreferences?: {

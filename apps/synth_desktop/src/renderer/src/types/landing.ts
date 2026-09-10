@@ -142,6 +142,10 @@ export type ArtifactRef = {
 	id: string;
 	kind: ArtifactKind;
 	title: string;
+	/** Short agent-authored label shown in Outputs; title is the fallback. */
+	displayName?: string;
+	/** Latest durable edit time, used to order Outputs newest first. */
+	updatedAt?: string;
 	summary?: string;
 	/** Message that introduced / attached this visual. */
 	messageId?: string;
@@ -276,16 +280,14 @@ export type LocalActivityLine = {
 	/** Correlates a pending approval with its durable grant/rejection event. */
 	approvalId?: string;
 	// Mirrors `ApprovalKind::as_str` in src-tauri/src/session/approval.rs.
-	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "container_lifecycle" | "credential_access" | "plugin_lifecycle" | "computer_use" | "visual_template_persist" | "permission";
+	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "container_lifecycle" | "credential_access" | "plugin_lifecycle" | "visual_template_persist" | "computer_use" | "permission";
 	approvalPayload?: {
+		approvalDigest?: string;
 		operation?: string;
 		parameters?: Record<string, unknown>;
 		estimatedCostUsdMicros?: number;
 		requestedCap?: { maxCostUsdMicros?: number; maxRollouts?: number };
 		requestingAgent?: string;
-		approvalDigest?: string;
-		requestedAt?: string;
-		expiresAt?: string;
 		provider?: string;
 		purpose?: string;
 		consent?: "remember_locator" | "register_source" | "issue_lease";

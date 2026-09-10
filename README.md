@@ -1,92 +1,165 @@
 # Workshop
 
-Workshop is a local-first macOS workbench for coding agents, evaluations,
-optimization runs, containers, and inspectable research artifacts. The v0.8
-release is built with Tauri 2, Rust, React, and TypeScript.
+Workshop is a local-first desktop workbench for agent conversations, visual
+artifacts, container evaluations, and optimization workflows.
 
-## Download or build
+Official downloads and checksums: [usesynth.ai/download](https://www.usesynth.ai/download).
+Product documentation: [docs.usesynth.ai](https://docs.usesynth.ai).
 
-- Download the prebuilt v0.8 release from
-  [usesynth.ai/download](https://www.usesynth.ai/download).
-- Build the unsigned app from source with the commands below. The build does
-  not require private Synth repositories or macOS Keychain credentials.
+## Install or build locally
 
-```bash
-git clone https://github.com/synth-laboratories/workshop.git
-cd workshop
-./scripts/bootstrap.sh
-./scripts/doctor.sh
-./scripts/build.sh
-```
+The v0.10 macOS app is **ad-hoc signed and not Apple-notarized**. It does not
+require Apple Developer credentials. Verify the published archive checksum
+before opening a download. macOS may require approval for that exact app in
+System Settings → Privacy & Security → Open Anyway. Do not disable Gatekeeper
+globally. Updates are manual through the official download page.
 
-The app bundle is written to
-`work/tier-builds/stable/Synth Workshop.app`. macOS may require
-you to approve or ad-hoc sign a locally built app before opening it. The
-download page records the exact signing and notarization status for every
-prebuilt release; the v0.8.0 ZIP and DMG are ad-hoc signed and unnotarized.
+The supported desktop target is Apple silicon running macOS 14 or later.
+Intel Macs, Windows, and Linux desktop packages are not provided by this release.
+Local models require additional memory, storage, and separately downloaded weights.
+Cloud models and account features require network access and their own credentials.
 
-## Requirements
-
-- macOS 14 or newer on Apple Silicon
-- Xcode Command Line Tools
-- Node.js 22 or newer with npm
-- Rust 1.85 or newer with Cargo
-- Python 3.11 or newer
-- `jq`, `git`, and `curl`
-
-`bootstrap.sh` installs repository dependencies. It does not install system
-packages, alter shell profiles, or read credentials. `doctor.sh` reports every
-missing prerequisite and checks that generated protocol bindings are present.
-
-## Development
+From a source checkout on an Apple silicon Mac:
 
 ```bash
-npm run dev:desktop
-npm run typecheck
-npm run build:graph
-cargo check --manifest-path apps/synth_desktop/src-tauri/Cargo.toml
+./scripts/install.sh
+./scripts/workshop.sh build-and-run
 ```
 
-Workshop builds one cumulative feature envelope:
-`core ⊂ stable ⊂ beta ⊂ alpha ⊂ dev`. Stable is the default.
+Install `uv` and provide Python 3.11 or newer as `python3` on your PATH. Use the
+repository's pinned Node and Rust toolchains and the Xcode prerequisites checked
+by `./scripts/install.sh --check`. That check reports missing prerequisites
+without modifying local configuration.
+
+The build fetches exact public Containers, Optimizers, and MLX source revisions
+into `work/build-sources`. No sibling repositories or release credentials are
+needed. It produces a separate **Synth Workshop Local.app** and DMG; the script
+prints their locations. Use `./scripts/workshop.sh build` to build without
+launching and `./scripts/workshop.sh run` to open an existing local build.
+Local builds are also ad-hoc signed and unnotarized; they are not official
+redistributable release artifacts.
+
+**TBLite is for evaluations/testing only. It is not required to build or use
+Workshop in production.** Runtime staging verifies the pinned dependencies.
+Provider-backed evaluations and model calls may incur charges; inspect their
+provider, model, limits, and cost controls before starting them.
+
+The supported source-build entrypoints are [install.sh](scripts/install.sh)
+and [workshop.sh](scripts/workshop.sh). Private release/test orchestration is not
+included in this public checkout.
+
+## Connect an agent through MCP
+
+Start Workshop and find its **Data root** in Settings → About. A connection grants
+access to that entire local instance, including shared conversations and visuals;
+it is not restricted to one chat. Select the intended instance explicitly.
+
+For an official app installed in Applications:
 
 ```bash
-scripts/build-tier.sh stable
-scripts/build-tier.sh beta
+"/Applications/Synth Workshop.app/Contents/MacOS/workshop" connect codex --data-root "/absolute/path/to/instance/data"
+"/Applications/Synth Workshop.app/Contents/MacOS/workshop" connect claude --data-root "/absolute/path/to/instance/data"
 ```
 
-The feature contract is
-[`contracts/release-tiers-v1.toml`](contracts/release-tiers-v1.toml), with the
-runtime model documented in [`docs/RELEASE_TIERS.md`](docs/RELEASE_TIERS.md).
+For a local build, use the `workshop` executable in that app's `Contents/MacOS`
+directory instead. From source, `npm run workshop --` builds/runs the matching
+CLI; for example:
 
-## Building with a coding agent
+```bash
+npm run workshop -- doctor --data-root "/absolute/path/to/instance/data"
+```
 
-Any coding agent that can run shell commands can build Workshop. Give it this
-repository and ask it to run `doctor.sh`, `bootstrap.sh` if dependencies are
-absent, and then `build.sh`. The same instructions work with Codex, Claude
-Code, Cursor, or another agent. See [`AGENTS.md`](AGENTS.md) for repository
-boundaries and generated files.
+Connection setup verifies the running instance and preserves unrelated client
+configuration. It refuses to overwrite conflicting custom Workshop entries.
+Restart the client after configuration changes and inspect its MCP connection.
+The packaged CLI itself does not require Node or Rust to be installed.
 
-Provider credentials are optional for compiling Workshop. When exercising
-provider-backed features, use a project-local `.env` and Workshop's ephemeral
-secrets proxy; do not import credentials into Keychain.
+Other MCP clients can launch the same executable using stdio and arguments
+`mcp --data-root /absolute/path/to/instance/data`.
 
-## Architecture
+Ask the connected agent to discover the tools, then try:
 
-- `apps/synth_desktop/` — Tauri desktop application and renderer
-- `packages/` — shared TypeScript protocol packages
-- `visuals/` — inspectable visualization families and runtime
-- `services/laguna-daemon/` — optional local inference boundary
-- `contracts/` — versioned runtime and release-tier contracts
+> Create a Mermaid diagram showing Input → Analysis → Result. Open it full
+> screen, capture it, and inspect the image.
 
-Start with [`architecture.md`](architecture.md) for the system boundaries.
+Browser and Computer Use retain their opt-in controls in Settings → Context.
+Agents cannot grant their own access or resolve their own human permission
+requests. A presentation acknowledgement is not rendering proof: capture and
+inspect the actual pixels. Some templates do not provide semantic observations.
 
-## Security and contributions
+## Host an ACP agent
 
-Read [`SECURITY.md`](SECURITY.md) before reporting a vulnerability and
-[`CONTRIBUTING.md`](CONTRIBUTING.md) before proposing a change. This repository
-contains product and build source; the private release verification corpus is
-maintained separately.
+ACP hosting runs an installed agent adapter inside Workshop. It is separate from
+connecting an external agent through MCP. Plain `codex` or `claude` executables
+are not necessarily ACP servers: install and pin an appropriate adapter.
 
-Copyright 2026 Synth Laboratories. Licensed under the
-[Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution notices.
+Create `agent-backends.json` in the selected instance's data directory:
+
+```json
+[
+  {
+    "id": "my-agent",
+    "command": "/absolute/path/to/installed/acp-agent",
+    "args": [],
+    "workspace": "/absolute/path/to/project",
+    "envFile": "/absolute/path/to/project/.env",
+    "maxSessions": 1,
+    "maxTurnSeconds": 180
+  }
+]
+```
+
+Make the registry private with `chmod 600`. Set `envFile` to `null` if it is not
+needed. A supplied environment file must belong to the configured workspace.
+Workshop loads it directly; this does not import keys into the Keychain-backed
+Secrets registry. Configure authentication through an authorized mechanism
+before starting the adapter. Do not put credentials in MCP configuration.
+
+The backend is a local executable running with your OS user's permissions.
+**Its working directory is not an OS sandbox.** Register only programs you trust.
+MCP cannot register arbitrary executables or expand this registry.
+
+Use `workshop backends --data-root "/absolute/path/to/instance/data"` to inspect
+the configuration. In Settings → Context → Hosted agents, start a task, send a
+prompt, inspect its journal, answer permission requests, cancel, close, or
+explicitly resume a retained task. Adapter capabilities determine resume support.
+Connection loss fails pending work instead of replaying uncertain prompts.
+
+## Runtime ownership and removal
+
+The native runtime owns the database and managed work. Closing its window does
+not necessarily stop the runtime. Use the matching CLI and explicit data root:
+
+```bash
+workshop runtime status --data-root "/absolute/path/to/instance/data"
+workshop runtime attach --data-root "/absolute/path/to/instance/data"
+workshop runtime detach --data-root "/absolute/path/to/instance/data"
+workshop runtime stop --data-root "/absolute/path/to/instance/data"
+```
+
+Here `workshop` means the full path to the packaged executable shown above unless
+you have placed that executable on PATH. Stop shuts down managed work, including
+hosted ACP processes. Native capture requires a desktop-capable OS session.
+
+Use `workshop disconnect codex` or `workshop disconnect claude` with the same
+`--data-root` to remove an unchanged matching MCP registration. Restart the
+client to close existing connections. For upgrades, keep the app and CLI on the
+same revision, restart them, and rerun `doctor`. When moving paths, disconnect
+the old registration before connecting the new one. Do not delete the data root
+merely to update the application.
+
+## Release integrity and limitations
+
+Public package CI builds this exported checkout independently from pinned public
+sources. Official publication uses the exact CI archive accepted on a native Mac,
+not a fresh tag rebuild. The distribution manifest records source revision,
+archive size, SHA-256, signing status, and notarization status. Source code or a
+green compilation check alone does not prove a provider-backed workflow ran.
+
+Retained/offline replay is not a live provider evaluation. Visual annotations
+are analysis projections; they do not replace engine or verifier results. Model
+credentials, provider availability, quotas, and optional runtimes remain
+workflow-specific requirements.
+
+Owned by [synth-laboratories](https://github.com/synth-laboratories).
+See [LICENSE](LICENSE) for licensing terms.

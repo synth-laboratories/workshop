@@ -141,17 +141,19 @@ fn numeric_segments(version: &str) -> Vec<u64> {
 pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
     runtime_id: "optimizers",
     package: "synth-optimizers",
-    official: "0.2.19",
+    official: "0.2.22",
     // Behind official: this cut predates both required routes. It still
     // installs — its own channel's floor is what it is measured against — and
     // then fails the handshake, which is the honest place for that failure.
     // Blocking the install instead would take the dev channel offline to
     // report a problem the gate already reports precisely.
     dev: "0.2.9.dev20260814",
-    // 0.2.19 carries ownership protocol v2 and preserves
-    // the required routes and legacy-workspace migration, and identifies the
-    // running Rust service with the same version as the Python distribution.
-    min_supported: "0.2.19",
+    // 0.2.20 carries ownership protocol v2 and preserves the required routes
+    // and legacy-workspace migration, and identifies the running Rust service
+    // with the same version as the Python distribution. It adds the container
+    // preflight fix: GEPA no longer requires a `capabilities.metadata` block
+    // it reads on only one branch, which refused every container that exists.
+    min_supported: "0.2.20",
     // No dev cut carries the required routes yet; the handshake refuses one
     // that cannot serve them. Raise this when the dev channel is cut again.
     min_supported_dev: "0.2.9.dev20260814",
@@ -161,12 +163,14 @@ pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
     templates: &[
         "optimizer.gepa.live.v1",
         "optimizer.sft.live.v1",
+        "optimizer.cispo.live.v1",
         "optimizer.run.v1",
     ],
     bounded_recipes: &[
         "sft.qwen35-2b.mlx.v1",
         "cispo.banking77.mlx.v1",
-        "cispo.slime.hosted.v1",
+        "cispo.hosted.tinker.v1",
+        "cispo.banking77.tinker.v1",
     ],
     recipe_schema: "gepa.recipe.v1",
     provisioned_by_desktop: true,
@@ -174,15 +178,15 @@ pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
 
 /// The local container-evaluation runtime.
 ///
-/// Desktop provisions it from the same 0.2.19 `synth-optimizers` install as
+/// Desktop provisions it from the same 0.2.22 `synth-optimizers` install as
 /// GEPA, writing a digest-pinned manifest under `data_root()/runtime/eval`.
 pub const EVAL: RuntimeContract = RuntimeContract {
     runtime_id: "eval",
     package: "synth-optimizers[eval]",
-    official: "0.2.19",
-    dev: "0.2.19",
-    min_supported: "0.2.19",
-    min_supported_dev: "0.2.19",
+    official: "0.2.22",
+    dev: "0.2.22",
+    min_supported: "0.2.20",
+    min_supported_dev: "0.2.20",
     ownership_protocol: 2,
     workshop_compat: "0.4.0",
     algorithms: &["eval"],

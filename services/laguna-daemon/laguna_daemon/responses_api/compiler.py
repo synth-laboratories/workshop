@@ -103,6 +103,20 @@ def items_to_messages(
             "tool_search_call",
         }:
             name = str(item.get("name") or item.get("server_label") or kind)
+            namespace = str(item.get("namespace") or "")
+            # Responses exposes namespaced calls to Codex as separate
+            # `namespace` + original `name` fields. Laguna's prompt template,
+            # however, advertised the collision-safe joined name. Replaying
+            # only the short original name taught the model to emit a name
+            # that was absent from the current binding table on continuation
+            # turns (for example `container_list` instead of
+            # `mcp__synth_containers__container_list`). Restore the exact
+            # model-visible spelling when lowering history back into a prompt.
+            history_name = (
+                _model_visible_name(f"{namespace}__{name}")
+                if namespace and not name.startswith(f"{namespace}__")
+                else name
+            )
             raw = item.get("arguments", item.get("input", item.get("action", {})))
             if isinstance(raw, str):
                 try:
@@ -118,7 +132,7 @@ def items_to_messages(
                     {
                         "id": item.get("call_id"),
                         "type": "function",
-                        "function": {"name": name, "arguments": arguments},
+                        "function": {"name": history_name, "arguments": arguments},
                     }
                 ],
             }

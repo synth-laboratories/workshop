@@ -7,14 +7,14 @@ import { parseUsdAmount } from "../runtime/paidComputeUsd";
 
 const PROVIDER_OPTIONS = [
 	{ id: "openrouter", label: "OpenRouter" },
-	{ id: "openai", label: "OpenAI" },
-	{ id: "anthropic", label: "Anthropic" }
+	{ id: "tinker", label: "Tinker" }
 ];
+const PROVIDER_IDS = new Set(PROVIDER_OPTIONS.map(({ id }) => id));
 
 const DEFAULT_SETTINGS: PaidComputeAutoApprovalSettings = {
 	enabled: false,
 	maxRequestUsd: "0.10",
-	maxConversationUsd: "1.00",
+	maxConversationUsd: "10.00",
 	providers: []
 };
 
@@ -54,10 +54,14 @@ export function PaidComputePermissionSettings() {
 		if (!bridges.config?.updateDesktopPermissions) return;
 		setBusy(true);
 		try {
+			const supported = {
+				...next,
+				providers: next.providers.filter((provider) => PROVIDER_IDS.has(provider))
+			};
 			const stored = await bridges.config.updateDesktopPermissions({
 				approvalPolicy,
 				sandboxMode,
-				paidCompute: next
+				paidCompute: supported
 			});
 			const paid = stored.paidCompute ?? DEFAULT_SETTINGS;
 			setSettings(paid);

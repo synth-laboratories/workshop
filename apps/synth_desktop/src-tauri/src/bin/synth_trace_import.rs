@@ -28,6 +28,9 @@ async fn main() -> Result<()> {
             source_kind: Some("desktop_cli".into()),
             title,
             source_uri: None,
+            // A bare file import has no owning container; paid annotation on
+            // this trace is refused until it is imported from its container.
+            container_id: None,
         })
         .await
         .context("import Trace V5 bundle")?;

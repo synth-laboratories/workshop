@@ -43,14 +43,20 @@ pub enum FlushOutcome {
 pub struct Flusher {
     store: TelemetryStore,
     sink: Arc<dyn TelemetrySink>,
+    in_flight: tokio::sync::Mutex<()>,
 }
 
 impl Flusher {
     pub fn new(store: TelemetryStore, sink: Arc<dyn TelemetrySink>) -> Self {
-        Self { store, sink }
+        Self {
+            store,
+            sink,
+            in_flight: tokio::sync::Mutex::new(()),
+        }
     }
 
     pub async fn flush_once(&self) -> Result<FlushOutcome> {
+        let _guard = self.in_flight.lock().await;
         if !consent::sync_allowed(&consent::state(&self.store)?) {
             return Ok(FlushOutcome::ConsentWithheld);
         }

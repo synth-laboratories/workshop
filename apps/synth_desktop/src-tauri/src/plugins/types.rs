@@ -200,6 +200,7 @@ impl std::error::Error for PluginNotReady {}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum CatalogPayload {
+    Jesterky { model: String, effort: String, skills: Vec<String>, templates: Vec<String> },
     #[serde(rename_all = "camelCase")]
     Optimizers {
         algorithms: Vec<String>,

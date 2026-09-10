@@ -22,6 +22,7 @@ import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
 import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
 import { AccountPage } from "./AccountPage";
 import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
+import { AgentHostingPanel } from "./AgentHostingPanel";
 import { SettingsCard } from "./SettingsCard";
 import { RuntimeContractRows } from "./RuntimeContractRows";
 import type { DesktopPreferences } from "../preferences";
@@ -30,9 +31,10 @@ import { bridges } from "../runtime/desktopBridge";
 import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
 import { ContextSettings } from "./ContextSettings";
 import { SecretsSettings } from "./SecretsSettings";
-import { CapabilityManifest } from "./CapabilityManifest";
 import { ProjectSourcesSettings } from "./ProjectSourcesSettings";
 import { WorkspaceAccessSettings } from "./WorkspaceAccessSettings";
+import { CapabilityManifest } from "./CapabilityManifest";
+import { PluginVisibilitySettings } from "./PluginVisibilitySettings";
 
 type Props = {
 	onBack: () => void;
@@ -98,14 +100,6 @@ function IconPerson() {
 	);
 }
 
-function IconFolder() {
-	return (
-		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<path d="M2 4h4.2l1.3 1.6H14v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
-		</svg>
-	);
-}
-
 function IconKey() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -137,10 +131,11 @@ function IconChevronLeft() {
 const SECTIONS = [
 	{ id: "general", label: "General", icon: IconSliders },
 	{ id: "context", label: "Context", icon: IconContext },
+	{ id: "workspace", label: "Workspace", icon: IconContext },
 	{ id: "models", label: "Models", icon: IconChip },
 	{ id: "inference", label: "Inference", icon: IconGauge },
 	{ id: "voice", label: "Voice", icon: IconMic },
-	{ id: "workspace", label: "Workspace", icon: IconFolder },
+	{ id: "plugins", label: "Integrations", icon: IconChip },
 	{ id: "account", label: "Account", icon: IconPerson },
 	{ id: "secrets", label: "Secrets", icon: IconKey },
 	{ id: "about", label: "About", icon: IconInfo }
@@ -563,7 +558,11 @@ export function SettingsPage({
 							</SettingsCard>
 						</div>
 					) : null}
-					{section === "context" ? <ContextSettings subagents={<MultiAgentModelSettings />} /> : null}
+					{section === "workspace" ? <div className="settings-sections" data-testid="settings-workspace">
+						<SettingsCard className="settings-card-embed"><ProjectSourcesSettings /></SettingsCard>
+						<SettingsCard className="settings-card-embed"><WorkspaceAccessSettings /></SettingsCard>
+					</div> : null}
+					{section === "context" ? <div className="settings-sections"><ContextSettings subagents={<MultiAgentModelSettings />} /><AgentHostingPanel /></div> : null}
 					{section === "inference" ? (
 						<div className="settings-sections" data-testid="settings-inference">
 							<InferenceSettings />
@@ -580,6 +579,9 @@ export function SettingsPage({
 							</SettingsCard>
 						</div>
 					) : null}
+					{section === "plugins" && preferences && onPreferencesChange ? (
+						<PluginVisibilitySettings preferences={preferences} pluginStatuses={pluginStatuses} onPreferencesChange={onPreferencesChange} />
+					) : null}
 					{section === "account" ? (
 						<AccountPage
 							view={account.view}
@@ -591,28 +593,10 @@ export function SettingsPage({
 							onOpenDeviceUsage={account.onOpenDeviceUsage}
 						/>
 					) : null}
-					{section === "workspace" ? (
-						<div className="settings-sections" data-testid="settings-workspace">
-							<SettingsCard
-								title="Project sources"
-								description="Where Workshop may discover container and optimizer recipe declarations."
-								className="settings-card-embed"
-							>
-								<ProjectSourcesSettings />
-							</SettingsCard>
-							<SettingsCard
-								title="Agent workspace access"
-								description="Folders a conversation may read and write. This does not authorize running anything."
-								className="settings-card-embed"
-							>
-								<WorkspaceAccessSettings />
-							</SettingsCard>
-						</div>
-					) : null}
 					{section === "secrets" ? <SecretsSettings /> : null}
 					{section === "about" ? (
 						<div className="settings-sections" data-testid="settings-about">
-							<SettingsCard title="v0.8 capabilities">
+							<SettingsCard title="v0.9 capabilities">
 								<CapabilityManifest pluginStatuses={pluginStatuses} lagunaPhase={lagunaPhase} />
 							</SettingsCard>
 							<SettingsCard title="Synth Desktop">
@@ -635,6 +619,8 @@ export function SettingsPage({
 										</button>
 									) : null}
 									<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
+									<span className="finetune-meta">Data root</span>
+									<code className="finetune-file">{desktopIdentity?.dataRoot ?? "Unavailable"}</code>
 									<RuntimeContractRows />
 								</div>
 								<p className="settings-runtime-copy">

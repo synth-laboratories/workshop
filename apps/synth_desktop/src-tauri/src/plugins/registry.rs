@@ -83,6 +83,7 @@ impl PluginRegistry {
     pub fn catalog_entry(plugin_id: &str, version: Option<&str>) -> Result<CatalogEntry> {
         match plugin_id {
             OPTIMIZERS_PLUGIN_ID => Self::optimizers_catalog_entry(version),
+            super::jesterky::ID => super::jesterky::catalog(version, OFFICIAL_RELEASE_CHANNEL),
             other => bail!("no catalog is registered for plugin `{other}`"),
         }
     }
@@ -116,6 +117,7 @@ impl PluginRegistry {
 
     pub fn selected_catalog_entry(&self, version: Option<&str>) -> Result<CatalogEntry> {
         let selected = self.release_channel();
+        if self.plugin_id == super::jesterky::ID { return super::jesterky::catalog(version, &selected); }
         let version = version.unwrap_or_else(|| match selected.as_str() {
             DEV_RELEASE_CHANNEL => DEV_SIDECAR_VERSION,
             _ => OFFICIAL_SIDECAR_VERSION,

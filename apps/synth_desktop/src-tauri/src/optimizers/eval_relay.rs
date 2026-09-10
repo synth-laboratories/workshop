@@ -27,10 +27,10 @@
 
 use super::{events::OptimizerEventDraft, service::OptimizerService};
 use crate::container_stream::{poll_event_list, STREAM_SUBSCRIBED_KIND};
-use crate::stream_fold::SequenceStep;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 /// Algorithm id every relayed event is filed under. Same lane as the rest of
@@ -79,10 +79,7 @@ const ENVELOPE_DIGEST_V2: &str = "synth.envelope-digest.v2";
 pub(crate) struct EventStreamSettings {
     pub poll_interval: Duration,
     pub page_limit: u32,
-    /// Optional explicit producer-safety cap. `None` is the product default:
-    /// pages are folded directly into the durable optimizer journal, so long
-    /// runs do not need an artificial in-memory history ceiling.
-    pub max_events_per_rollout: Option<usize>,
+    pub max_events_per_rollout: usize,
 }
 
 impl Default for EventStreamSettings {
@@ -90,7 +87,7 @@ impl Default for EventStreamSettings {
         Self {
             poll_interval: Duration::from_millis(150),
             page_limit: 1000,
-            max_events_per_rollout: None,
+            max_events_per_rollout: 10_000,
         }
     }
 }
@@ -104,13 +101,8 @@ impl EventStreamSettings {
         self.poll_interval = self
             .poll_interval
             .clamp(Duration::from_millis(20), Duration::from_secs(10));
-        self.max_events_per_rollout = self.max_events_per_rollout.map(|cap| cap.max(1));
+        self.max_events_per_rollout = self.max_events_per_rollout.max(1);
         self
-    }
-
-    fn cap_reached(&self, relayed_events: usize) -> bool {
-        self.max_events_per_rollout
-            .is_some_and(|cap| relayed_events >= cap)
     }
 }
 
@@ -219,6 +211,86 @@ impl std::fmt::Display for RelayIntegrityError {
 
 impl std::error::Error for RelayIntegrityError {}
 
+/// A command inside the task container failed for a reason the model cannot
+/// fix by trying again: the execution environment itself refused. Asking the
+/// policy to retry only spends provider calls, so the rollout is terminated at
+/// the first occurrence and settled as an infrastructure failure.
+#[derive(Clone, Debug)]
+pub(crate) struct InfrastructureFailure {
+    pub reason: &'static str,
+    pub detail: String,
+    pub command: Option<String>,
+    pub exit_code: Option<i64>,
+}
+
+impl InfrastructureFailure {
+    pub(crate) fn to_json(&self) -> Value {
+        json!({
+            "reason": self.reason,
+            "detail": self.detail,
+            "command": self.command,
+            "exitCode": self.exit_code,
+        })
+    }
+}
+
+impl std::fmt::Display for InfrastructureFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.reason, self.detail)
+    }
+}
+
+impl std::error::Error for InfrastructureFailure {}
+
+/// Output fragments that identify a sandbox that could not be created. The
+/// 2026-09-03 DeepSWE sample produced the first of these on every command and
+/// was asked again 36 times before it failed with nothing measured.
+const NAMESPACE_DENIAL_SIGNATURES: [&str; 3] = [
+    "No permissions to create a new namespace",
+    "unprivileged user namespaces",
+    "unprivileged_userns_clone",
+];
+
+fn command_output(item: &Value) -> String {
+    ["aggregated_output", "output", "stdout", "stderr", "text"]
+        .iter()
+        .filter_map(|key| item.get(*key).and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Recognise an environment refusal in a completed policy command.
+///
+/// Only failed `command_execution` items are considered: a successful command
+/// that merely prints the words is evidence, not a failure.
+fn detect_infrastructure_failure(kind: &str, payload: &Value) -> Option<InfrastructureFailure> {
+    if kind != "span.policy.data" {
+        return None;
+    }
+    let item = payload.pointer("/event/item")?;
+    if item.get("type").and_then(Value::as_str) != Some("command_execution") {
+        return None;
+    }
+    if item.get("status").and_then(Value::as_str) != Some("failed") {
+        return None;
+    }
+    let output = command_output(item);
+    let matched = NAMESPACE_DENIAL_SIGNATURES
+        .iter()
+        .find(|signature| output.contains(*signature))?;
+    Some(InfrastructureFailure {
+        reason: "sandbox_namespace_unavailable",
+        detail: format!(
+            "a policy command failed in the task container with `{matched}`. The inner CLI sandbox needs a Linux user namespace this container cannot create; the effective policy sandbox must be `danger-full-access`. Terminated before asking the model again."
+        ),
+        command: item
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        exit_code: item.get("exit_code").and_then(Value::as_i64),
+    })
+}
+
 /// A bound that was reached, with what it cost.
 ///
 /// Every one of these becomes a durable receipt. The rule the whole module is
@@ -272,6 +344,17 @@ pub(crate) struct RelayOutcome {
     pub span_completion_tokens: u64,
     pub span_cost_usd: Option<f64>,
     pub span_cost_complete: bool,
+    pub reward_events_relayed: usize,
+    pub reward_grades_relayed: usize,
+    /// Events relayed from the declared live annotation stream, and how many
+    /// of them were provisional findings.
+    pub annotation_events_relayed: usize,
+    pub annotation_findings_relayed: usize,
+    /// The annotation stream reported `closed`; its producer sealed it.
+    pub annotation_closed: bool,
+    /// Set when the relay terminated the rollout because the task container
+    /// refused to execute commands at all.
+    pub infrastructure_failure: Option<InfrastructureFailure>,
     pub degradations: Vec<Degradation>,
 }
 
@@ -301,6 +384,10 @@ impl RelayOutcome {
             "lastRelayedStep": self.last_relayed_step,
             "terminalEnvironmentSteps": self.verified_terminal_steps(),
             "abortedByCancellation": self.aborted_by_cancellation,
+            "infrastructureFailure": self
+                .infrastructure_failure
+                .as_ref()
+                .map(InfrastructureFailure::to_json),
             "observedUsage": {
                 "events": self.span_usage_events,
                 "prompt_tokens": self.span_prompt_tokens,
@@ -308,6 +395,11 @@ impl RelayOutcome {
                 "cost_usd": if self.span_cost_complete { json!(self.span_cost_usd) } else { Value::Null },
                 "cost_complete": self.span_cost_complete,
             },
+            "rewardEventsRelayed": self.reward_events_relayed,
+            "rewardGradesRelayed": self.reward_grades_relayed,
+            "annotationEventsRelayed": self.annotation_events_relayed,
+            "annotationFindingsRelayed": self.annotation_findings_relayed,
+            "annotationClosed": self.annotation_closed,
             "degradations": self.degradations.iter().map(Degradation::to_json).collect::<Vec<_>>(),
         })
     }
@@ -335,10 +427,72 @@ pub(crate) struct RelayContext<'a> {
     /// resolved against this and nothing else.
     pub base: &'a str,
     pub poll_url: &'a str,
+    /// Declared `/rollouts/{id}/reward/events` sibling of the SSE reward stream.
+    /// None when the producer omitted `reward.events`; never guessed.
+    pub reward_poll_url: Option<&'a str>,
+    /// Declared `/rollouts/{id}/annotations/events` sibling published by a
+    /// bound live annotation protocol. None when no protocol is bound to the
+    /// rollout; never guessed.
+    pub annotation_poll_url: Option<&'a str>,
     pub client: &'a reqwest::Client,
     /// Redirect-refusing client used only for frame bodies.
     pub media_client: &'a reqwest::Client,
     pub settings: RelaySettings,
+}
+
+/// Drain the producer journal until it closes, goes quiet, or the grace
+/// expires. Used after the in-flight rollout request has been dropped, so the
+/// evidence the producer already wrote is never lost with it.
+#[allow(clippy::too_many_arguments)]
+async fn drain_to_quiet(
+    ctx: &RelayContext<'_>,
+    cursor: &mut u64,
+    acked: &mut u64,
+    chain_head: &mut String,
+    journal_v2: &mut Option<bool>,
+    relayed: &mut BTreeSet<u64>,
+    reward_after: &mut u64,
+    reward_ok: &mut bool,
+    annotation_after: &mut u64,
+    annotation_ok: &mut bool,
+    annotation_relayed: &mut BTreeSet<u64>,
+    outcome: &mut RelayOutcome,
+    poll_interval: std::time::Duration,
+) {
+    let started = Instant::now();
+    let mut idle = 0u32;
+    loop {
+        match drain(ctx, cursor, acked, chain_head, journal_v2, relayed, outcome).await {
+            Ok(summary) => {
+                outcome.journal_closed |= summary.closed;
+                let _ = drain_reward(ctx, reward_after, reward_ok, relayed, outcome).await;
+                let _ = drain_annotation(
+                    ctx,
+                    annotation_after,
+                    annotation_ok,
+                    annotation_relayed,
+                    outcome,
+                )
+                .await;
+                idle = if summary.relayed == 0 {
+                    idle.saturating_add(1)
+                } else {
+                    0
+                };
+                if summary.closed
+                    || idle >= SETTLED_IDLE_DRAINS
+                    || started.elapsed() >= JOURNAL_DRAIN_GRACE
+                {
+                    break;
+                }
+            }
+            Err(error) => {
+                outcome.note("relay_failed", format!("{error:#}"), 0);
+                break;
+            }
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
 }
 
 /// Drain the declared event journal while `rollout` runs, relaying every
@@ -365,8 +519,15 @@ where
     let mut settled_at: Option<Instant> = None;
     let mut idle_drains: u32 = 0;
     let mut declares_cursor = false;
-    let mut last_provider_usage: Option<Value> = None;
     let poll_interval = ctx.settings.event_stream.poll_interval;
+    let mut relayed: BTreeSet<u64> = BTreeSet::new();
+    let mut reward_after: u64 = 0;
+    let mut reward_ok = ctx.reward_poll_url.is_some();
+    // The annotation stream has its own sequence space; it is never folded
+    // into the rollout journal's de-duplication set.
+    let mut annotation_after: u64 = 0;
+    let mut annotation_ok = ctx.annotation_poll_url.is_some();
+    let mut annotation_relayed: BTreeSet<u64> = BTreeSet::new();
 
     loop {
         let cancel_request = if settled.is_none() {
@@ -381,40 +542,22 @@ where
             // is still drained below, so a cancelled trial keeps its evidence.
             drop(rollout);
             outcome.aborted_by_cancellation = true;
-            let drain_started = Instant::now();
-            let mut cancellation_idle_drains = 0u32;
-            loop {
-                match drain(
-                    ctx,
-                    &mut cursor,
-                    &mut acked,
-                    &mut chain_head,
-                    &mut journal_v2,
-                    &mut outcome,
-                )
-                .await
-                {
-                    Ok(summary) => {
-                        outcome.journal_closed |= summary.closed;
-                        cancellation_idle_drains = if summary.relayed == 0 {
-                            cancellation_idle_drains.saturating_add(1)
-                        } else {
-                            0
-                        };
-                        if summary.closed
-                            || cancellation_idle_drains >= SETTLED_IDLE_DRAINS
-                            || drain_started.elapsed() >= JOURNAL_DRAIN_GRACE
-                        {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        outcome.note("relay_failed", format!("{error:#}"), 0);
-                        break;
-                    }
-                }
-                tokio::time::sleep(poll_interval).await;
-            }
+            drain_to_quiet(
+                ctx,
+                &mut cursor,
+                &mut acked,
+                &mut chain_head,
+                &mut journal_v2,
+                &mut relayed,
+                &mut reward_after,
+                &mut reward_ok,
+                &mut annotation_after,
+                &mut annotation_ok,
+                &mut annotation_relayed,
+                &mut outcome,
+                poll_interval,
+            )
+            .await;
             outcome.note(
                 "cancelled",
                 format!(
@@ -436,6 +579,7 @@ where
             &mut acked,
             &mut chain_head,
             &mut journal_v2,
+            &mut relayed,
             &mut outcome,
         )
         .await
@@ -445,6 +589,54 @@ where
                     outcome.journal_closed = true;
                 }
                 declares_cursor |= summary.declares_cursor;
+                let _ = drain_reward(
+                    ctx,
+                    &mut reward_after,
+                    &mut reward_ok,
+                    &mut relayed,
+                    &mut outcome,
+                )
+                .await;
+                let _ = drain_annotation(
+                    ctx,
+                    &mut annotation_after,
+                    &mut annotation_ok,
+                    &mut annotation_relayed,
+                    &mut outcome,
+                )
+                .await;
+                if let Some(failure) = summary.infrastructure_failure {
+                    // The task container refused to run commands. Retrying is
+                    // another paid provider call for the same refusal, so the
+                    // rollout ends here. The already-written journal is still
+                    // drained: the failing command is the evidence.
+                    if outcome.infrastructure_failure.is_none() {
+                        outcome.infrastructure_failure = Some(failure.clone());
+                    }
+                    outcome.note("infrastructure_failure", failure.to_string(), 0);
+                    if settled.is_none() {
+                        drop(rollout);
+                        drain_to_quiet(
+                            ctx,
+                            &mut cursor,
+                            &mut acked,
+                            &mut chain_head,
+                            &mut journal_v2,
+                            &mut relayed,
+                            &mut reward_after,
+                            &mut reward_ok,
+                            &mut annotation_after,
+                            &mut annotation_ok,
+                            &mut annotation_relayed,
+                            &mut outcome,
+                            poll_interval,
+                        )
+                        .await;
+                        return (Err(anyhow::Error::new(failure)), outcome);
+                    }
+                    let result = settled.unwrap_or_else(|| Err(anyhow::Error::new(failure)));
+                    return (result, outcome);
+                }
                 if settled.is_some() {
                     idle_drains = if summary.relayed == 0 {
                         idle_drains + 1
@@ -482,54 +674,15 @@ where
             }
         }
 
-        // Provider accounting advances independently of the container event
-        // journal. Project a changed trusted capability ledger even while a
-        // long-running agent is otherwise quiet.
-        if let Some(provider_usage) = crate::secrets::live()
-            .and_then(|secrets| secrets.provider_usage_for_run(ctx.run_id))
-            .filter(|usage| last_provider_usage.as_ref() != Some(usage))
-        {
-            let usage_for_patch = provider_usage.clone();
-            if let Err(error) = ctx
-                .service
-                .patch_run(ctx.run_id.to_string(), move |run| {
-                    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
-                    summary.insert("providerUsage".into(), usage_for_patch.clone());
-                    let mut lanes = summary
-                        .get("usageLanes")
-                        .and_then(Value::as_object)
-                        .cloned()
-                        .unwrap_or_default();
-                    lanes.insert("provider".into(), usage_for_patch.clone());
-                    summary.insert("usageLanes".into(), Value::Object(lanes));
-                    run.summary = Value::Object(summary);
-                    run.usage
-                        .extra
-                        .insert("providerUsage".into(), usage_for_patch);
-                    Ok(())
-                })
-                .await
-            {
-                outcome.note("provider_usage_projection_failed", format!("{error:#}"), 0);
-            } else {
-                last_provider_usage = Some(provider_usage);
-            }
-        }
-
         if outcome.journal_closed && settled.is_some() {
             break;
         }
-        if ctx
-            .settings
-            .event_stream
-            .cap_reached(outcome.relayed_events)
-        {
-            let cap = ctx.settings.event_stream.max_events_per_rollout.unwrap();
+        if outcome.relayed_events >= ctx.settings.event_stream.max_events_per_rollout {
             outcome.note(
                 "event_cap_reached",
                 format!(
                     "stopped relaying at event_stream.max_events_per_rollout = {}",
-                    cap
+                    ctx.settings.event_stream.max_events_per_rollout
                 ),
                 0,
             );
@@ -596,6 +749,19 @@ where
         }
     }
 
+    // The annotation stream seals after the rollout journal: its protocol
+    // drains the last events and any in-flight judgment first, bounded by the
+    // container's own drain timeout. Give it a grace of its own.
+    settle_annotation_stream(
+        ctx,
+        &mut annotation_after,
+        &mut annotation_ok,
+        &mut annotation_relayed,
+        &mut outcome,
+        poll_interval,
+    )
+    .await;
+
     let result = match settled {
         Some(result) => result,
         None => (&mut rollout).await,
@@ -615,6 +781,9 @@ struct DrainSummary {
     declares_cursor: bool,
     /// The page declared journal-v2 integrity or retention fields.
     declares_v2: bool,
+    /// The first environment refusal observed in this drain. Present means the
+    /// rollout cannot make progress and must be terminated rather than retried.
+    infrastructure_failure: Option<InfrastructureFailure>,
 }
 
 /// Read every page available at `cursor`, relaying each semantic event.
@@ -624,6 +793,7 @@ async fn drain(
     acked: &mut u64,
     chain_head: &mut String,
     journal_v2: &mut Option<bool>,
+    relayed: &mut BTreeSet<u64>,
     outcome: &mut RelayOutcome,
 ) -> Result<DrainSummary> {
     let mut summary = DrainSummary::default();
@@ -652,38 +822,50 @@ async fn drain(
             if event.get("kind").and_then(Value::as_str) == Some(STREAM_SUBSCRIBED_KIND) {
                 continue;
             }
-            match crate::stream_fold::sequence_step(*cursor, sequence) {
+            if sequence <= *cursor {
                 // A retried page. The idempotency key would collapse it anyway;
                 // skipping keeps the batch honest about what it appended.
-                SequenceStep::Duplicate | SequenceStep::Replay => continue,
+                continue;
+            }
+            if sequence != *cursor + 1 {
                 // Fail visibly. A gap means the producer's journal and this
                 // cursor disagree about history, and a viewer folded from a
                 // gapped stream shows a trajectory that never happened.
-                SequenceStep::Gap { expected } => {
-                    return Err(anyhow::Error::new(RelayIntegrityError {
-                        detail: format!(
-                            "event sequence gap on {}: expected {}, received {}",
-                            ctx.rollout_id, expected, sequence
-                        ),
-                    }))
-                }
-                SequenceStep::Next => {}
+                return Err(anyhow::Error::new(RelayIntegrityError {
+                    detail: format!(
+                        "event sequence gap on {}: expected {}, received {}",
+                        ctx.rollout_id,
+                        *cursor + 1,
+                        sequence
+                    ),
+                }));
             }
             if page_v2 {
                 let digest = verify_envelope_digest(event, sequence)
                     .map_err(|error| relay_integrity(format!("{error:#}")))?;
                 *chain_head = journal_chain_extend(chain_head, digest);
             }
+            if !relayed.insert(sequence) {
+                *cursor = sequence;
+                continue;
+            }
             let draft = relay_event(ctx, event, sequence, outcome).await?;
             drafts.push(draft);
             *cursor = sequence;
             outcome.relayed_events += 1;
             summary.relayed += 1;
-            if ctx
-                .settings
-                .event_stream
-                .cap_reached(outcome.relayed_events)
-            {
+            if summary.infrastructure_failure.is_none() {
+                summary.infrastructure_failure = detect_infrastructure_failure(
+                    event.get("kind").and_then(Value::as_str).unwrap_or(""),
+                    event.get("payload").unwrap_or(&Value::Null),
+                );
+            }
+            if outcome.relayed_events >= ctx.settings.event_stream.max_events_per_rollout {
+                break;
+            }
+            if summary.infrastructure_failure.is_some() {
+                // Stop reading forward, but fall through so this page's drafts
+                // are appended: the refusal itself is the evidence.
                 break;
             }
         }
@@ -758,10 +940,8 @@ async fn drain(
         // and closes the producer/consumer retention handshake.
         let ack_pending = page_v2 && *acked < *cursor;
         if (!has_more && !ack_pending)
-            || ctx
-                .settings
-                .event_stream
-                .cap_reached(outcome.relayed_events)
+            || outcome.relayed_events >= ctx.settings.event_stream.max_events_per_rollout
+            || summary.infrastructure_failure.is_some()
         {
             return Ok(summary);
         }
@@ -795,6 +975,269 @@ async fn fetch_page(ctx: &RelayContext<'_>, after: u64, ack: u64) -> Result<Valu
         .json::<Value>()
         .await
         .context("decode rollout event page")
+}
+
+async fn fetch_reward_page(ctx: &RelayContext<'_>, url: &str, after: u64) -> Result<Value> {
+    let wait_ms = ctx
+        .settings
+        .event_stream
+        .poll_interval
+        .as_millis()
+        .min(10_000) as u64;
+    let response = ctx
+        .client
+        .get(url)
+        .query(&[
+            ("after", after.to_string()),
+            ("limit", ctx.settings.event_stream.page_limit.to_string()),
+            ("wait_ms", wait_ms.to_string()),
+        ])
+        .send()
+        .await
+        .context("GET declared reward event page")?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("reward event page returned {status}");
+    }
+    response
+        .json::<Value>()
+        .await
+        .context("decode reward event page")
+}
+
+/// Drain `/rollouts/{id}/reward/events` (same events as `/reward/stream`).
+/// Sequences may gap relative to the full journal; duplicates are skipped.
+async fn drain_reward(
+    ctx: &RelayContext<'_>,
+    after: &mut u64,
+    ok: &mut bool,
+    relayed: &mut BTreeSet<u64>,
+    outcome: &mut RelayOutcome,
+) -> Result<()> {
+    if !*ok {
+        return Ok(());
+    }
+    let Some(url) = ctx.reward_poll_url else {
+        *ok = false;
+        return Ok(());
+    };
+    let page = match fetch_reward_page(ctx, url, *after).await {
+        Ok(page) => page,
+        Err(error) => {
+            outcome.note("reward_stream_unavailable", format!("{error:#}"), 0);
+            *ok = false;
+            return Ok(());
+        }
+    };
+    let events = poll_event_list(&page);
+    let mut drafts = Vec::new();
+    for event in events {
+        let Some(sequence) = event.get("sequence").and_then(Value::as_u64) else {
+            continue;
+        };
+        if sequence <= *after {
+            continue;
+        }
+        *after = (*after).max(sequence);
+        let kind = event.get("kind").and_then(Value::as_str).unwrap_or("");
+        if kind == STREAM_SUBSCRIBED_KIND {
+            continue;
+        }
+        if !relayed.insert(sequence) {
+            continue;
+        }
+        let draft = relay_event(ctx, event, sequence, outcome).await?;
+        drafts.push(draft);
+        outcome.relayed_events += 1;
+        outcome.reward_events_relayed += 1;
+        if kind == "rubric.grade" {
+            outcome.reward_grades_relayed += 1;
+        }
+    }
+    if !drafts.is_empty() {
+        ctx.service
+            .append_event_payloads(ctx.run_id.to_string(), drafts)
+            .await
+            .context("append relayed reward events")?;
+    }
+    Ok(())
+}
+
+/// Grace for the declared annotation stream to report `closed` after the
+/// rollout settled. Matches the container's post-terminal drain budget plus
+/// one poll of slack.
+const ANNOTATION_DRAIN_GRACE: Duration = Duration::from_secs(45);
+
+async fn fetch_lane_page(
+    ctx: &RelayContext<'_>,
+    url: &str,
+    after: u64,
+    lane: &'static str,
+) -> Result<Value> {
+    let wait_ms = ctx
+        .settings
+        .event_stream
+        .poll_interval
+        .as_millis()
+        .min(10_000) as u64;
+    let response = ctx
+        .client
+        .get(url)
+        .query(&[
+            ("after", after.to_string()),
+            ("limit", ctx.settings.event_stream.page_limit.to_string()),
+            ("wait_ms", wait_ms.to_string()),
+        ])
+        .send()
+        .await
+        .with_context(|| format!("GET declared {lane} event page"))?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("{lane} event page returned {status}");
+    }
+    response
+        .json::<Value>()
+        .await
+        .with_context(|| format!("decode {lane} event page"))
+}
+
+/// Drain the declared live annotation stream: `annotation.*` kinds a bound
+/// protocol publishes beside the rollout. Its sequences are its own, so they
+/// are de-duplicated apart from the rollout journal. Returns how many events
+/// were relayed by this drain.
+async fn drain_annotation(
+    ctx: &RelayContext<'_>,
+    after: &mut u64,
+    ok: &mut bool,
+    relayed: &mut BTreeSet<u64>,
+    outcome: &mut RelayOutcome,
+) -> Result<usize> {
+    if !*ok || outcome.annotation_closed {
+        return Ok(0);
+    }
+    let Some(url) = ctx.annotation_poll_url else {
+        *ok = false;
+        return Ok(0);
+    };
+    let page = match fetch_lane_page(ctx, url, *after, "annotation").await {
+        Ok(page) => page,
+        Err(error) => {
+            outcome.note("annotation_stream_unavailable", format!("{error:#}"), 0);
+            *ok = false;
+            return Ok(0);
+        }
+    };
+    let mut drafts = Vec::new();
+    for event in poll_event_list(&page) {
+        let Some(sequence) = event.get("sequence").and_then(Value::as_u64) else {
+            continue;
+        };
+        if sequence <= *after {
+            continue;
+        }
+        *after = (*after).max(sequence);
+        let kind = event.get("kind").and_then(Value::as_str).unwrap_or("");
+        if kind == STREAM_SUBSCRIBED_KIND {
+            continue;
+        }
+        if !relayed.insert(sequence) {
+            continue;
+        }
+        drafts.push(relay_annotation_event(ctx, event, sequence, kind));
+        outcome.annotation_events_relayed += 1;
+        if kind == "annotation.finding" {
+            outcome.annotation_findings_relayed += 1;
+        }
+    }
+    if page.pointer("/cursor/closed").and_then(Value::as_bool) == Some(true) {
+        outcome.annotation_closed = true;
+    }
+    let count = drafts.len();
+    if !drafts.is_empty() {
+        ctx.service
+            .append_event_payloads(ctx.run_id.to_string(), drafts)
+            .await
+            .context("append relayed annotation events")?;
+    }
+    Ok(count)
+}
+
+/// One relayed annotation-stream envelope.
+///
+/// It rides the owner's `eval.trial.event` carrier -- the vocabulary belongs
+/// to Optimizers and is the union of what that repo emits, so Workshop cannot
+/// honestly declare a type of its own -- and is distinguished by
+/// `delta.stream = "annotation"` plus the envelope's own `stream_id`. Its
+/// idempotency key lives in a separate namespace from the rollout journal so
+/// equal sequence numbers on the two streams never collide.
+fn relay_annotation_event(
+    ctx: &RelayContext<'_>,
+    event: &Value,
+    sequence: u64,
+    kind: &str,
+) -> OptimizerEventDraft {
+    let container_event = json!({
+        "rollout_id": ctx.rollout_id,
+        "stream_id": event.get("stream_id").cloned().unwrap_or_else(|| json!(format!("stream:{}:annotations", ctx.rollout_id))),
+        "sequence": sequence,
+        "kind": kind,
+        "occurred_at": event.get("ts").cloned().unwrap_or(Value::Null),
+        "digest": event.get("digest").cloned().unwrap_or(Value::Null),
+        "payload": event.get("payload").cloned().unwrap_or(Value::Null),
+    });
+    let delta = Map::from_iter([
+        ("trial_id".into(), json!(ctx.trial_id)),
+        ("seed".into(), json!(ctx.seed)),
+        ("pool".into(), json!(ctx.pool)),
+        ("scenario".into(), json!(ctx.scenario)),
+        ("message".into(), json!(kind)),
+        ("stream".into(), json!("annotation")),
+        ("container_event".into(), container_event.clone()),
+    ]);
+    OptimizerEventDraft::new("eval.trial.event", EVAL_ALGORITHM_ID)
+        // One relay of one producer sequence on the annotation stream.
+        .idempotency_key(format!("eval:annotation:{}:{sequence}", ctx.rollout_id))
+        .level("debug")
+        .occurred_at_opt(event.get("ts").and_then(Value::as_str))
+        .delta(delta)
+        .raw(json!({
+            "source": "container_eval",
+            "stream": "annotation",
+            "trial_id": ctx.trial_id,
+            "container_event": container_event,
+        }))
+}
+
+async fn settle_annotation_stream(
+    ctx: &RelayContext<'_>,
+    after: &mut u64,
+    ok: &mut bool,
+    relayed: &mut BTreeSet<u64>,
+    outcome: &mut RelayOutcome,
+    poll_interval: Duration,
+) {
+    if !*ok || outcome.annotation_closed {
+        return;
+    }
+    let started = Instant::now();
+    loop {
+        let _ = drain_annotation(ctx, after, ok, relayed, outcome).await;
+        if !*ok || outcome.annotation_closed {
+            return;
+        }
+        if started.elapsed() >= ANNOTATION_DRAIN_GRACE {
+            outcome.note(
+                "annotation_stream_not_closed",
+                format!(
+                    "the rollout settled but its annotation stream did not close within {}s",
+                    ANNOTATION_DRAIN_GRACE.as_secs()
+                ),
+                0,
+            );
+            return;
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
 }
 
 fn page_declares_journal_v2(page: &Value) -> bool {
@@ -1023,18 +1466,6 @@ async fn relay_event(
         .to_string();
     let mut payload = event.get("payload").cloned().unwrap_or(json!({}));
 
-    // Download links are producer-relative. Make them usable by the bound
-    // desktop visual while retaining the registered loopback origin.
-    if matches!(kind.as_str(), "trial.completed" | "trial.failed") {
-        if let Some(clip) = payload.get_mut("clip").and_then(Value::as_object_mut) {
-            for value in clip.values_mut() {
-                if let Some(path) = value.as_str().filter(|path| path.starts_with('/')) {
-                    *value = Value::String(format!("{}{}", ctx.base.trim_end_matches('/'), path));
-                }
-            }
-        }
-    }
-
     note_terminal_steps(&kind, &payload, outcome)?;
 
     if let Some(step) = payload.get("step").and_then(Value::as_u64) {
@@ -1070,18 +1501,6 @@ async fn relay_event(
     }
 
     if kind == "frame" {
-        if let Some(object) = payload.as_object_mut() {
-            if let Some(path) = object
-                .get("live_video_url")
-                .and_then(Value::as_str)
-                .filter(|path| path.starts_with('/'))
-            {
-                object.insert(
-                    "live_video_url".into(),
-                    Value::String(format!("{}{}", ctx.base.trim_end_matches('/'), path)),
-                );
-            }
-        }
         outcome.frames_declared += 1;
         match retain_frame(ctx, &payload, outcome).await {
             Ok(Some(media)) => {
@@ -1255,7 +1674,13 @@ async fn retain_frame(
         return Ok(None);
     }
 
-    let resolved = resolve_frame_url(ctx.base, ctx.rollout_id, step, url)?;
+    let resolved = resolve_frame_url(
+        ctx.base,
+        ctx.rollout_id,
+        step,
+        payload.get("viewer").and_then(Value::as_str),
+        url,
+    )?;
     let bytes = fetch_frame_bytes(ctx, &resolved).await?;
     let (width, height) = decode_png_dimensions(&bytes)?;
     let cas_digest = ctx
@@ -1308,6 +1733,7 @@ pub(crate) fn resolve_frame_url(
     base: &str,
     rollout_id: &str,
     step: i64,
+    viewer: Option<&str>,
     declared: &str,
 ) -> Result<reqwest::Url> {
     let origin = reqwest::Url::parse(base).context("container base URL")?;
@@ -1319,7 +1745,21 @@ pub(crate) fn resolve_frame_url(
     {
         bail!("frame media is limited to registered loopback HTTP containers");
     }
+    // URL joining normalizes dot segments. Reject non-canonical declarations
+    // before that normalization can erase evidence of traversal.
+    if declared.contains('%')
+        || declared.contains('\\')
+        || declared.split('/').any(|part| matches!(part, "." | ".."))
+    {
+        bail!("frame URL contains encoded or traversing path components");
+    }
     let resolved = origin.join(declared).context("declared frame URL")?;
+    if resolved.fragment().is_some()
+        || !resolved.username().is_empty()
+        || resolved.password().is_some()
+    {
+        bail!("frame URL carries a fragment or credentials");
+    }
     if resolved.scheme() != origin.scheme()
         || resolved.host_str() != origin.host_str()
         || resolved.port_or_known_default() != origin.port_or_known_default()
@@ -1329,7 +1769,21 @@ pub(crate) fn resolve_frame_url(
     if resolved.query().is_some() {
         bail!("frame URL {resolved} carries a query string");
     }
-    let expected = format!("/rollouts/{rollout_id}/frames/{step}.png");
+    // Viewer IDs are one literal path component, never a path supplied by
+    // the producer. Bind actor frames to the event's explicit viewer.
+    let expected = match viewer {
+        Some(viewer) => {
+            if viewer.is_empty()
+                || !viewer
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                bail!("frame viewer is not a safe identifier");
+            }
+            format!("/rollouts/{rollout_id}/frames/{step}/{viewer}.png")
+        }
+        None => format!("/rollouts/{rollout_id}/frames/{step}.png"),
+    };
     if resolved.path() != expected {
         bail!(
             "frame URL path {} is not this rollout's step {step} ({expected})",
@@ -1435,7 +1889,10 @@ pub(crate) async fn append_trial_started(
     rollout_id: &str,
     seed: i64,
     pool: &str,
-    scenario: &str,
+    // The container task instance this trial runs, which is also the
+    // scenario. Named explicitly as well so consumers do not have to know
+    // that the two happen to be the same string here.
+    task_instance_id: &str,
     candidate_id: &str,
 ) -> Result<()> {
     service
@@ -1451,7 +1908,8 @@ pub(crate) async fn append_trial_started(
                         ("candidate_id".into(), json!(candidate_id)),
                         ("seed".into(), json!(seed)),
                         ("pool".into(), json!(pool)),
-                        ("scenario".into(), json!(scenario)),
+                        ("scenario".into(), json!(task_instance_id)),
+                        ("task_instance_id".into(), json!(task_instance_id)),
                         ("stage".into(), json!("screen")),
                     ]))
                     .raw(json!({ "source": "container_eval" })),

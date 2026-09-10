@@ -9,14 +9,12 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Baked at build time. Channels are the maturity tiers: the compiled
-/// envelope (release_tier::BUILD_TIER) names the manifest a build reads, so a
-/// beta app checks `/releases/beta/latest.json` without a second knob and
-/// tier apps with separate bundle identifiers never cross channels. The env
-/// override remains for special lines that intentionally diverge.
+/// Baked at build time. Stable and nightly are separate installed apps with
+/// separate bundle identifiers; a build only ever reads its own channel's
+/// manifest.
 pub const CHANNEL: &str = match option_env!("SYNTH_DESKTOP_CHANNEL") {
     Some(channel) => channel,
-    None => crate::release_tier::BUILD_TIER.name(),
+    None => "stable",
 };
 
 /// The one place an update can send a person. Fixed on purpose — see module

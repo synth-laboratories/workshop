@@ -6,7 +6,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{fs, io::Read, path::PathBuf, sync::Arc};
 
 pub const OPTIMIZER_SNAPSHOT_SCHEMA: &str = "synth.optimizer-run-snapshot.v1";
 const MAX_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
@@ -91,11 +91,13 @@ pub fn evidence_summary(snapshot: &OptimizerRunSnapshot) -> Value {
     let total_reward = rewards.iter().sum::<f64>();
     let total_cost = costs.iter().sum::<f64>();
     let rollout_count = projected.len();
-    let reward_complete = rollout_count > 0 && rewards.len() == rollout_count;
-    let cost_complete = rollout_count > 0 && costs.len() == rollout_count;
-    let token_complete = rollout_count > 0 && tokens.len() == rollout_count;
+    let total_tokens = tokens.iter().try_fold(0u64, |sum, value| sum.checked_add(*value));
+    let reward_complete = rollout_count > 0 && rewards.len() == rollout_count && total_reward.is_finite();
+    let cost_complete = rollout_count > 0 && costs.len() == rollout_count && total_cost.is_finite();
+    let token_complete = rollout_count > 0 && tokens.len() == rollout_count && total_tokens.is_some();
     let score_per_dollar =
-        (reward_complete && cost_complete && total_cost > 0.0).then_some(total_reward / total_cost);
+        (reward_complete && cost_complete && total_cost > 0.0).then_some(total_reward / total_cost)
+            .filter(|value| value.is_finite());
 
     json!({
         "schemaVersion": "optimizer_evidence_summary.v1",
@@ -121,7 +123,7 @@ pub fn evidence_summary(snapshot: &OptimizerRunSnapshot) -> Value {
             "basis": "container_reported_rollout_policy_usage",
             "complete": token_complete,
             "reportedRollouts": tokens.len(),
-            "total": token_complete.then_some(tokens.iter().sum::<u64>()),
+            "total": if token_complete { total_tokens } else { None },
         },
         "efficiency": {
             "basis": "total_reward_divided_by_container_reported_rollout_policy_cost",
@@ -155,6 +157,9 @@ pub fn validate(snapshot: &OptimizerRunSnapshot) -> Result<()> {
     if snapshot.run.cursor_seq != snapshot.terminal_cursor {
         bail!("optimizer snapshot cursor does not match run cursor");
     }
+    if snapshot.terminal_cursor > i64::MAX as u64 {
+        bail!("optimizer snapshot cursor exceeds storage range");
+    }
     let last = snapshot
         .events
         .last()
@@ -170,6 +175,9 @@ pub fn validate(snapshot: &OptimizerRunSnapshot) -> Result<()> {
     if snapshot.sealed != snapshot.terminal_manifest.is_some() {
         bail!("optimizer snapshot sealed state disagrees with terminal manifest");
     }
+    if let Some(manifest) = snapshot.terminal_manifest.as_ref() {
+        super::terminal::snapshot_status(&snapshot.run, manifest)?;
+    }
     Ok(())
 }
 
@@ -183,18 +191,16 @@ pub fn persist(
         bail!("optimizer snapshot exceeds 128 MiB limit");
     }
     let digest = content.put_bytes("optimizer_snapshots", &bytes)?;
+    // An existing CAS path may have been damaged outside the app. Never issue
+    // a successful import receipt for bytes the reader would later refuse.
+    content.get_bytes_bounded("optimizer_snapshots", &digest, MAX_SNAPSHOT_BYTES)?;
     let snapshot_id = format!("optsnap_{}", &digest[..24]);
     let imported_at = Utc::now().to_rfc3339();
     let terminal_status = snapshot
         .terminal_manifest
         .as_ref()
-        .and_then(|value| {
-            value
-                .get("terminalStatus")
-                .or_else(|| value.get("terminal_status"))
-        })
-        .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(|manifest| super::terminal::snapshot_status(&snapshot.run, manifest))
+        .transpose()?;
     let export_dir = content
         .root()
         .parent()
@@ -204,7 +210,11 @@ pub fn persist(
     fs::create_dir_all(&export_dir)?;
     let artifact = export_dir.join(format!("{snapshot_id}.json"));
     if !artifact.exists() {
-        fs::write(&artifact, &bytes)?;
+        let mut file = tempfile::NamedTempFile::new_in(&export_dir)?;
+        std::io::Write::write_all(&mut file, &bytes)?;
+        file.persist(&artifact)?;
+    } else if read_bounded_file(&artifact)? != bytes {
+        bail!("optimizer snapshot export artifact failed content verification");
     }
     let metadata =
         json!({"sourceBundleId": snapshot.source_bundle_id, "eventCount": snapshot.events.len()});
@@ -229,17 +239,24 @@ pub fn persist(
     Ok(receipt)
 }
 
+fn read_bounded_file(path: &std::path::Path) -> Result<Vec<u8>> {
+    let file = fs::File::open(path).with_context(|| format!("read optimizer snapshot {}", path.display()))?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() { bail!("optimizer snapshot must be a regular file"); }
+    if metadata.len() > MAX_SNAPSHOT_BYTES as u64 { bail!("optimizer snapshot exceeds 128 MiB limit"); }
+    let mut bytes = Vec::new();
+    file.take(MAX_SNAPSHOT_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_SNAPSHOT_BYTES { bail!("optimizer snapshot exceeds 128 MiB limit"); }
+    Ok(bytes)
+}
+
 pub fn import_path(
     db: Arc<Database>,
     content: &ContentStore,
     request: OptimizerSnapshotImportRequest,
 ) -> Result<OptimizerSnapshotReceipt> {
     let path = PathBuf::from(&request.path);
-    let bytes =
-        fs::read(&path).with_context(|| format!("read optimizer snapshot {}", path.display()))?;
-    if bytes.len() > MAX_SNAPSHOT_BYTES {
-        bail!("optimizer snapshot exceeds 128 MiB limit");
-    }
+    let bytes = read_bounded_file(&path)?;
     let snapshot: OptimizerRunSnapshot =
         serde_json::from_slice(&bytes).context("parse optimizer snapshot")?;
     let canonical = canonical_bytes(&snapshot)?;
@@ -274,9 +291,14 @@ pub fn load(
         imported_at,
         schema_version,
     ) = row.ok_or_else(|| anyhow::anyhow!("optimizer snapshot not found"))?;
-    let bytes = content.get_bytes("optimizer_snapshots", &digest)?;
+    let bytes = content.get_bytes_bounded("optimizer_snapshots", &digest, MAX_SNAPSHOT_BYTES)?;
     let snapshot: OptimizerRunSnapshot = serde_json::from_slice(&bytes)?;
     validate(&snapshot)?;
+    if source_instance_id != snapshot.source_instance_id || source_run_id != snapshot.source_run_id
+        || cursor < 0 || cursor as u64 != snapshot.terminal_cursor || (sealed != 0) != snapshot.sealed
+        || captured_at != snapshot.captured_at || schema_version != snapshot.schema_version {
+        bail!("optimizer snapshot receipt disagrees with immutable content");
+    }
     let artifact = content
         .root()
         .parent()

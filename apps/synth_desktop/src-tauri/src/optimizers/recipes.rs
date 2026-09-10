@@ -29,12 +29,7 @@ pub(super) async fn start(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
-    let (run, event, guard) = start_inner(service, request, true).await?;
-    debug_assert!(
-        guard.is_none(),
-        "a spawned start transfers capability ownership to the worker"
-    );
-    Ok((run, event))
+    Box::pin(start_inner(service, request, true)).await
 }
 
 async fn start_inner(
@@ -44,7 +39,6 @@ async fn start_inner(
 ) -> Result<(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
-    Option<crate::secrets::RevokeRunOnFailure>,
 )> {
     let session = request
         .session_ref
@@ -52,24 +46,30 @@ async fn start_inner(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("workspace recipes require session_ref"))?;
-    let workspace =
-        super::workspace_recipe::require_session_workspace(service.database(), session)?;
-    let recipe = super::workspace_recipe::find_recipe(&workspace, &request.recipe_id)?;
+    let (workspace, recipe) = super::workspace_recipe::find_session_recipe(
+        service.database(),
+        session,
+        &request.recipe_id,
+    )?;
     match recipe.algorithm {
         super::workspace_recipe::AlgorithmKind::Eval => {
-            let (run, event) = super::container_eval::start(service, request).await?;
-            return Ok((run, event, None));
+            // The container evaluator owns a large debug-build future. Box it
+            // at the algorithm boundary so admission does not duplicate that
+            // state on the Tokio worker stack.
+            return Box::pin(super::container_eval::start(service, request)).await;
         }
         super::workspace_recipe::AlgorithmKind::Gepa => {}
     }
     let manager = service.manager().clone();
     require_plugin_ready(&manager).await?;
+    crate::project_sources::require_manifest(&recipe.source_path, crate::project_sources::Capability::Recipes)?;
     let ensured = super::container_lifecycle::ensure_from_session(
         service.database(),
         session,
         &recipe.container,
     )
     .await?;
+    crate::project_sources::require_manifest(&recipe.source_path, crate::project_sources::Capability::Recipes)?;
     let run_id = format!(
         "gepa_{}_{}",
         recipe
@@ -87,7 +87,6 @@ async fn start_inner(
     let table = config
         .as_table_mut()
         .ok_or_else(|| anyhow!("workspace recipe must be a TOML table"))?;
-    super::workspace_recipe::compile_gepa_native_config(table, &recipe)?;
     table.insert(
         "run".into(),
         toml::Value::Table(
@@ -112,14 +111,8 @@ async fn start_inner(
     );
     let openai =
         resolve_provider_workload(&recipe.provider, &run_id, &recipe.id, Some(&config_path))?;
-    // The capability just issued has no durable owner yet. Any failure from
-    // here to the point ownership transfers (the prepared run record, or the
-    // spawned worker's own RevokeRunOnDrop) must revoke it, or a failed
-    // startup leaves a zero-use capability granted.
-    let capability_guard = crate::secrets::RevokeRunOnFailure::new(run_id.clone());
     super::workspace_recipe::bind_locality_urls(
         table,
-        &recipe.provider,
         recipe.locality,
         openai.base_url.as_deref(),
         openai.config_base_url.as_deref(),
@@ -175,9 +168,18 @@ async fn start_inner(
             "recipeId": recipe.id,
             "task": recipe.family,
             "source": "workspace",
+            "recipeSourcePath": recipe.source_path,
             "containerId": ensured.container_id,
             "locality": recipe.locality.as_str(),
             "sourceHash": recipe.source_hash,
+            "proposerModel": recipe.proposer_model,
+            // Paid admission runs before the worker can mint and persist its
+            // run-scoped credential lease. Preserve the recipe's declared
+            // provider now so admission can authorize the correct route; the
+            // full receipt chain replaces this stub once the lease exists.
+            "credentialChain": {
+                "provider": recipe.provider,
+            },
             "limits": {
                 "maxCostUsd": recipe.bounds.max_cost_usd,
                 "maxTotalRollouts": recipe.bounds.max_total_rollouts,
@@ -192,9 +194,7 @@ async fn start_inner(
     let (run, event) = service.create(create).await?;
     let (run, _) = manager.pin_run(service, &run.id, &recipe.id).await?;
     if !spawn {
-        // The prepare path still has fallible persistence ahead of it; the
-        // caller disarms once the prepared record durably owns the capability.
-        return Ok((run, event, Some(capability_guard)));
+        return Ok((run, event));
     }
     append_status_event(service, &run_id, "optimizer.run.queued", "queued").await?;
     let (cancel_tx, cancel_rx) = watch::channel(None);
@@ -204,8 +204,6 @@ async fn start_inner(
     let worker_service = service.clone();
     let worker_manager = manager.clone();
     let work_dir = run_dir.clone();
-    // From here the worker's own RevokeRunOnDrop owns terminal revocation.
-    capability_guard.disarm();
     tokio::spawn(async move {
         if let Err(error) = run_recipe_worker(
             worker_service.clone(),
@@ -224,7 +222,7 @@ async fn start_inner(
         worker_manager.release_gepa_recipe(&run_id).await;
         worker_service.unregister_local_recipe(&run_id).await;
     });
-    Ok((run, event, None))
+    Ok((run, event))
 }
 
 pub(super) async fn prepare(
@@ -236,7 +234,7 @@ pub(super) async fn prepare(
 )> {
     let manager = service.manager().clone();
     require_plugin_ready(&manager).await?;
-    let (mut run, event, capability_guard) = start_inner(service, request, false).await?;
+    let (mut run, event) = start_inner(service, request, false).await?;
     let digest = preparation_digest(&run);
     let mut summary = run.summary.as_object().cloned().unwrap_or_default();
     summary.insert("preparationDigest".into(), json!(digest));
@@ -259,11 +257,6 @@ pub(super) async fn prepare(
     run.summary = serde_json::Value::Object(summary);
     run.status = "waiting_for_viewer".into();
     let run = service.persist_run(run).await?;
-    // The prepared record is durable: it owns the capability from here until
-    // `start_prepared` hands it to the worker's revoke-and-rotate transition.
-    if let Some(guard) = capability_guard {
-        guard.disarm();
-    }
     Ok((run, event))
 }
 
@@ -276,6 +269,8 @@ pub(super) async fn start_prepared(
 )> {
     require_plugin_ready(service.manager()).await?;
     let run = service.get(run_id.to_string()).await?;
+    let source_path = recipe_source_path(&run.summary)?;
+    crate::project_sources::require_manifest(&source_path, crate::project_sources::Capability::Recipes)?;
     if run.status != "waiting_for_viewer" && run.status != "queued" {
         bail!(
             "optimizer run `{run_id}` is not prepared for start (status {})",
@@ -344,7 +339,9 @@ pub(super) async fn require_plugin_ready(manager: &super::OptimizerManager) -> R
     if manager.is_running().await {
         return Ok(());
     }
-    let status = manager.status().await;
+    // Bootstrap runs before the UI's first status refresh. The initial cached
+    // status has no version even when an installed distribution is selected.
+    let status = manager.refresh().await;
     if status.version.is_none() {
         return Err(crate::plugins::PluginNotReady::new("not_installed", "install").into());
     }
@@ -497,6 +494,13 @@ fn run_index_wait() -> Duration {
     crate::limits::OPTIMIZER_RUN_INDEX_WAIT
 }
 
+fn recipe_source_path(summary: &Value) -> Result<PathBuf> {
+    let path = summary.get("recipeSourcePath").and_then(Value::as_str)
+        .map(PathBuf::from).filter(|path| path.is_absolute())
+        .ok_or_else(|| anyhow!("prepared recipe has no executable source provenance; prepare it again from an approved recipe source"))?;
+    Ok(path)
+}
+
 async fn run_recipe_worker(
     service: OptimizerService,
     run_id: String,
@@ -506,7 +510,11 @@ async fn run_recipe_worker(
     manager: Arc<super::OptimizerManager>,
     mut cancel_rx: super::CancelObserver,
 ) -> Result<()> {
+    let _revoke_capabilities = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
+    let run = service.get(run_id.clone()).await?;
+    let source_path = recipe_source_path(&run.summary)?;
+    crate::project_sources::require_manifest(&source_path, crate::project_sources::Capability::Recipes)?;
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
     let provider = fs::read_to_string(&config_path)
         .context("read run-owned recipe provider")?
@@ -517,11 +525,6 @@ async fn run_recipe_worker(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("run-owned recipe is missing provider"))?
         .to_string();
-    // Explicit revoke-and-rotate: preparation (start_inner) issued a
-    // capability that the prepared/created record owned until now. The worker
-    // retires that lease and issues its own so the run has exactly one active
-    // capability owner, guarded by `_revoke` above on every terminal path.
-    crate::secrets::revoke_run_best_effort(&run_id);
     let openai = resolve_provider_workload(
         &provider,
         &run_id,
@@ -542,6 +545,7 @@ async fn run_recipe_worker(
     let mut child = manager
         .spawn_gepa_recipe(
             &run_id,
+            &source_path,
             &cookbook,
             &config_path,
             stdout,
@@ -768,15 +772,38 @@ fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::Sec
         .and_then(toml::Value::as_integer)
         .and_then(|value| u64::try_from(value).ok())
         .filter(|value| *value > 0);
+    let calls_per_rollout = config
+        .get("policy")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("max_calls"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(16);
+    // The provider capability must cover the entire admitted execution plus
+    // terminal settlement. A fixed desktop TTL can expire in the middle of a
+    // longer, otherwise valid optimizer run.
+    let capability_lifetime_seconds = config
+        .get("bounds")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("max_seconds"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.saturating_add(300))
+        .unwrap_or_else(|| crate::limits::SECRETS_CAPABILITY_TTL.as_secs())
+        .max(crate::limits::SECRETS_CAPABILITY_TTL.as_secs());
     let declared_output_tokens =
         rollout_output_limit.map(|limit| rollout_limit.saturating_mul(limit));
     Ok(super::admission::provider_use_policy_from_bounds(
         vec!["chat.completions.create".into()],
         models,
         reasoning_efforts,
-        rollout_limit.saturating_mul(16).min(u64::from(u32::MAX)) as u32,
+        rollout_limit
+            .saturating_mul(calls_per_rollout)
+            .min(u64::from(u32::MAX)) as u32,
         (max_cost_usd * 1_000_000.0).round() as u64,
-        crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
+        capability_lifetime_seconds,
         declared_output_tokens.map(|tokens| tokens.saturating_mul(4)),
         declared_output_tokens,
     ))
@@ -1235,13 +1262,13 @@ async fn append_terminal_event(
     detail: String,
 ) -> Result<()> {
     let run = service.get(run_id.to_string()).await?;
-    if service
-        .terminal_manifest(run_id.to_string())
-        .await?
-        .is_some()
-    {
-        return Ok(());
-    }
+    // Final ingestion can seal the producer's terminal event before the
+    // recipe supervisor gets here. Still route that compatible terminal
+    // through `settle_run`: its idempotent sealed-manifest branch performs
+    // the Workshop-owned post-terminal cleanup (capability revocation,
+    // durable credential-chain sealing, and paid-compute settlement). An
+    // early return here left completed GEPA runs with a revoked capability in
+    // the capability table but a stale `granted` summary and reservation.
     let error = if failed {
         let run_directory = run
             .summary

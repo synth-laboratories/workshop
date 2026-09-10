@@ -27,6 +27,8 @@ import type { FailedSend } from "../runtime/codexTurn";
 import type { MainView } from "../routes";
 import { Composer } from "./Composer";
 import type { LagunaPolicy } from "../bridge/types";
+import { createPortal } from "react-dom";
+import { useComposerLayoutHost } from "./ComposerLayout";
 
 export type ComposerDockProps = {
 	show: boolean;
@@ -88,7 +90,7 @@ function recoveryMessage(notice: RecoveryNotice): string {
 	if (notice.externalObjectId) {
 		return `Workshop exited after this task started ${notice.externalObjectId}.`;
 	}
-	return "Workshop restarted while this task was running. Continue on the same thread.";
+	return "Workshop exited while this task was running.";
 }
 
 /**
@@ -140,9 +142,10 @@ export function ComposerDock({
 	setUsageSheetOpen,
 	onStopActiveTurn
 }: ComposerDockProps) {
-	if (!show) return null;
+	const host = useComposerLayoutHost();
+	if (!show || !host) return null;
 
-	return (
+	return createPortal(
 		<Composer
 			state={state}
 			sentMessages={activeChat?.messages
@@ -269,5 +272,7 @@ export function ComposerDock({
 				onOpenVoiceSettings: () => setView({ kind: "settings", section: "voice" })
 			}}
 		/>
+		,
+		host
 	);
 }

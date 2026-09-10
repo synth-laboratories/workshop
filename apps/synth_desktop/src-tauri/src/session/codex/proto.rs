@@ -48,7 +48,7 @@ pub struct CodexSessionStartRequest {
     pub thread_id: Option<String>,
     pub multi_agent_version: Option<MultiAgentVersion>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Number)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub auto_compact_token_limit: Option<u64>,
     /// Rust-populated exact roots for this conversation. Renderer input is
     /// discarded by `prepare_codex_start` before launch.
@@ -109,6 +109,9 @@ pub struct CodexTurnStartRequest {
     pub session_id: String,
     pub prompt: String,
     pub effort: Option<String>,
+    /// Ephemeral renderer state sent to the model but not journalled as user text.
+    #[serde(default)]
+    pub ui_context: Option<String>,
     /// Renderer optimistic bubble id. When present, the journalled
     /// `message.created` reuses it so the host event collapses onto the
     /// already-visible bubble instead of minting a second UUID.
@@ -125,6 +128,9 @@ pub struct CodexTurnSendRequest {
     pub start: CodexSessionStartRequest,
     pub prompt: String,
     pub effort: Option<String>,
+    /// Same ownership as [`CodexTurnStartRequest::ui_context`].
+    #[serde(default)]
+    pub ui_context: Option<String>,
     /// When the destination model differs from the live attachment, compact the
     /// thread on the *source* model before rebind. Renderer sets this from the
     /// send-time state machine (`modelSwitchPlan`): true only when the thread
@@ -609,6 +615,8 @@ pub(crate) struct Session {
     pub(crate) server: Arc<AppServer>,
     pub(crate) thread_id: String,
     pub(crate) turn_id: RwLock<Option<String>>,
+    /// A durable daemon can retain old MCP children across desktop upgrades.
+    pub(crate) mcp_reload_pending: Mutex<bool>,
     pub(crate) model: String,
     pub(crate) approval_policy: String,
     pub(crate) sandbox: String,

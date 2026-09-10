@@ -15,6 +15,7 @@ use serde_json::Value;
 pub enum SessionKind {
     Codex,
     Intern,
+    Acp,
 }
 
 impl SessionKind {
@@ -22,6 +23,7 @@ impl SessionKind {
         match self {
             Self::Codex => "codex",
             Self::Intern => "intern",
+            Self::Acp => "acp",
         }
     }
 
@@ -29,6 +31,7 @@ impl SessionKind {
         match value {
             "codex" => Ok(Self::Codex),
             "intern" => Ok(Self::Intern),
+            "acp" => Ok(Self::Acp),
             _ => bail!("unknown session kind: {value}"),
         }
     }
@@ -38,6 +41,7 @@ impl SessionKind {
     pub fn from_target_json(target: &Value) -> Self {
         match target.get("kind").and_then(Value::as_str) {
             Some("intern") => Self::Intern,
+            Some("agent") => Self::Acp,
             // Historical Codex rows used `"codex"` or `"local"` (Laguna-shaped
             // bags). Both route as Codex under the v0.2 SessionKind law.
             Some("codex") | Some("local") | _ => Self::Codex,
