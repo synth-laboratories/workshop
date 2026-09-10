@@ -93,10 +93,14 @@ function PinnedTemplate({Shell,...props}:{Shell:ComponentType<ShellProps>}&Shell
 	}
 	const data=JSON.parse(JSON.stringify({values,aliases})) as {values:ShellProps;aliases:Record<string,string>};
 	const cut=useTemplateEvidence(data);
+	const rendered=useMemo(()=>{
+		if(!cut.value)return null;
+		const restored={...cut.value.values};
+		for(const [key,source] of Object.entries(cut.value.aliases))restored[key]=restored[source];
+		return <Shell {...restored} {...ports}/>;
+	},[Shell,cut.value,ports]);
 	if(!cut.ready||!cut.value)return <div data-visual-capture-blocked="true" role={cut.error?"alert":"status"}>{cut.error??"Restoring pinned visual evidence…"}</div>;
-	const restored={...cut.value.values};
-	for(const [key,source] of Object.entries(cut.value.aliases))restored[key]=restored[source];
-	return <Shell {...restored} {...ports}/>;
+	return rendered;
 }
 
 export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
@@ -372,6 +376,10 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		}),
 		[artifact.id, artifact.visualId, artifact.revision]
 	);
+	const visualStatePort=useMemo(()=>bridges.visuals ? {
+		putSnapshot:(snapshot:import("@synth/visuals-protocol").VisualSnapshot)=>bridges.visuals!.putSnapshot(visualIdentity.visualId,snapshot),
+		putRecording:(recording:import("@synth/visuals-protocol").VisualRecording)=>bridges.visuals!.putRecording(visualIdentity.visualId,recording),
+	}:undefined,[visualIdentity]);
 	const optimizerRunId = resolvedBindings.status !== "rejected"
 		? resolvedBindings.slots.find(
 			(entry) => bindingInputName(entry) === "optimizer_run" && entry.kind === "optimizer_run"
@@ -925,10 +933,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				replayMissingTransport={replay.missingTransport}
 				visualId={artifact.visualId ?? artifact.id}
 				revision={typeof artifact.revision === "number" ? artifact.revision : null}
-				visualState={bridges.visuals ? {
-					putSnapshot: (snapshot: import("@synth/visuals-protocol").VisualSnapshot) => bridges.visuals!.putSnapshot(artifact.visualId ?? artifact.id, snapshot),
-					putRecording: (recording: import("@synth/visuals-protocol").VisualRecording) => bridges.visuals!.putRecording(artifact.visualId ?? artifact.id, recording),
-				} : undefined}
+				visualState={visualStatePort}
 			/>
 		</div>
 	);
