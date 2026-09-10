@@ -11,6 +11,7 @@ pub(crate) struct PersistRequest {
     pub package_digest: String,
     pub byte_size: u64,
     pub overwrites: bool,
+    pub source_kind: String,
 }
 
 impl PersistRequest {
@@ -21,6 +22,7 @@ impl PersistRequest {
             package_digest: self.package_digest.clone(),
             byte_size: self.byte_size,
             overwrites: self.overwrites,
+            source_kind: self.source_kind.clone(),
         }
     }
 }
@@ -65,18 +67,19 @@ mod tests {
     use crate::session::approval::{ApprovalDecision, ApprovalScope};
 
     fn request() -> PersistRequest {
-        PersistRequest { template_id: "custom.viewer.v1".into(), destination: "/approved/template".into(), package_digest: "sha256:reviewed".into(), byte_size: 12, overwrites: false }
+        PersistRequest { template_id: "custom.viewer.v1".into(), destination: "/approved/template".into(), package_digest: "sha256:reviewed".into(), byte_size: 12, overwrites: false, source_kind: "managed".into() }
     }
 
     #[test]
     fn consent_binds_every_material_field() {
         let original = request();
-        let mut changes = vec![original.clone(); 5];
+        let mut changes = vec![original.clone(); 6];
         changes[0].template_id = "other".into();
         changes[1].destination = "/other".into();
         changes[2].package_digest = "sha256:changed".into();
         changes[3].byte_size += 1;
         changes[4].overwrites = true;
+        changes[5].source_kind = "user".into();
         for changed in changes {
             assert!(PersistConsent { request: original.clone() }.bind(&changed).is_err());
         }

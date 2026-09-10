@@ -206,6 +206,7 @@ pub(crate) enum ApprovalKind {
         package_digest: String,
         byte_size: u64,
         overwrites: bool,
+        source_kind: String,
     },
     PluginLifecycle {
         plugin_id: String,
@@ -463,12 +464,13 @@ impl ApprovalKind {
                 "effect": effect,
                 "alwaysSupported": false,
             }),
-            Self::VisualTemplatePersist { template_id, destination, package_digest, byte_size, overwrites } => json!({
+            Self::VisualTemplatePersist { template_id, destination, package_digest, byte_size, overwrites, source_kind } => json!({
                 "approvalId": approval_id,
                 "kind": self.name(),
                 "templateId": template_id,
                 "destination": destination,
                 "packageDigest": package_digest,
+                "sourceKind": source_kind,
                 "byteSize": byte_size,
                 "overwrites": overwrites,
                 "alwaysSupported": false,

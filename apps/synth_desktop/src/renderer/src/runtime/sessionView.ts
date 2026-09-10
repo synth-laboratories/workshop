@@ -1703,7 +1703,7 @@ export function eventsToLocalActivity(
 			].filter((value): value is string => typeof value === "string" && value !== "").join(" · ")
 			: undefined;
 		const templateDetail = payload.kind === "visual_template_persist"
-			? [payload.templateId, payload.destination, payload.packageDigest,
+			? [payload.templateId, payload.sourceKind === "user" ? "TSX template" : "Sandboxed HTML template", payload.destination, payload.packageDigest,
 				`${payload.byteSize} bytes`, payload.overwrites ? "Replaces existing template" : "Creates new template",
 				"Renderer code remains available across sessions and restarts"].join(" · ")
 			: undefined;

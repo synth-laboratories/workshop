@@ -718,6 +718,10 @@ export const commands = {
 	 *  the agent shows and a document the reader clicks arrive by one path.
 	 */
 	documentShow: (sessionId: string, path: string) => typedError<DocumentShown_Serialize, AppError_Serialize>(__TAURI_INVOKE("document_show", { sessionId, path })),
+	visualsTemplateShellSource: (templateId: string) => typedError<string, AppError_Serialize>(__TAURI_INVOKE("visuals_template_shell_source", { templateId })),
+	visualsTemplateSave: (sessionId: string, templateId: string, manifest: string, source: string) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_template_save", { sessionId, templateId, manifest, source })),
+	visualsTemplateCreate: (sessionId: string, templateId: string, fromTemplateId: string, title: string | null) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_template_create", { sessionId, templateId, fromTemplateId, title })),
+	visualsTemplateValidate: (templateId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visuals_template_validate", { templateId })),
 };
 
 /* Types */

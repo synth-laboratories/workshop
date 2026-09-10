@@ -21,6 +21,7 @@ pub mod snapshot;
 pub mod sourced;
 pub mod systems;
 mod templates;
+pub mod user_templates;
 
 /// The repository's `visuals/` root, so tests can load the same fixtures the
 /// binding resolver reads.
