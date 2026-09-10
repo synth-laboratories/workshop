@@ -869,6 +869,17 @@ impl VisualRegistry {
         super::templates::import_managed_template(source_path)
     }
 
+    pub async fn import_template_approved<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Option<&str>,
+        source_path: &str,
+    ) -> Result<TemplateMeta> {
+        let prepared = super::templates::prepare_managed_import(source_path)?;
+        let consent = crate::session::template_persist::authorize(app, session_id, &prepared.request()?).await?;
+        prepared.persist(consent)
+    }
+
     pub async fn mermaid_source(&self, id: String) -> Result<VisualAsset> {
         self.visual_source(id).await
     }

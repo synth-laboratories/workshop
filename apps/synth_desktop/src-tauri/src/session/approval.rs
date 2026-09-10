@@ -200,6 +200,13 @@ pub(crate) enum ApprovalKind {
         action: String,
         effect: String,
     },
+    VisualTemplatePersist {
+        template_id: String,
+        destination: String,
+        package_digest: String,
+        byte_size: u64,
+        overwrites: bool,
+    },
     PluginLifecycle {
         plugin_id: String,
         action: String,
@@ -250,6 +257,7 @@ impl ApprovalKind {
             Self::SidecarLifecycle { .. } => "sidecar_lifecycle",
             Self::ContainerLifecycle { .. } => "container_lifecycle",
             Self::PluginLifecycle { .. } => "plugin_lifecycle",
+            Self::VisualTemplatePersist { .. } => "visual_template_persist",
             Self::CredentialAccess { .. } => "credential_access",
             Self::ComputerUse { .. } => "computer_use",
         }
@@ -275,6 +283,7 @@ impl ApprovalKind {
             Self::ComputerUse { hazard: true, .. }
                 | Self::PaidCompute { .. }
                 | Self::CredentialAccess { .. }
+                | Self::VisualTemplatePersist { .. }
         )
     }
 
@@ -322,6 +331,7 @@ impl ApprovalKind {
                 },
             ) => Ok(()),
             (Self::PluginLifecycle { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
+            (Self::VisualTemplatePersist { .. }, ApprovalDecision::Approve { scope: ApprovalScope::Once }) => Ok(()),
             // Remembered scopes on a hazard action were already refused above,
             // so what reaches here is either a once-off hazard approval or an
             // app-scope grant, and both are valid.
@@ -451,6 +461,16 @@ impl ApprovalKind {
                 "sourceDigest": source_digest,
                 "action": action,
                 "effect": effect,
+                "alwaysSupported": false,
+            }),
+            Self::VisualTemplatePersist { template_id, destination, package_digest, byte_size, overwrites } => json!({
+                "approvalId": approval_id,
+                "kind": self.name(),
+                "templateId": template_id,
+                "destination": destination,
+                "packageDigest": package_digest,
+                "byteSize": byte_size,
+                "overwrites": overwrites,
                 "alwaysSupported": false,
             }),
             Self::PluginLifecycle {

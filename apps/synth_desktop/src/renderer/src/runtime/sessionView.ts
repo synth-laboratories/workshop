@@ -1645,6 +1645,7 @@ export function eventsToLocalActivity(
 		const path = typeof payload.path === "string" ? payload.path : undefined;
 		const approvalKind = typeof payload.kind === "string" ? payload.kind : "permission";
 		const approvalSubject = approvalKind === "paid_compute" ? "Paid compute"
+			: approvalKind === "visual_template_persist" ? "Persistent visual template"
 			: approvalKind === "credential_access" ? "Credential access"
 				: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
 					: approvalKind === "container_lifecycle" ? "Container replacement"
@@ -1656,6 +1657,7 @@ export function eventsToLocalActivity(
 		switch (event.eventKind) {
 			case "approval.requested":
 				label = approvalKind === "paid_compute" ? "Paid compute approval"
+					: approvalKind === "visual_template_persist" ? "Save persistent visual template"
 					: approvalKind === "credential_access" ? "Credential access"
 						: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
 							: approvalKind === "container_lifecycle" ? "Replace container workload"
@@ -1700,6 +1702,11 @@ export function eventsToLocalActivity(
 					: [])
 			].filter((value): value is string => typeof value === "string" && value !== "").join(" · ")
 			: undefined;
+		const templateDetail = payload.kind === "visual_template_persist"
+			? [payload.templateId, payload.destination, payload.packageDigest,
+				`${payload.byteSize} bytes`, payload.overwrites ? "Replaces existing template" : "Creates new template",
+				"Renderer code remains available across sessions and restarts"].join(" · ")
+			: undefined;
 		const pluginDetail = payload.kind === "plugin_lifecycle"
 			? [
 				payload.action,
@@ -1727,6 +1734,7 @@ export function eventsToLocalActivity(
 		const safeKind = payload.kind === "shell_command" || payload.kind === "file_change" || payload.kind === "permission"
 			|| payload.kind === "plugin_lifecycle" || payload.kind === "paid_compute";
 		const detail = typedDetail
+			?? templateDetail
 			?? computerUseDetail
 			?? pluginDetail
 			?? (safeKind && typeof payload.detail === "string"
@@ -1740,7 +1748,7 @@ export function eventsToLocalActivity(
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
-			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "container_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use"
+			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "container_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "visual_template_persist" || approvalKind === "computer_use"
 				? approvalKind : "permission",
 			approvalPayload: event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? {
 				operation: typeof payload.operation === "string" ? payload.operation : undefined,
