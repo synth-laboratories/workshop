@@ -10303,6 +10303,8 @@ html.visual-expanded .sidebar {
 .reports-field,
 .reports-section {
 	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	min-width: 0;
 	gap: 8px;
 	margin-top: 16px;
 }
@@ -10364,10 +10366,23 @@ html.visual-expanded .sidebar {
 }
 .reports-trace-inspector {
 	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	min-width: 0;
 	gap: 12px;
 	padding: 12px;
 	border: 1px solid var(--color-border);
 	background: var(--color-surface);
+}
+.reports-trace-inspector > *,
+.reports-inline-form > * {
+	min-width: 0;
+	max-width: 100%;
+}
+.reports-layout .visuals-card-main {
+	display: grid;
+	gap: 4px;
+	text-align: left;
+	overflow-wrap: anywhere;
 }
 .reports-lineage {
 	display: grid;

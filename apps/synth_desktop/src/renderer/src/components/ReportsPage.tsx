@@ -1,5 +1,5 @@
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { readReportDraft, writeReportDraft, type ReportDraft } from "../runtime/reportDrafts";
 import { bridges } from "../runtime/desktopBridge";
 import TraceInspector from "@synth/visual-templates/analysis/trace.rollout_inspector.v1/shell";
@@ -190,6 +190,17 @@ function traceEntries(block: ReportBlock | undefined): ReportTraceEntry[] {
 	return [];
 }
 
+function ReportTracePreview({ entry }: { entry: ReportTraceEntry }) {
+	const [open, setOpen] = useState(false);
+	const previewId = useId();
+	return <section>
+		<button type="button" aria-expanded={open} aria-controls={previewId} onClick={() => setOpen(!open)}>
+			{open ? "Hide attached trace" : "Inspect attached trace"}
+		</button>
+		<div id={previewId}>{open ? <TraceInspector title={entry.label} projection={entry.projection as never} /> : null}</div>
+	</section>;
+}
+
 export function ReportsPage({ onBack, initialReportId }: Props) {
 	const [tab, setTab] = useState<Tab>("all");
 	const [search, setSearch] = useState("");
@@ -221,6 +232,34 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 	const [comments, setComments] = useState<ReportComment[]>([]);
 	const [commentBody, setCommentBody] = useState("");
 	const [traceDigest, setTraceDigest] = useState("");
+	const traceAttachInFlight = useRef(false);
+	const [tracePickerOpen, setTracePickerOpen] = useState(false);
+	const tracePickerId = useId();
+	const [traceCatalog, setTraceCatalog] = useState<Array<{ digest: string; title: string; createdAt: string }>>([]);
+	const [traceCatalogStatus, setTraceCatalogStatus] = useState("");
+	useEffect(() => {
+		if (!tracePickerOpen) return;
+		let cancelled = false;
+		setTraceCatalog([]);
+		setTraceCatalogStatus("Loading retained traces…");
+		const timer = window.setTimeout(() => {
+			cancelled = true;
+			setTraceCatalogStatus("Trace catalog did not respond within 10 seconds. Close and reopen to retry, or paste a known digest.");
+		}, 10000);
+		void (async () => {
+			try {
+				if (!bridges.inventory) throw new Error("Trace catalog is unavailable in this environment.");
+				const inventory = await bridges.inventory.listTraces();
+				if (cancelled) return;
+				const rows = [...new Map(inventory.filter(row => typeof row.digest === "string" && row.digest.trim()).map(row => [row.digest, row])).values()];
+				setTraceCatalog(rows.slice(0, 100));
+				setTraceCatalogStatus(rows.length > 100 ? "Showing the first 100 traces. Paste a digest for another trace." : rows.length ? "Choose a trace, then attach it to this report." : "No retained traces yet. Record or import a trace before attaching evidence.");
+			} catch (reason) {
+				if (!cancelled) setTraceCatalogStatus(reportSurfaceError(reason));
+			} finally { window.clearTimeout(timer); }
+		})();
+		return () => { cancelled = true; window.clearTimeout(timer); };
+	}, [tracePickerOpen]);
 	const [traceLabel, setTraceLabel] = useState("");
 	const [selectedTraceIndex, setSelectedTraceIndex] = useState(0);
 	const [visibilityRequests, setVisibilityRequests] = useState<ReportVisibilityRequest[]>([]);
@@ -245,7 +284,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 	const saveInFlight = useRef(false);
 
 	async function load(reportId?: string | null, background = false) {
-		if (background && (loadInFlight.current || saveInFlight.current)) return;
+		if (background && (loadInFlight.current || saveInFlight.current || traceAttachInFlight.current)) return;
 		const generation = ++loadGeneration.current;
 		loadInFlight.current = true;
 		const bridge = bridges.reports;
@@ -372,7 +411,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 	}
 
 	async function saveDraft() {
-		if (!selected || !revision || saveInFlight.current) return null;
+		if (!selected || !revision || saveInFlight.current || traceAttachInFlight.current) return null;
 		saveInFlight.current = true;
 		const blocks: ReportBlock[] = revision.blocks.map((block) => {
 			if (block.anchor === "findings") {
@@ -625,10 +664,16 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 	}
 
 	async function attachTrace() {
-		if (!selected || !revision || !traceDigest.trim()) return;
+		if (!selected || !revision || sealedBundle || dirty || !traceDigest.trim() || traceAttachInFlight.current || saveInFlight.current) return;
+		traceAttachInFlight.current = true;
+		const generation = loadGeneration.current;
+		const isCurrent = () => generation === loadGeneration.current && activeDraft.current.reportId === selected.id;
 		setSaveStatus("saving");
 		try {
+			if (!bridges.inventory || !bridges.reports) throw new Error("Trace attachment requires Synth Desktop.");
 			const resolved = await bridges.inventory!.resolveTraceProjection(traceDigest.trim(), "rollout-inspector");
+			if (!isCurrent()) return;
+			if (activeDraft.current.dirty) throw new Error("Save your draft changes before attaching trace evidence.");
 			const existing = revision.blocks.find((block) => block.kind === "report.trace-v5.v1");
 			const traces = traceEntries(existing);
 			const entry: ReportTraceEntry = {
@@ -654,15 +699,20 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			const blocks = existing
 				? revision.blocks.map((block) => (block.kind === "report.trace-v5.v1" ? traceBlock : block))
 				: [...revision.blocks, traceBlock];
-			await bridges.reports!.update(selected.id, { expectedRevision: revision.revision, blocks });
+			const saved = await bridges.reports!.update(selected.id, { expectedRevision: revision.revision, blocks });
+			const pending = readReportDraft(selected.id);
+			if (pending) writeReportDraft(selected.id, { ...pending, base: { ...revision, revision: saved.currentRevision, blocks } });
+			if (!isCurrent()) return;
 			setTraceDigest("");
 			setTraceLabel("");
 			setSelectedTraceIndex(Math.max(nextTraces.length - 1, 0));
 			await load(selected.id);
 		} catch (reason) {
-			setSaveStatus("error");
-			setError(reportSurfaceError(reason));
-		}
+			if (isCurrent()) {
+				setSaveStatus("error");
+				setError(reportSurfaceError(reason));
+			}
+		} finally { traceAttachInFlight.current = false; }
 	}
 
 	async function addComment() {
@@ -807,9 +857,9 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 								/>
 								<p>{selected.status} · {readerRevision.schemaVersion} · rev {readerRevision.revision}</p>
 								<p className="reports-provenance" data-testid="reports-save-status" role="status">
-									{saveStatus === "saving" ? "Saving" : saveStatus === "error" ? "Error" : `Saved · rev ${readerRevision.revision}`}
+									{saveStatus === "saving" ? "Saving" : saveStatus === "error" ? "Error" : dirty ? "Unsaved changes" : `Saved · rev ${readerRevision.revision}`}
 								</p>
-								<p className="reports-provenance">Edits save automatically.</p>
+								<p className="reports-provenance">Draft edits are retained in this session. Use Save draft to commit them.</p>
 							</div>
 							<div className="reports-actions">
 								<button type="button" onClick={() => void saveDraft()} disabled={Boolean(sealedBundle) || !dirty || saveStatus === "saving"}>Save draft</button>
@@ -1010,9 +1060,20 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 						<section id="traces" className="reports-section" data-testid="reports-traces">
 							<h2>{readerRevision.blocks.find((block) => block.kind === "report.trace-v5.v1")?.title || "Trace evidence"}</h2>
 							<div className="reports-inline-form">
-								<input value={traceDigest} onChange={(event) => setTraceDigest(event.target.value)} placeholder="Trace digest (sha256:…)" disabled={Boolean(sealedBundle)} />
-								<input value={traceLabel} onChange={(event) => setTraceLabel(event.target.value)} placeholder="Label (OSS-20B · seed 0)" disabled={Boolean(sealedBundle)} />
-								<button type="button" data-testid="reports-attach-trace" onClick={() => void attachTrace()} disabled={Boolean(sealedBundle)}>Attach Trace V5</button>
+								<button type="button" aria-expanded={tracePickerOpen} aria-controls={tracePickerId} onClick={() => setTracePickerOpen(!tracePickerOpen)} disabled={Boolean(sealedBundle)}>Choose retained trace</button>
+								{tracePickerOpen ? <section id={tracePickerId} aria-label="Retained trace picker">
+									<p role="status">{traceCatalogStatus}</p>
+									<select aria-label="Available retained traces" disabled={Boolean(sealedBundle) || saveStatus === "saving"} value={traceCatalog.some(row => row.digest === traceDigest) ? traceDigest : ""} onChange={event => {
+										const row = traceCatalog.find(row => row.digest === event.target.value);
+										if (row) { setTraceDigest(row.digest); setTraceLabel(row.title); }
+									}}>
+										<option value="">Select a trace</option>
+										{traceCatalog.map(row => <option key={row.digest} value={row.digest}>{row.title || "Untitled trace"} · {row.createdAt} · {row.digest.slice(-8)}</option>)}
+									</select>
+								</section> : null}
+								<input value={traceDigest} onChange={(event) => setTraceDigest(event.target.value)} aria-label="Retained trace digest" placeholder="Trace digest (sha256:…)" disabled={Boolean(sealedBundle) || saveStatus === "saving"} />
+								<input value={traceLabel} onChange={(event) => setTraceLabel(event.target.value)} aria-label="Trace evidence label" placeholder="Describe this trace" disabled={Boolean(sealedBundle) || saveStatus === "saving"} />
+								<button type="button" data-testid="reports-attach-trace" onClick={() => void attachTrace()} disabled={Boolean(sealedBundle) || dirty || !traceDigest.trim() || saveStatus === "saving"} title={dirty ? "Save your draft changes before attaching trace evidence" : undefined}>Attach trace</button>
 							</div>
 							{(() => {
 								const traces = traceEntries(readerRevision.blocks.find((block) => block.kind === "report.trace-v5.v1"));
@@ -1035,7 +1096,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 											</label>
 										) : null}
 										{selected?.projection ? (
-											<TraceInspector title={selected.label} projection={selected.projection as never} />
+											<ReportTracePreview key={`${selectedId}:${selected.traceDigest || selected.traceId}`} entry={selected} />
 										) : (
 											<p className="reports-missing">{MISSING}</p>
 										)}
@@ -1085,7 +1146,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 							<p className="reports-missing">Comments overlay the sealed revision and do not change its digest.</p>
 							<div className="reports-inline-form">
 								<input value={commentBody} onChange={(event) => setCommentBody(event.target.value)} placeholder="Add a private review comment" />
-								<button type="button" onClick={() => void addComment()}>Add comment</button>
+								<button type="button" onClick={() => void addComment()} disabled={!commentBody.trim()}>Add comment</button>
 							</div>
 							<ol className="reports-log">
 								{comments.map((comment) => (
@@ -1113,7 +1174,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 							</header>
 							<div className="reports-inline-form">
 								<input value={experimentTitle} onChange={(event) => setExperimentTitle(event.target.value)} placeholder="Experiment title or exp_…" disabled={Boolean(sealedBundle)} />
-								<button type="button" onClick={() => void addExperiment()} disabled={Boolean(sealedBundle)}>Add record</button>
+								<button type="button" onClick={() => void addExperiment()} disabled={Boolean(sealedBundle) || !experimentTitle.trim()}>Add record</button>
 							</div>
 							{appendixView === "ledger" ? (
 								<table className="reports-table">
@@ -1184,7 +1245,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 							<div className="reports-inline-form">
 								<input value={logTitle} onChange={(event) => setLogTitle(event.target.value)} placeholder="Log title" disabled={Boolean(sealedBundle)} />
 								<input value={logBody} onChange={(event) => setLogBody(event.target.value)} placeholder="What happened" disabled={Boolean(sealedBundle)} />
-								<button type="button" onClick={() => void appendLog()} disabled={Boolean(sealedBundle)}>Append entry</button>
+								<button type="button" onClick={() => void appendLog()} disabled={Boolean(sealedBundle) || !logTitle.trim() || !logBody.trim()}>Append entry</button>
 							</div>
 							<ol className="reports-log">
 								{(logView === "decisions" ? log.filter((entry) => decisionKinds.has(entry.entryKind)) : log).map((entry) => (
