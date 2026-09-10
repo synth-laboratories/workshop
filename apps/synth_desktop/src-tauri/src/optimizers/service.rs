@@ -4937,6 +4937,9 @@ async fn reconcile_via_driver(
 }
 
 
+#[cfg(not(test))]
+fn note_full_journal_replay(_run_id: &str) {}
+
 /// Event types whose kernel treatment is decided across the whole history
 /// rather than within one batch.
 ///

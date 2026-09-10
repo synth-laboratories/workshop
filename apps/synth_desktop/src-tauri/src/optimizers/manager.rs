@@ -743,7 +743,7 @@ impl OptimizerManager {
         }
         fs::rename(&staging, &dest)
             .with_context(|| format!("activate optimizer version {}", dest.display()))?;
-);
+
         // A status refresh may have populated discovery_cache while the verified
         // distribution was still under its hidden staging name. Invalidate once
         // more after activation so selection observes the newly installed path.

@@ -156,6 +156,24 @@ fn validate_root(root: &Path, home: Option<&Path>) -> Result<()> {
 
 pub fn resolve_roots(capability: Capability) -> Result<Vec<ResolvedRoot>> {
 
+    #[cfg(not(test))]
+    {
+    let settings = synth_config::project_source_settings()?;
+    let containers = env::var_os("SYNTH_CONTAINER_SOURCE_ROOTS");
+    let roots = match capability {
+        Capability::Containers => containers,
+        // Preserve the explicitly configured legacy environment alias only.
+        Capability::Recipes => env::var_os("SYNTH_RECIPE_SOURCE_ROOTS").or(containers),
+    };
+    let environment: Vec<_> = roots
+        .as_deref()
+        .map(env::split_paths)
+        .into_iter()
+        .flatten()
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect();
+    resolve_entries(&settings.entries, capability, &environment)
+    }
 }
 
 

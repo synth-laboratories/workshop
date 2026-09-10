@@ -1999,10 +1999,10 @@
       "sha256": "de0d8a4cb8b32cdef8955769bac3776005c0b616cfcd10bcdcc13b56ae13c0cb"
     },
     {
-      "bytes": 118444,
+      "bytes": 118442,
       "mode": "100644",
       "path": "apps/synth_desktop/src-tauri/src/optimizers/manager.rs",
-      "sha256": "5109d48aa39b6eeabfce2f9c7a3ea6af862ec23285ff06ac1cf8a79ad7929533"
+      "sha256": "c6136a2b4e875221c85bba79b8ac9c115750249a7ab346243419bac2fc46b18f"
     },
     {
       "bytes": 30757,
@@ -2047,10 +2047,10 @@
       "sha256": "43431f2e0d163c5228baf2400648bd4500d81387f331de556872024e3cbb120c"
     },
     {
-      "bytes": 243800,
+      "bytes": 243865,
       "mode": "100644",
       "path": "apps/synth_desktop/src-tauri/src/optimizers/service.rs",
-      "sha256": "c781873c00d9555155e84c63cc94d5b3a23e6d77af9ae4889f58ac828ab1b6f0"
+      "sha256": "654e1509dd0cc667e7ef09beba47d9f18a57e9b953e616eaeac93b9d15d8ccca"
     },
     {
       "bytes": 5188,
@@ -2335,10 +2335,10 @@
       "sha256": "3816dd95dc934c91ecafbfc52e2256ee2dfa5bf15c1ee8527c64f25dcd285512"
     },
     {
-      "bytes": 6932,
+      "bytes": 7611,
       "mode": "100644",
       "path": "apps/synth_desktop/src-tauri/src/project_sources.rs",
-      "sha256": "81d0fac601c5c223889dcd2546cf195fb9eca6ae165c7dbc240269857b768880"
+      "sha256": "fff960f00e00ed18ad5b98ecd00364f53edcc0ebef318c25c24e4d2599bf5e5c"
     },
     {
       "bytes": 4397,
