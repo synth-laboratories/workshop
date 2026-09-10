@@ -52,6 +52,22 @@ test("archive sealing preserves nested browser JIT entitlements", () => {
   const archive = readFileSync(new URL("scripts/build.sh", root), "utf8");
   assert.doesNotMatch(archive, /codesign --force --deep/);
   assert.match(archive, /codesign --verify --deep --strict/);
+  assert.match(archive, /seal-adhoc-trace-import.sh/);
+  const local = readFileSync(new URL("scripts/workshop.sh", root), "utf8");
+  assert.match(local, /seal-adhoc-trace-import.sh/);
+  const helper = readFileSync(new URL("scripts/seal-adhoc-trace-import.sh", root), "utf8");
+  assert.match(helper, /codesign --force --sign - "\$trace_import"/);
+  assert.match(helper, /usage: synth-trace-import BUNDLE/);
+});
+
+test("publication promotes accepted bytes rather than rebuilding a tag", () => {
+  const pack = readFileSync(new URL(".github/workflows/desktop-package.yml", root), "utf8");
+  assert.doesNotMatch(pack, /tags:|gh release create/);
+  const publish = readFileSync(new URL(".github/workflows/publish-accepted-desktop.yml", root), "utf8");
+  assert.match(publish, /gh run download "\$RUN_ID"/);
+  assert.match(publish, /verify-accepted-desktop.py/);
+  assert.match(publish, /git merge-base --is-ancestor/);
+  assert.match(publish, /--verify-tag/);
 });
 
 test("source builds resolve public pinned inputs and explicitly use ad-hoc signing", () => {

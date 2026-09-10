@@ -37,6 +37,7 @@ build() {
     "$ROOT/scripts/build-tier.sh" local
   [[ -d "$APP_PATH" ]] || fail "Build completed without producing $APP_PATH"
   printf '[workshop] applying ad-hoc local signature\n'
+  bash "$ROOT/scripts/seal-adhoc-trace-import.sh" "$APP_PATH"
   /usr/bin/codesign --force --sign - "$APP_PATH"
   /usr/bin/codesign --verify --deep --strict "$APP_PATH"
 
