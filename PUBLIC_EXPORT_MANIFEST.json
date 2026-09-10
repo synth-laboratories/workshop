@@ -5347,10 +5347,10 @@
       "sha256": "7398e1ec6913fd68734c3efa23475c3925426b6a1e24e23cabe12acec4ee50ba"
     },
     {
-      "bytes": 36843,
+      "bytes": 38061,
       "mode": "100644",
       "path": "examples/runebench/viewer.tsx",
-      "sha256": "5d06491437e929dd873cec5a986df073094811533a27ef3a4e04e2e60c5b5c2d"
+      "sha256": "56811e56ec09b892374dc36d1aa5bd2b032f8c80f7c5739ddc6a9290b113e735"
     },
     {
       "bytes": 9,
@@ -5557,10 +5557,10 @@
       "sha256": "d62c6fb74f4b8bf80e909a4c9e7cfabab645216267b7049c57cfa53191f4e9a0"
     },
     {
-      "bytes": 10138,
+      "bytes": 11348,
       "mode": "100644",
       "path": "packages/visuals-react/src/captureBarrier.ts",
-      "sha256": "a0cf17ed388d807095c122415603b51a649ac8058ecf656df50a4ddb4217a5db"
+      "sha256": "5dd9626ef550726827d8ad8037630058c6642cf09dc4e66fa1e4235dff990b2c"
     },
     {
       "bytes": 16483,
@@ -7906,7 +7906,7 @@
   "policySha256": "d8f9d3188ed10080a0bf93da6ff1ebdf54063198ffd6cc384acf4de4c97f040a",
   "schema": "workshop.public-export-manifest.v1",
   "source": {
-    "commit": "14a09348c694870ee44ced312e6eda35311a9e53",
-    "tree": "488e5a8b4b9d943d32c1858872323714c14257c8"
+    "commit": "6a55a3f1a20ab63537aea2e56a73d059e1b2a9dd",
+    "tree": "c6cdbdf4a7c660c0cd40c177dda0a6d826a7eceb"
   }
 }
