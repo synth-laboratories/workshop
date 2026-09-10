@@ -367,6 +367,9 @@ pub const NAMES: &[&str] = &[
     "project_sources_refresh",
     "project_source_add",
     "project_source_remove",
+    "project_source_request",
+    "project_source_requests_list",
+    "project_source_deny",
 ];
 
 type Reply<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send + 'a>>;
@@ -736,6 +739,9 @@ pub fn invoke<'a>(app: &'a tauri::AppHandle, name: &str, args: Value) -> Reply<'
         "project_sources_refresh" => operation_361(app, args),
         "project_source_add" => operation_362(app, args),
         "project_source_remove" => operation_363(app, args),
+        "project_source_request" => operation_364(app, args),
+        "project_source_requests_list" => operation_365(app, args),
+        "project_source_deny" => operation_366(app, args),
         _ => Box::pin(async { anyhow::bail!("unknown desktop operation") }),
     }
 }
@@ -4728,7 +4734,7 @@ fn operation_362(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
             // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs
             let allowed: &[&str] = &["containers", "recipes"];
             anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
-            let result = crate::project_sources::commands::project_source_add(app.clone(), serde_json::from_value(args.get("containers").cloned().unwrap_or(Value::Null)).context("invalid containers")?, serde_json::from_value(args.get("recipes").cloned().unwrap_or(Value::Null)).context("invalid recipes")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            let result = crate::project_sources::commands::project_source_add(app.clone(), app.try_state().context("runtime service is unavailable")?, serde_json::from_value(args.get("containers").cloned().unwrap_or(Value::Null)).context("invalid containers")?, serde_json::from_value(args.get("recipes").cloned().unwrap_or(Value::Null)).context("invalid recipes")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
             Ok(json!({"result": result}))
     })
 }
@@ -4739,7 +4745,40 @@ fn operation_363(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
             // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs
             let allowed: &[&str] = &["path"];
             anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
-            let result = crate::project_sources::commands::project_source_remove(serde_json::from_value(args.get("path").cloned().unwrap_or(Value::Null)).context("invalid path")?).map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            let result = crate::project_sources::commands::project_source_remove(app.try_state().context("runtime service is unavailable")?, serde_json::from_value(args.get("path").cloned().unwrap_or(Value::Null)).context("invalid path")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_364(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs
+            let allowed: &[&str] = &["request"];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::project_sources::commands::project_source_request(app.try_state().context("runtime service is unavailable")?, serde_json::from_value(args.get("request").cloned().unwrap_or(Value::Null)).context("invalid request")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_365(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs
+            let allowed: &[&str] = &["sessionId"];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::project_sources::commands::project_source_requests_list(app.try_state().context("runtime service is unavailable")?, serde_json::from_value(args.get("sessionId").cloned().unwrap_or(Value::Null)).context("invalid sessionId")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_366(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs
+            let allowed: &[&str] = &["requestId"];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::project_sources::commands::project_source_deny(app.try_state().context("runtime service is unavailable")?, serde_json::from_value(args.get("requestId").cloned().unwrap_or(Value::Null)).context("invalid requestId")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
             Ok(json!({"result": result}))
     })
 }
