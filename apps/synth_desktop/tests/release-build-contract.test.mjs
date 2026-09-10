@@ -8,6 +8,20 @@ const root = new URL("../../../", import.meta.url);
 const script = fileURLToPath(new URL("scripts/build-tier.sh", root));
 const build = readFileSync(script, "utf8");
 
+test("macOS browser return is registered, delivered, and never authenticates", () => {
+  const plist = readFileSync(new URL("apps/synth_desktop/src-tauri/Info.plist", root), "utf8");
+  assert.match(plist, /CFBundleURLTypes[\s\S]*CFBundleURLSchemes[\s\S]*<string>synth-workshop<\/string>/);
+  const host = readFileSync(new URL("apps/synth_desktop/src-tauri/src/lib.rs", root), "utf8");
+  assert.match(host, /RunEvent::Opened \{ urls \}[\s\S]*desktop_links::open\(app, url.as_str\(\)\)/);
+  const links = readFileSync(new URL("apps/synth_desktop/src-tauri/src/desktop_links.rs", root), "utf8");
+  assert.match(links, /raw != "synth-workshop:\/\/auth-return"/);
+  assert.match(links, /parse_workshop_deep_link\(raw\)/);
+  assert.match(links, /control\(&app, "attach"\)/);
+  assert.doesNotMatch(links, /set_credential|set_api_key|poll_device|exchange_token/);
+  const archive = readFileSync(new URL("scripts/build.sh", root), "utf8");
+  assert.match(archive, /plutil -extract CFBundleURLTypes\.0\.CFBundleURLSchemes\.0/);
+});
+
 test("packaging rejects retired envelopes and invalid options before staging", () => {
   for (const args of [["beta"], ["all"], ["core"], ["stable", "--features"], ["stable", "--debug", "extra"]]) {
     const result = spawnSync("bash", [script, ...args], { encoding: "utf8" });
