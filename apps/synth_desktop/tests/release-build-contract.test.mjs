@@ -8,6 +8,26 @@ const root = new URL("../../../", import.meta.url);
 const script = fileURLToPath(new URL("scripts/build-tier.sh", root));
 const build = readFileSync(script, "utf8");
 
+test("desktop patch version agrees across packaging authorities", () => {
+  const pkg = JSON.parse(readFileSync(new URL("apps/synth_desktop/package.json", root), "utf8"));
+  const config = JSON.parse(readFileSync(new URL("apps/synth_desktop/src-tauri/tauri.conf.json", root), "utf8"));
+  const lock = JSON.parse(readFileSync(new URL("package-lock.json", root), "utf8"));
+  assert.equal(config.version, pkg.version);
+  assert.equal(lock.packages["apps/synth_desktop"].version, pkg.version);
+  for (const file of ["Cargo.toml", "Cargo.lock"]) {
+    const cargo = readFileSync(new URL(`apps/synth_desktop/src-tauri/${file}`, root), "utf8");
+    assert.equal(cargo.match(/name = "synth-desktop"\nversion = "([^"]+)"/)[1], pkg.version);
+  }
+});
+
+test("managed MLX and clean-clone builds use one exact source revision", () => {
+  const runtime = readFileSync(new URL("apps/synth_desktop/src-tauri/src/optimizers/mlx_runtime.rs", root), "utf8");
+  const sources = readFileSync(new URL("scripts/prepare-build-sources.sh", root), "utf8");
+  const revision = runtime.match(/MLX_RUNTIME_SOURCE_REVISION: &str = "([a-f0-9]{40})"/)[1];
+  assert.ok(sources.includes(`fetch_build_source synth-mlx-rl ${revision}`));
+  assert.ok(sources.includes(`synth-mlx-rl-${revision}"`));
+});
+
 test("the shipped browser is a direct exact dependency, independent of private test tools", () => {
   const pkg = JSON.parse(readFileSync(new URL("package.json", root), "utf8"));
   const npmLock = JSON.parse(readFileSync(new URL("package-lock.json", root), "utf8"));

@@ -2,6 +2,7 @@ import { initializeRuntimeStorage } from "./preferences/runtimeStorage";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { bridges, installDesktopBridge } from "./runtime/desktopBridge";
 import { DIAGNOSTIC_CODES, installVisualDiagnosticSink, reportDiagnostic } from "./runtime/diagnostics";
 import { installRunProgressDiagnostics } from "./runtime/runProgress/subscription";
@@ -96,7 +97,7 @@ void bridges.desktop.getInstanceDiagnostics().then((identity) => {
 }).catch(() => undefined);
 
 void initializeRuntimeStorage().then(() => {
-    createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
+    createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><App /></AppErrorBoundary></StrictMode>);
 }).catch((error) => {
     const root = document.getElementById("root");
     if (root) root.textContent = `Workshop could not load desktop state: ${String(error)}. Restart the desktop to retry.`;
