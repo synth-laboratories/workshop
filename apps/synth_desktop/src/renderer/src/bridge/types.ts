@@ -445,6 +445,16 @@ export type SynthConfigBridge = {
 	}): Promise<DesktopPermissionSettings>;
 };
 
+export type ProjectSourcesBridge = {
+	get(): Promise<import("../generated/protocol").ProjectSourceCatalog>;
+	refresh(): Promise<import("../generated/protocol").ProjectSourceCatalog>;
+	add(containers: boolean, recipes: boolean): Promise<import("../generated/protocol").ProjectSourceCatalog | null>;
+	remove(path: string): Promise<import("../generated/protocol").ProjectSourceCatalog>;
+	requests(sessionId?: string | null): Promise<import("../generated/protocol").ProjectSourceRequest[]>;
+	approve(requestId: string): Promise<import("../generated/protocol").ProjectSourceApproval | null>;
+	deny(requestId: string): Promise<import("../generated/protocol").ProjectSourceRequest>;
+};
+
 export type CodexSessionStart = {
 	sessionId: string;
 	workspace: string;
