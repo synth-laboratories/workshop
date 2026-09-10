@@ -421,10 +421,60 @@ fn managed_templates_root() -> PathBuf {
     crate::instance::data_root().join("visuals").join("templates")
 }
 
-/// Copy one reviewed, networkless HTML visual package into this instance's
-/// managed registry. This is intentionally a two-file contract: accepting a
-/// directory tree would turn import into an unbounded code and asset loader.
+/// Legacy synchronous seam: no broker means no permission to persist code.
+/// The approved path prepares exactly two files, obtains consent, then writes
+/// those immutable bytes through `PreparedManagedImport::persist`.
 pub fn import_managed_template(source_path: &str) -> anyhow::Result<TemplateMeta> {
+    let _ = source_path;
+    Err(crate::session::template_persist::unapproved())
+}
+
+pub(crate) struct PreparedManagedImport {
+    meta: TemplateMeta,
+    manifest: Vec<u8>,
+    renderer: Vec<u8>,
+    destination: PathBuf,
+}
+
+impl PreparedManagedImport {
+    pub(crate) fn request(&self) -> anyhow::Result<crate::session::template_persist::PersistRequest> {
+        if let Ok(meta) = fs::symlink_metadata(&self.destination) {
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                anyhow::bail!("managed template destination must be a real directory");
+            }
+        }
+        let mut digest = Sha256::new();
+        digest.update((self.manifest.len() as u64).to_le_bytes());
+        digest.update(&self.manifest);
+        digest.update((self.renderer.len() as u64).to_le_bytes());
+        digest.update(&self.renderer);
+        Ok(crate::session::template_persist::PersistRequest {
+            template_id: self.meta.id.clone(),
+            destination: self.destination.display().to_string(),
+            package_digest: format!("sha256:{:x}", digest.finalize()),
+            byte_size: (self.manifest.len() + self.renderer.len()) as u64,
+            overwrites: self.destination.exists(),
+        })
+    }
+
+    pub(crate) fn persist(mut self, consent: crate::session::template_persist::PersistConsent) -> anyhow::Result<TemplateMeta> {
+        consent.bind(&self.request()?)?;
+        fs::create_dir_all(&self.destination)?;
+        for (name, bytes) in [("template.json", &self.manifest), ("renderer.html", &self.renderer)] {
+            // Atomic file replacement does not follow an existing file symlink.
+            let mut file = tempfile::NamedTempFile::new_in(&self.destination)?;
+            std::io::Write::write_all(&mut file, bytes)?;
+            file.persist(self.destination.join(name))?;
+        }
+        self.meta = load_template_meta(&self.destination)?;
+        self.meta.path = Some(self.destination.display().to_string());
+        self.meta.renderer_path = Some(self.destination.join("renderer.html").display().to_string());
+        self.meta.source_kind = Some("managed".into());
+        Ok(self.meta)
+    }
+}
+
+pub(crate) fn prepare_managed_import(source_path: &str) -> anyhow::Result<PreparedManagedImport> {
     let source = Path::new(source_path);
     if !source.is_absolute() {
         anyhow::bail!("source_path must be an absolute directory");
@@ -448,17 +498,15 @@ pub fn import_managed_template(source_path: &str) -> anyhow::Result<TemplateMeta
             anyhow::bail!("managed template file exceeds {MANAGED_TEMPLATE_MAX_BYTES} bytes");
         }
     }
-    let mut meta = load_template_meta(&source)?;
+    let manifest_bytes = fs::read(&manifest)?;
+    let meta = load_template_meta_bytes(&source, &manifest_bytes)?;
     let renderer_bytes = fs::read(&renderer)?;
+    if manifest_bytes.len() as u64 > MANAGED_TEMPLATE_MAX_BYTES || renderer_bytes.len() as u64 > MANAGED_TEMPLATE_MAX_BYTES {
+        anyhow::bail!("managed template file exceeds {MANAGED_TEMPLATE_MAX_BYTES} bytes");
+    }
     validate_managed_renderer(&renderer_bytes)?;
     let destination = managed_templates_root().join(&meta.id);
-    fs::create_dir_all(&destination)?;
-    fs::write(destination.join("template.json"), fs::read(&manifest)?)?;
-    fs::write(destination.join("renderer.html"), renderer_bytes)?;
-    meta.path = Some(destination.display().to_string());
-    meta.renderer_path = Some(destination.join("renderer.html").display().to_string());
-    meta.source_kind = Some("managed".into());
-    Ok(meta)
+    Ok(PreparedManagedImport { meta, manifest: manifest_bytes, renderer: renderer_bytes, destination })
 }
 
 fn validate_managed_renderer(bytes: &[u8]) -> anyhow::Result<()> {
@@ -589,8 +637,11 @@ fn discover_template_directories(
 }
 
 fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
-    let raw = fs::read_to_string(path.join("template.json"))?;
-    let value: Value = serde_json::from_str(&raw)?;
+    load_template_meta_bytes(path, &fs::read(path.join("template.json"))?)
+}
+
+fn load_template_meta_bytes(path: &Path, raw: &[u8]) -> anyhow::Result<TemplateMeta> {
+    let value: Value = serde_json::from_slice(raw)?;
     let id = value
         .get("id")
         .and_then(Value::as_str)
@@ -709,6 +760,46 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_import_prepares_immutable_bytes_without_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("managed.test.v1");
+        write_template(&source, "managed.test.v1");
+        fs::write(source.join("renderer.html"), "<p>Reviewed</p>").unwrap();
+        let mut prepared = prepare_managed_import(source.to_str().unwrap()).unwrap();
+        prepared.destination = temp.path().join("destination/managed.test.v1");
+        let request = prepared.request().unwrap();
+        assert!(!prepared.destination.exists());
+        assert!(import_managed_template(source.to_str().unwrap()).is_err());
+        fs::write(source.join("renderer.html"), "<p>Replaced while card open</p>").unwrap();
+        fs::write(source.join("template.json"), "{}").unwrap();
+        assert_eq!(prepared.renderer, b"<p>Reviewed</p>");
+        assert_eq!(prepared.request().unwrap(), request);
+        let manifest = prepared.manifest.clone();
+        prepared.manifest.push(b' ');
+        assert_ne!(prepared.request().unwrap().package_digest, request.package_digest);
+        assert!(!prepared.destination.exists());
+        prepared.manifest = manifest.clone();
+        let destination = prepared.destination.clone();
+        let meta = prepared.persist(crate::session::template_persist::PersistConsent::for_test(request)).unwrap();
+        assert_eq!(fs::read(destination.join("template.json")).unwrap(), manifest);
+        assert_eq!(fs::read(destination.join("renderer.html")).unwrap(), b"<p>Reviewed</p>");
+        assert_eq!(meta.template_digest, template_package_digest(&destination).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_import_refuses_symlink_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("managed.test.v1");
+        write_template(&source, "managed.test.v1");
+        fs::write(source.join("renderer.html"), "<p>Reviewed</p>").unwrap();
+        let mut prepared = prepare_managed_import(source.to_str().unwrap()).unwrap();
+        prepared.destination = temp.path().join("destination");
+        std::os::unix::fs::symlink(&source, &prepared.destination).unwrap();
+        assert!(prepared.request().is_err());
+    }
 
     #[test]
     fn lists_bundled_templates_when_present() {

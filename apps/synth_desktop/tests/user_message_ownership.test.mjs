@@ -113,6 +113,23 @@ test("recognized approval lifecycle events retain explicit Synth labels", () => 
 	assert.equal(paid.__active__?.[0]?.label, "Paid compute granted");
 });
 
+test("persistent template approval names exact bytes and destination without remembering", () => {
+	const activity = eventsToLocalActivity([event({
+		sequence: 2, eventKind: "approval.requested", payload: {
+			approvalId: "template-1", kind: "visual_template_persist", templateId: "reviewed.v1",
+			destination: "/approved/templates/reviewed.v1", packageDigest: "sha256:reviewed",
+			byteSize: 123, overwrites: true, alwaysSupported: false
+		}
+	})], []);
+	const line = activity.__active__[0];
+	assert.equal(line.label, "Save persistent visual template");
+	assert.equal(line.approvalKind, "visual_template_persist");
+	assert.equal(line.alwaysAllowSupported, false);
+	for (const text of ["reviewed.v1", "/approved/templates/reviewed.v1", "sha256:reviewed", "123 bytes", "Replaces existing template", "across sessions and restarts"]) {
+		assert.ok(line.detail.includes(text), text);
+	}
+});
+
 test("conversation paid-compute auto-approval stays in the journal, not chat", () => {
 	const activity = eventsToLocalActivity([
 		event({

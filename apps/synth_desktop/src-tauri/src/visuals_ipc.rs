@@ -817,6 +817,12 @@ async fn dispatch_request(
     if method == "POST" && path.starts_with("/v1/containers/") && path.ends_with("/restart") {
         return dispatch_container_restart(path, json_body, core, app).await;
     }
+    if method == "POST" && path == "/v1/visuals/templates/import" {
+        let source = json_body.get("sourcePath").or_else(|| json_body.get("source_path"))
+            .and_then(Value::as_str).context("source_path is required")?;
+        let session = json_body.get("sessionRef").and_then(Value::as_str);
+        return Ok(json!({"template": core.visuals().import_template_approved(app, session, source).await?}));
+    }
     dispatch(method, path, json_body, core).await
 }
 
