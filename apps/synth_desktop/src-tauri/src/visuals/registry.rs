@@ -1733,7 +1733,7 @@ fn validate_svg_bytes(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-const CHART_DEFAULT_PROJECTION: &str = "rollout-inspector";
+pub(super) const CHART_DEFAULT_PROJECTION: &str = "rollout-inspector";
 
 /// What a chart sees when it binds an optimizer run: the record — whose
 /// `summary.records` is the per-trial ledger — beside the typed result.

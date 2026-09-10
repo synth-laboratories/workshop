@@ -1,6 +1,7 @@
 //! Local Visual Registry: durable visual instances, revisions, and template catalog.
 
 mod artifacts;
+mod seal_evidence;
 mod backfill;
 pub mod cache_gc;
 
