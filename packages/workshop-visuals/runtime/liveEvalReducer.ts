@@ -3,9 +3,12 @@
  * Missing reward / usage / score stay null. Control envelopes are not evidence.
  */
 
+import { decodeBenchmarkObservation, latestBenchmarkObservations, type BenchmarkObservation } from "./benchmarkObservation.ts";
+
 import { formatMissingNumber, isControlEnvelope, type LiveEnvelope } from "./liveStream.ts";
 
 export type LiveEvalProjection = {
+  benchmarkObservations: BenchmarkObservation[];
   events: LiveEnvelope[];
   kinds: string[];
   has_live_frames: boolean;
@@ -84,6 +87,10 @@ export function projectLiveEval(
       }
     : null;
   const projection: LiveEvalProjection = {
+    benchmarkObservations: latestBenchmarkObservations(rows.flatMap((event) => {
+      const observation = decodeBenchmarkObservation(event.payload?.benchmark_observation);
+      return observation ? [observation] : [];
+    })),
     events: rows,
     kinds,
     has_live_frames,
