@@ -589,8 +589,8 @@ impl CoreRuntime {
 
     /// A command may have reached the remote runtime immediately before the
     /// desktop process exited. There is no command-status endpoint to prove
-    /// its final outcome on restart, so fail the local receipt closed and mark
-    /// the abandoned local run interrupted before mailbox polling resumes.
+    /// its final outcome on restart. Keep the receipt nonterminal and mark
+    /// remote execution reconciling; only the abandoned local turn is interrupted.
     async fn reconcile_intern_active_run(&self, session: &SessionRecord) -> Result<()> {
         let Some(run_id) = session.active_run_id.clone() else {
             return Ok(());
@@ -611,12 +611,7 @@ impl CoreRuntime {
             {
                 let receipt = self
                     .runs
-                    .resolve_command(
-                        command_id.to_owned(),
-                        "failed".into(),
-                        json!({"error":"desktop restarted before command receipt was persisted"}),
-                        None,
-                    )
+                    .mark_remote_command_reconciling(command_id.to_owned())
                     .await?;
                 self.broadcast_committed(receipt.event);
             }
@@ -626,7 +621,7 @@ impl CoreRuntime {
             .transition(
                 run_id,
                 RunStatus::Interrupted,
-                Some(json!({"reason":"desktop_restart_reconciliation"})),
+                Some(json!({"reason":"desktop_restart_reconciliation", "executionLocation":"cloud", "remoteExecutionState":"reconciling"})),
                 EventSource::Intern,
             )
             .await?;
@@ -637,8 +632,9 @@ impl CoreRuntime {
     /// Rotate the cloud endpoint and credential without leaving pollers on the
     /// previous identity alive. Missing credentials deliberately fail closed.
     pub async fn reload_intern_config(&self) -> Result<()> {
-        self.intern_provider.shutdown().await?;
+        let shutdown = self.intern_provider.shutdown().await;
         self.intern.disable().await;
+        shutdown?;
         let backend = crate::synth_config::resolve()
             .map_err(|_| crate::cloud::intern::InternClientError::CloudUnavailable)?;
         match backend.api_key {

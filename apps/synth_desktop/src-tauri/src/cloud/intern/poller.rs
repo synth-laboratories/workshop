@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    sync::{mpsc, watch, Mutex},
+    sync::{mpsc, oneshot, watch, Mutex},
     task::JoinHandle,
 };
 
@@ -59,6 +59,41 @@ pub enum PollUpdate {
     },
 }
 
+/// Internal transport envelope. The consumer acknowledges only after the
+/// journal transaction commits. Never serialize this acknowledgement.
+pub struct PollDelivery {
+    pub update: PollUpdate,
+    pub committed: oneshot::Sender<()>,
+}
+
+async fn deliver(
+    updates: &mpsc::Sender<PollDelivery>,
+    update: PollUpdate,
+) -> Result<(), InternClientError> {
+    let (committed, receipt) = oneshot::channel();
+    updates
+        .send(PollDelivery { update, committed })
+        .await
+        .map_err(|_| InternClientError::Protocol("poll update receiver closed".into()))?;
+    receipt
+        .await
+        .map_err(|_| InternClientError::Protocol("poll update was not committed".into()))
+}
+
+async fn deliver_cancellable(
+    updates: &mpsc::Sender<PollDelivery>,
+    cancel: &mut watch::Receiver<bool>,
+    update: PollUpdate,
+) -> Result<(), InternClientError> {
+    if *cancel.borrow() {
+        return Err(InternClientError::Protocol("poller cancelled".into()));
+    }
+    tokio::select! {
+        result = deliver(updates, update) => result,
+        _ = cancel.changed() => Err(InternClientError::Protocol("poller cancelled".into())),
+    }
+}
+
 pub struct PollerHandle {
     cancel: watch::Sender<bool>,
     task: JoinHandle<()>,
@@ -89,7 +124,7 @@ impl InternPoller {
         client: Arc<InternClient>,
         runtime_id: String,
         after_sequence: u64,
-        updates: mpsc::Sender<PollUpdate>,
+        updates: mpsc::Sender<PollDelivery>,
         config: PollerConfig,
     ) -> bool {
         self.ensure(
@@ -109,7 +144,7 @@ impl InternPoller {
         client: Arc<InternClient>,
         runtime_id: String,
         after_sequence: u64,
-        updates: mpsc::Sender<PollUpdate>,
+        updates: mpsc::Sender<PollDelivery>,
         config: PollerConfig,
     ) -> bool {
         self.ensure(
@@ -129,7 +164,7 @@ impl InternPoller {
         client: Arc<InternClient>,
         target: PollTarget,
         after_sequence: u64,
-        updates: mpsc::Sender<PollUpdate>,
+        updates: mpsc::Sender<PollDelivery>,
         config: PollerConfig,
     ) -> bool {
         let mut handles = self.handles.lock().await;
@@ -177,7 +212,7 @@ fn spawn_poller(
     client: Arc<InternClient>,
     target: PollTarget,
     after_sequence: u64,
-    updates: mpsc::Sender<PollUpdate>,
+    updates: mpsc::Sender<PollDelivery>,
     config: PollerConfig,
 ) -> PollerHandle {
     let (cancel, cancel_rx) = watch::channel(false);
@@ -196,7 +231,7 @@ async fn poll_loop(
     client: Arc<InternClient>,
     target: PollTarget,
     after_sequence: u64,
-    updates: mpsc::Sender<PollUpdate>,
+    updates: mpsc::Sender<PollDelivery>,
     config: PollerConfig,
     mut cancel: watch::Receiver<bool>,
 ) {
@@ -207,15 +242,10 @@ async fn poll_loop(
         if *cancel.borrow() {
             break;
         }
-        let result = poll_tick(
-            &client,
-            &target,
-            &mut cursor,
-            &updates,
-            &config,
-            &mut next_projection,
-        )
-        .await;
+        let result = tokio::select! {
+            result = poll_tick(&client, &target, &mut cursor, &updates, &config, &mut next_projection) => result,
+            _ = cancel.changed() => break,
+        };
         let sleep = match result {
             Ok(had_events) => {
                 backoff.reset();
@@ -226,33 +256,45 @@ async fn poll_loop(
                 }
             }
             Err(error) if error.is_auth_failure() => {
-                let _ = updates
-                    .send(PollUpdate::Stopped {
+                let _ = deliver_cancellable(
+                    &updates,
+                    &mut cancel,
+                    PollUpdate::Stopped {
                         reason: "authentication_failed".into(),
-                    })
-                    .await;
+                    },
+                )
+                .await;
                 break;
             }
             Err(error) if !error.is_retryable() => {
-                let _ = updates
-                    .send(PollUpdate::Stopped {
+                let _ = deliver_cancellable(
+                    &updates,
+                    &mut cancel,
+                    PollUpdate::Stopped {
                         reason: error.to_string(),
-                    })
-                    .await;
+                    },
+                )
+                .await;
                 break;
             }
             Err(error) => {
                 let (attempt, delay) = backoff.next();
-                let _ = updates
-                    .send(PollUpdate::Retry {
+                let _ = deliver_cancellable(
+                    &updates,
+                    &mut cancel,
+                    PollUpdate::Retry {
                         attempt,
                         delay_ms: millis(delay),
                         message: error.to_string(),
-                    })
-                    .await;
+                    },
+                )
+                .await;
                 delay
             }
         };
+        if *cancel.borrow() {
+            break;
+        }
         tokio::select! {
             _ = tokio::time::sleep(sleep) => {}
             changed = cancel.changed() => { if changed.is_err() || *cancel.borrow() { break; } }
@@ -264,7 +306,7 @@ async fn poll_tick(
     client: &InternClient,
     target: &PollTarget,
     cursor: &mut CursorState,
-    updates: &mpsc::Sender<PollUpdate>,
+    updates: &mpsc::Sender<PollDelivery>,
     config: &PollerConfig,
     next_projection: &mut tokio::time::Instant,
 ) -> Result<bool, InternClientError> {
@@ -283,24 +325,23 @@ async fn poll_tick(
             }
         };
         let page_len = events.len();
-        let normalized = cursor
+        let mut candidate = cursor.clone();
+        let normalized = candidate
             .ingest(events)
             .map_err(|error| InternClientError::Protocol(error.to_string()))?;
         if !normalized.is_empty() {
             had_events = true;
-            if updates
-                .send(PollUpdate::Events {
+            deliver(
+                updates,
+                PollUpdate::Events {
                     events: normalized,
-                    next_sequence: cursor.sequence,
-                })
-                .await
-                .is_err()
-            {
-                return Err(InternClientError::Protocol(
-                    "poll update receiver closed".into(),
-                ));
-            }
+                    next_sequence: candidate.sequence,
+                },
+            )
+            .await?;
+            *cursor = candidate;
         }
+
         if page_len < usize::from(config.page_size.max(1)) {
             break;
         }
@@ -310,15 +351,7 @@ async fn poll_tick(
             PollTarget::Sync(runtime_id) => client.get_sync(runtime_id).await?,
             PollTarget::Async(_) => client.get_async().await?,
         };
-        if updates
-            .send(PollUpdate::Projection { projection })
-            .await
-            .is_err()
-        {
-            return Err(InternClientError::Protocol(
-                "poll update receiver closed".into(),
-            ));
-        }
+        deliver(updates, PollUpdate::Projection { projection }).await?;
         *next_projection = tokio::time::Instant::now() + config.projection_interval;
     }
     Ok(had_events)
@@ -332,6 +365,7 @@ impl PollTarget {
     }
 }
 
+#[derive(Clone)]
 struct CursorState {
     sequence: u64,
     runtime_id: String,
@@ -469,5 +503,77 @@ mod tests {
             let _ = receiver.changed().await;
         });
         PollerHandle { cancel, task }.stop().await;
+    }
+    #[tokio::test]
+    async fn poll_tick_advances_only_after_commit_and_stops_on_missing_ack() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        for commit in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                let n = socket.read(&mut bytes).await.unwrap();
+                assert!(String::from_utf8_lossy(&bytes[..n]).contains("after_sequence=0"));
+                let body = serde_json::to_string(&vec![event(1, "evt-1")]).unwrap();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            });
+            let client = InternClient::connect(
+                &format!("http://{address}"),
+                "fixture",
+                Duration::from_secs(2),
+            )
+            .unwrap();
+            let (tx, mut rx) = mpsc::channel(1);
+            let mut cursor = CursorState::new(0, "sync-1".into());
+            let target = PollTarget::Sync("sync-1".into());
+            let config = PollerConfig::default();
+            let mut projection = tokio::time::Instant::now() + Duration::from_secs(60);
+            {
+                let tick = poll_tick(&client, &target, &mut cursor, &tx, &config, &mut projection);
+                tokio::pin!(tick);
+                let delivery = tokio::select! {
+                    delivery = rx.recv() => delivery.unwrap(),
+                    result = &mut tick => panic!("advanced before ingestion: {result:?}"),
+                };
+                assert!(tokio::time::timeout(Duration::from_millis(20), &mut tick)
+                    .await
+                    .is_err());
+                if commit {
+                    delivery.committed.send(()).unwrap();
+                } else {
+                    drop(delivery);
+                }
+                assert_eq!(tick.await.is_ok(), commit);
+            }
+            assert_eq!(cursor.sequence, if commit { 1 } else { 0 });
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_waiting_for_commit() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let (cancel, mut cancelled) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            deliver_cancellable(
+                &tx,
+                &mut cancelled,
+                PollUpdate::Stopped {
+                    reason: "fixture".into(),
+                },
+            )
+            .await
+        });
+        let _held_ack = rx.recv().await.unwrap();
+        cancel.send(true).unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
     }
 }

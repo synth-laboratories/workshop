@@ -1,0 +1,33 @@
+{
+  "schema_version": "workshop-foundations-evidence.v1",
+  "base_commit": "ce5ea5db890120770c1fe5d38c46225d01c14999",
+  "tier": "offline-native-component",
+  "source_sha256": {
+    "apps/synth_desktop/src-tauri/src/cloud/intern/poller.rs": "38e0c70b98921dbd8b5375f4ef8cfbfb557a3add3274660f04fe34f6b47af08d",
+    "apps/synth_desktop/src-tauri/src/cloud/intern/ingestion.rs": "b8a6a59ba5705a6ccfd4ee3bad5a1d2b50316a07842d7ed3725d7650a7159d06",
+    "apps/synth_desktop/src-tauri/src/cloud/intern/mod.rs": "cb01ed2c001c335f0b587846f534f62f37e838671675198131fd039a77b69aed",
+    "apps/synth_desktop/src-tauri/src/core_runtime.rs": "86e4f871a93bc5ed6f11d195984a2c9ef2440ad64f2c75aa0c86553a498d9124",
+    "apps/synth_desktop/src-tauri/src/intern_api.rs": "244b70c08387356644a148332e0b1bd5d7edadd7829bf12ff2a125cb9e9c0d19",
+    "apps/synth_desktop/src-tauri/src/domain/session_run.rs": "039d6ee5cdcfb9af50c29716a537415569ff9ad4826e02fdfa9e559c56854ace"
+  },
+  "results": [
+    {
+      "filter": "cloud::intern",
+      "status": "PASS",
+      "passed": 13,
+      "ignored": 0,
+      "artifact": "native-commit-boundary-result.txt"
+    },
+    {
+      "filter": "intern_api::tests::restart_lists_and_reattaches_durable_session",
+      "status": "PASS",
+      "passed": 1,
+      "ignored": 0,
+      "artifact": "native-restart-result.txt"
+    }
+  ],
+  "command_template": "TMPDIR=\"$PWD/.test-tmp\" SYNTH_DESKTOP_CONFIG=\"$PWD/.test-tmp/config.toml\" cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml --lib FILTER --offline -j 2",
+  "live_qualification": false,
+  "registered_migration": false,
+  "remaining_blocker": "Cloud fixture manifest explicitly lacks qualified scope identity and revocation guarantees; authoritative remote receipt lookup/outbox integration remains pending."
+}

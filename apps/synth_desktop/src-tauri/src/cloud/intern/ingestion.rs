@@ -1,5 +1,6 @@
 use super::{
-    InternRuntime, NormalizedInternEvent, PollUpdate, PollerConfig, RuntimeKind, RuntimeProjection,
+    InternRuntime, NormalizedInternEvent, PollDelivery, PollUpdate, PollerConfig, RuntimeKind,
+    RuntimeProjection,
 };
 use crate::storage::{append_event, AppEvent, Database, EventAppend, EventSource};
 use anyhow::{bail, Context, Result};
@@ -200,12 +201,16 @@ impl InternIngestion {
     pub async fn consume(
         &self,
         session_id: impl Into<String>,
-        mut updates: mpsc::Receiver<PollUpdate>,
+        mut updates: mpsc::Receiver<PollDelivery>,
         committed: mpsc::Sender<AppEvent>,
     ) -> Result<()> {
         let session_id = session_id.into();
-        while let Some(update) = updates.recv().await {
-            for event in self.apply(session_id.clone(), update).await? {
+        while let Some(delivery) = updates.recv().await {
+            let events = self.apply(session_id.clone(), delivery.update).await?;
+            // apply returns only after the transaction commits. On failure,
+            // dropping this sender tells the reader to stop without advancing.
+            let _ = delivery.committed.send(());
+            for event in events {
                 let _ = committed.send(event).await;
             }
         }
@@ -928,5 +933,31 @@ mod tests {
             .to_string()
             .contains("identity drifted"));
         assert_eq!(store.resume_cursor("session-1").await.unwrap(), 0);
+    }
+    #[tokio::test]
+    async fn consumer_acknowledges_committed_pages_and_rejects_failed_pages() {
+        for valid in [true, false] {
+            let (store, _) = attached().await;
+            let (tx, rx) = mpsc::channel(1);
+            let (output, _events) = mpsc::channel(4);
+            let (ack, receipt) = tokio::sync::oneshot::channel();
+            tx.send(PollDelivery {
+                update: PollUpdate::Events {
+                    events: vec![event(if valid { 1 } else { 2 }, "evt")],
+                    next_sequence: if valid { 1 } else { 2 },
+                },
+                committed: ack,
+            })
+            .await
+            .unwrap();
+            drop(tx);
+            let result = store.consume("session-1", rx, output).await;
+            assert_eq!(result.is_ok(), valid);
+            assert_eq!(receipt.await.is_ok(), valid);
+            assert_eq!(
+                store.resume_cursor("session-1").await.unwrap(),
+                if valid { 1 } else { 0 }
+            );
+        }
     }
 }

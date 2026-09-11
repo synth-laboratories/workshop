@@ -75,14 +75,28 @@ Use the existing MQ Rust SDK after its version and contract are qualified.
 
 ## Remaining integration work
 
-The current live provider still has unscoped session discovery/reload, an
-in-memory poller cursor ahead of ingestion, and restart receipt failure logic.
-The new storage fixtures DO NOT repair those runtime paths. Integrate all scope,
-checkpoint, outbox and external binding changes together after identity
-qualification; fence writes by auth epoch, stop readers when commits fail, and
-resume from the committed checkpoint. Legacy rows must not be adopted by a new
-login. Local command receipts must not stand in for remote execution state.
-Remote restart should reconcile against authority, not infer remote failure.
+The production poller now waits for ingestion's post-commit acknowledgement before
+advancing its candidate cursor. Storage failure drops the acknowledgement and stops
+the reader; cancellation interrupts pending HTTP/commit waits. Existing transaction
+and replay tests plus loopback cursor/ack and failed-consumer tests pass.
+
+Restart no longer terminally fails an accepted Intern receipt. The existing receipt
+remains `accepted` with `deliveryState=outcome_unknown` and
+`remoteExecutionState=reconciling`; the abandoned *local* run is interrupted with an
+explicit remote-reconciling outcome. The original command can still be resolved by
+an authoritative response. This is not an implemented remote receipt lookup loop.
+
+Unscoped session discovery/reload, verified account epochs, durable command outbox,
+external run bindings and the registered storage migration remain pending. The cloud
+handoff at `/Users/joshuapurtell/GitHub/testing/docs/internal/cloud-fundamentals-20260911/HANDOFF.md`
+explicitly supplies no qualified backend/account/org/profile tuple or revocation SLA
+and requires migration/live binding to remain disabled. Its account snapshot org
+fallback is not sufficient identity authority. No new cloud binding is enabled here.
+
+Follow-up native evidence: 13 polling/ingestion tests and 1 restart test passed with
+no ignored tests. `artifacts/cloud-foundations/commit-boundary-evidence.json` records
+source hashes and concise test results; full logs remain beside that artifact.
+The initial evidence above belongs to commit `ce5ea5db` and remains historical.
 
 No new UI, live contract DTO pin, cloud route remount, migration registration,
 paid provider run, Keychain access, push, merge, deployment or publication was

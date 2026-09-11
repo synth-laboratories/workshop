@@ -15,7 +15,7 @@ pub use ingestion::{
 };
 pub use models::*;
 pub use normalize::{normalize_event, NormalizedInternEvent};
-pub use poller::{InternPoller, PollUpdate, PollerConfig, PollerHandle};
+pub use poller::{InternPoller, PollDelivery, PollUpdate, PollerConfig, PollerHandle};
 
 use std::{sync::Arc, time::Duration};
 use synth_api_client::availability::DeferredClient;

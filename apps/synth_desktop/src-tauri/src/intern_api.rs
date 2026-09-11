@@ -1078,12 +1078,22 @@ mod tests {
         assert_eq!(
             restarted
                 .runs()
-                .command_receipt(command_id)
+                .command_receipt(command_id.clone())
                 .await
                 .unwrap()
                 .unwrap()
                 .status,
-            "failed"
+            "accepted"
+        );
+        let receipt = restarted
+            .runs()
+            .command_receipt(command_id.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            receipt.response.unwrap()["remoteExecutionState"],
+            "reconciling"
         );
         assert!(restarted
             .sessions()
@@ -1093,6 +1103,27 @@ mod tests {
             .unwrap()
             .active_run_id
             .is_none());
+        // Reconciliation is idempotent and does not prevent an authoritative
+        // receipt from resolving the original command later.
+        assert!(restarted
+            .runs()
+            .mark_remote_command_reconciling(command_id.clone())
+            .await
+            .unwrap()
+            .event
+            .is_none());
+        let resolved = restarted
+            .runs()
+            .resolve_command(
+                command_id,
+                "completed".into(),
+                json!({"decision":"applied"}),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(resolved.value.status, "completed");
+        restarted.stop_intern_providers_for_test().await.unwrap();
     }
 
     #[tokio::test]

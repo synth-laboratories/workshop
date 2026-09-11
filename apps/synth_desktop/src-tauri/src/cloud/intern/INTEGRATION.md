@@ -19,9 +19,11 @@ cargo test --manifest-path crates/synth-api-client/Cargo.toml --offline
 From repo root, native integration tests still live at
 `apps/synth_desktop/src-tauri/tests/intern_protocol.rs`. These compile the app.
 
-The poller's in-memory cursor is not yet a commit acknowledgement. Scope/auth
-epoch fencing, durable outbox, receipt reconciliation and external bindings must
-be integrated together before qualifying live Cloud. Do not replay legacy rows
+The poller advances only after ingestion acknowledges its committed transaction.
+Missing acknowledgements stop consumption. Restart keeps uncertain receipts
+nonterminal with remote state reconciling. Scope/auth epoch fencing, durable outbox,
+authoritative receipt lookup and external bindings still require integration before
+qualifying live Cloud. Do not replay legacy rows
 under a new account or interpret a lost local connection as remote failure.
 See `docs/handoffs/2026-09-11-workshop-cloud-foundations.md` for design fixtures,
 required cloud contracts and evidence limits. No live contract pin is implied

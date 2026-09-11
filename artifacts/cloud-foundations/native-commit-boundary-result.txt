@@ -1,0 +1,17 @@
+running 13 tests
+test cloud::intern::poller::tests::backoff_is_bounded_and_resets ... ok
+test cloud::intern::poller::tests::cursor_deduplicates_replay_and_rejects_gaps ... ok
+test cloud::intern::poller::tests::poller_handle_cancels_and_joins ... ok
+test cloud::intern::poller::tests::cancellation_interrupts_waiting_for_commit ... ok
+test cloud::intern::poller::tests::poll_tick_advances_only_after_commit_and_stops_on_missing_ack ... ok
+test cloud::intern::ingestion::tests::async_runtime_rejects_a_second_local_binding ... ok
+test cloud::intern::ingestion::tests::identity_drift_rolls_back ... ok
+test cloud::intern::ingestion::tests::malformed_page_rolls_back_events_and_cursor ... ok
+test cloud::intern::ingestion::tests::stopped_and_auth_updates_are_durable_diagnostics ... ok
+test cloud::intern::ingestion::tests::projection_updates_status_and_rejects_generation_regression ... ok
+test cloud::intern::ingestion::tests::page_and_cursor_commit_atomically_and_replay_is_idempotent ... ok
+test cloud::intern::ingestion::tests::legacy_duplicate_bindings_namespace_remote_event_ids ... ok
+test cloud::intern::ingestion::tests::consumer_acknowledges_committed_pages_and_rejects_failed_pages ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 1685 filtered out; finished in 3.11s
+

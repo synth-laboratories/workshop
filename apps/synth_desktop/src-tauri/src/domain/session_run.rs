@@ -613,6 +613,34 @@ impl RunService {
             .await
     }
 
+    /// A lost desktop connection cannot determine a remote command outcome.
+    /// Keep the receipt nonterminal so an authoritative response can resolve it.
+    pub async fn mark_remote_command_reconciling(
+        &self,
+        command_id: String,
+    ) -> Result<DomainMutation<CommandReceiptRecord>> {
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            let current = load_receipt(conn, &command_id)?;
+            if current.source != EventSource::Intern {
+                bail!("remote reconciliation requires an Intern receipt");
+            }
+            let response = json!({"deliveryState":"outcome_unknown", "remoteExecutionState":"reconciling", "reason":"desktop_restart"});
+            if current.status != "accepted" || current.response.as_ref() == Some(&response) {
+                return Ok(DomainMutation { value: current, event: None });
+            }
+            conn.execute("UPDATE command_receipts SET response_json = ?1, updated_at = ?2 WHERE command_id = ?3 AND status = 'accepted'",
+                params![response.to_string(), Utc::now().to_rfc3339(), command_id])?;
+            let event = append_event(conn, EventAppend {
+                event_id: None, session_id: Some(current.session_id.clone()), run_id: current.run_id.clone(),
+                source: EventSource::Intern, kind: "command.reconciling".into(),
+                payload: json!({"commandId":command_id,"response":response}),
+                remote_sequence: None, command_id: Some(command_id.clone()), created_at: None,
+            })?;
+            Ok(DomainMutation { value: load_receipt(conn, &command_id)?, event: Some(event) })
+        }).await
+    }
+
     pub async fn resolve_command(
         &self,
         command_id: String,
