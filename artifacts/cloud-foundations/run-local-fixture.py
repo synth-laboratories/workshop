@@ -8,7 +8,8 @@ instance = root / '.test-tmp/instances/v09/cloud-local-e06'
 connection = json.loads((instance / 'data/eval-driver.json').read_text())
 assert connection['instanceName'] == 'cloud-local-e06'
 assert connection['url'].startswith('http://127.0.0.1:')
-output = root / 'artifacts/cloud-foundations'
+output = root / '.test-tmp/packaged-evidence'
+output.mkdir(parents=True, exist_ok=True)
 
 def call(method, route, body=None):
     request = urllib.request.Request(connection['url'] + route,
@@ -23,10 +24,11 @@ health = call('GET', '/v1/health')
 created = call('POST', '/v1/sessions', {
     'sessionId':session, 'workspace':str(instance/'workspace'),
     'provider':'local-laguna', 'model':'poolside/Laguna-XS-2.1-NVFP4-mlx',
-    'approvalPolicy':'never', 'sandbox':'workspace-write'})
+    })
 (output / 'packaged-session-created.json').write_text(json.dumps(created, indent=2)+'\n')
 call('POST', f'/v1/sessions/{session}/select', {})
 sent = call('POST', f'/v1/sessions/{session}/messages', {
+    'provider':'local-laguna', 'model':'poolside/Laguna-XS-2.1-NVFP4-mlx',
     'body':'Do not call tools. Reply with the Local-only fixture result.', 'effort':'none'})
 (output / 'packaged-message-sent.json').write_text(json.dumps(sent, indent=2)+'\n')
 terminal = call('POST', f'/v1/sessions/{session}/wait_terminal', {'timeoutMs':40000})

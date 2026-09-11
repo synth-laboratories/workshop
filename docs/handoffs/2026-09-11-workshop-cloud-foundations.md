@@ -132,3 +132,29 @@ Still outstanding: packaged Local E06, qualified identity activation and registe
 migration, live scoped routing and UI epoch resets, creation/first-send recovery,
 and qualified remote reconciliation/stream transport integration. These are not
 claimed complete by the native repository or fixture tests.
+
+## Packaged Local fixture journey
+
+Candidate `0def6215a787` builds and ad-hoc-verifies the named
+`com.synth.desktop.v09.dev.cloud-local-e06` app. Browser runtime is explicitly
+omitted for this text-only fixture. The pinned MLX and optimizer distributions
+were copied as immutable inputs and validated by their staging scripts.
+
+The first packaged launch exposed native/launcher provenance disagreement:
+build.rs included untracked source, the launcher excluded it. The app refused
+EX_CONFIG. The launcher now uses the same untracked-source policy; generated
+test outputs are ignored, and a new source-file regression passes.
+
+With the corrected candidate, a fresh signed-out app starts with empty provider
+.env and no OAuth/optimizer credential. The native Local turn completes against
+the repository FakeBackend through authenticated loopback. A separate request
+through the visible composer displays its result. After quit/relaunch, the
+conversation and result remain visible. CUA inspected both rendered states.
+Evidence: `artifacts/cloud-foundations/packaged-local-evidence.json`.
+
+This is a packaged **fixture** journey, not a real-model performance or full live
+E06 qualification. FakeBackend loads no weights and uses explicitly simulated
+memory facts. The unchanged real-model memory gate refused insufficient free
+memory. No cloud provider run or Keychain operation occurred. Harness requests
+now inherit the actual machine permission policy and explicitly select the local
+provider for both creation and sending.

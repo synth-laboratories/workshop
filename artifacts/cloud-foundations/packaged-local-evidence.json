@@ -1,0 +1,39 @@
+{
+  "candidate_sha": "0def6215a787",
+  "bundle_id": "com.synth.desktop.v09.dev.cloud-local-e06",
+  "signing": "adhoc",
+  "browser_runtime_included": false,
+  "verified": [
+    "packaged build and signature",
+    "clean compiled and descriptor revision agreement",
+    "empty provider env; absent optimizer and OAuth credentials",
+    "local-loopback provider; no cloud fallback",
+    "native turn completed",
+    "signed-out UI composer result visible",
+    "app restart and conversation result visible"
+  ],
+  "api_session": "local-e06-fixture",
+  "ui_session": "e7e90b1e-3c51-4fae-aff7-f8248c950433",
+  "fixture": {
+    "backend": "FakeBackend",
+    "loads_weights": false,
+    "memory_values_simulated": true,
+    "real_model_qualified": false
+  },
+  "earlier_failures": [
+    "missing staged pinned optimizer artifact; copied and verified",
+    "missing browser artifact; explicit no-browser text variant",
+    "native/launcher dirty-policy disagreement; fixed and regression tested",
+    "fixture real-model memory admission; explicit simulated fixture memory",
+    "harness explicit permissions disagreed with machine policy; inherit actual policy",
+    "harness send omitted provider; corrected local provider request"
+  ],
+  "tests": {
+    "cloud_native": 56,
+    "sdk": 14,
+    "local_actor_native": 1,
+    "launcher_contract": "pass"
+  },
+  "live_cloud_qualified": false,
+  "migration_registered": false
+}
