@@ -1,0 +1,38 @@
+{
+  "schema": "workshop.legacy-account-transition.v1",
+  "parent_commit": "ce638ee2a907be2f92bfef63a365f94693845bbd",
+  "policy": "User approved history preservation, no silent rebind, and refusal without ownership verification after account change. Same-epoch fresh creation provenance only.",
+  "review_fix": "WE-01: invalidate again under acquired configuration write gate",
+  "activation": false,
+  "live_migration": false,
+  "paid_provider_calls": false,
+  "keychain_access": false,
+  "verification": {
+    "legacy-transition-core-reviewed.log": {
+      "sha256": "e4a18a66c8bc8578960a1b5566fc18b044f725bdb61cc52937cd0b0b7028c7a5",
+      "passed": 6,
+      "result": "pass"
+    },
+    "legacy-transition-api-reviewed.log": {
+      "sha256": "c9e0912385737e87381b0eb21848b04170421fcbf344066a2f35fb5677422b14",
+      "passed": 13,
+      "result": "pass"
+    },
+    "legacy-transition-cloud-reviewed.log": {
+      "sha256": "4b0956567259b3d402e72902128369990d540c81118704595fa8005fbf49765a",
+      "passed": 76,
+      "result": "pass"
+    },
+    "legacy-transition-library-reviewed.log": {
+      "sha256": "6038b0ae69678f8ba29f7ec71e5288e1cc4138aa6ad92f4a8a0b58bfd100b03f",
+      "passed": null,
+      "result": "pass"
+    }
+  },
+  "source_sha256": {
+    "apps/synth_desktop/src-tauri/src/cloud/legacy_authority.rs": "efaa8f84c16f76f51f250570e7cc4639a87fa66139039ed5c9accad259c98659",
+    "apps/synth_desktop/src-tauri/src/cloud/mod.rs": "971004ae419c92090b26a1a0e14cc6fa36f1f7e614c714a81fd63bfb52ec90a6",
+    "apps/synth_desktop/src-tauri/src/core_runtime.rs": "9d75fb6ffb23a28b8ed54aa1a8d3c6c122a40fcdd46fde0376e4ffe21329926d",
+    "apps/synth_desktop/src-tauri/src/intern_api.rs": "40849b135f162ac8766fd769b571fdc8676bce382e95ffe1ccd41c565ede5e49"
+  }
+}
