@@ -11,7 +11,7 @@ test("Rhodes inspector separates reward and operational receipts", async ({ page
       capabilities: {}, executionBindings: [], inputRefs: [], outputRefs: [], visualRefs: [], usage: {},
       summary: { rhodes: {
         rolloutId: "rollout_budget_fixture", sourceSequence: 6, cleanupPending: false,
-        publicationPending: false, drained: true,
+        publicationPending: false, inferencePending: true, drained: false,
         resultSnapshot: { score: null, limits: { max_calls: 0 }, resultPublication: { status: "committed" },
           summary: { trace_publication: { status: "failed" } } },
         lastLimitRefusal: { event_type: "rollout.limit_refused", error_code: "spend_cap_exhausted",
@@ -34,6 +34,7 @@ test("Rhodes inspector separates reward and operational receipts", async ({ page
   await expect(inspector).toBeVisible();
   await expect(inspector).toContainText("spend_cap_exhausted · project");
   await expect(inspector).toContainText("uncertain_post_dispatch");
+  await expect(inspector).toContainText("Awaiting reconciliation");
   for (const [label, value] of [["Score", "—"], ["Cleanup", "Confirmed"], ["Result publication", "committed"], ["Trace publication", "failed"]]) {
     await expect(inspector.locator("dt", { hasText: new RegExp(`^${label}$`) }).locator("+ dd")).toHaveText(value);
   }

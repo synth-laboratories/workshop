@@ -50,3 +50,9 @@ with replay ingestion and its cursor, including amendments after a scientific
 terminal event. The inspector shows the refusal code and affected scope, while
 the journal retains the full policy revision, reservation and usage payloads.
 An empty replay page leaves these observations intact.
+
+`inferencePending` tracks unfinished managed invocation workflow independently of
+cleanup and publication. True keeps the observer attached for late accounting
+receipts; terminal runs use a 30-second polling interval. The latest accounting
+event does not establish settlement of other calls, and absent old-backend
+signals display as unknown. The shared cursor transaction retains all amendments.

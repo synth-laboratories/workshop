@@ -3380,6 +3380,7 @@ impl OptimizerService {
             rhodes.insert("sourceSequence".into(),json!(page.next_sequence));
             rhodes.insert("cleanupPending".into(),json!(page.cleanup_pending));
             rhodes.insert("publicationPending".into(),json!(page.publication_pending));
+            rhodes.insert("inferencePending".into(),json!(page.inference_pending));
             rhodes.insert("drained".into(),json!(drained));
             rhodes.insert("hasMore".into(),json!(page.has_more));
             rhodes.insert("observerError".into(),Value::Null);
@@ -3473,7 +3474,11 @@ impl OptimizerService {
                             if failures>=10 { bail!("Rhodes observer paused after ten failed reads; reconcile to resume"); }
                         }
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(if failures>0 {5} else {1})).await;
+                    // Terminal inference reconciliation can take longer than execution.
+                    // Keep observing late receipts with bounded, slower polling.
+                    let terminal = matches!(run.status.as_str(), "completed" | "failed" | "cancelled");
+                    let delay = if failures > 0 { 5 } else if terminal { 30 } else { 1 };
+                    tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
                 }
             }.await;
             if let Err(error) = result {

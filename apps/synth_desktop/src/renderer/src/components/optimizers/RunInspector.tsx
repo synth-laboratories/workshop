@@ -263,7 +263,8 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 						<dt>Trace publication</dt><dd>{stringOrNull(rhodesPublication.status) ?? "Unknown"}</dd>
 						<dt>Result publication</dt><dd>{stringOrNull(record(rhodesResult.resultPublication).status) ?? "Unknown"}</dd>
 						{rhodes.lastLimitRefusal ? <><dt>Last limit refusal</dt><dd>{stringOrNull(record(rhodes.lastLimitRefusal).error_code) ?? "Refused"} · {stringOrNull(record(record(rhodes.lastLimitRefusal).scope).kind) ?? "Execution"}</dd></> : null}
-						{rhodes.lastInferenceAccounting ? <><dt>Inference accounting</dt><dd>{stringOrNull(record(rhodes.lastInferenceAccounting).accounting_status) ?? "Unknown"}</dd></> : null}
+						{rhodes.lastInferenceAccounting ? <><dt>Latest inference accounting</dt><dd>{stringOrNull(record(rhodes.lastInferenceAccounting).accounting_status) ?? "Unknown"}</dd></> : null}
+						<dt>Unfinished inference</dt><dd>{rhodes.inferencePending === true ? "Awaiting reconciliation" : rhodes.inferencePending === false ? "None reported" : "Unknown"}</dd>
 						<dt>Source cursor</dt><dd>{numberOrNull(rhodes.sourceSequence) ?? "—"}</dd>
 						<dt>Limits</dt><dd>{Object.entries(record(rhodesResult.limits)).map(([key, value]) => `${key}: ${String(value)}`).join(" · ") || "—"}</dd>
 					</dl>

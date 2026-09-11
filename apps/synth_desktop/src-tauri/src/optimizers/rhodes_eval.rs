@@ -24,6 +24,7 @@ pub(super) struct RhodesEventPage {
     pub status: String,
     pub cleanup_pending: Option<bool>,
     pub publication_pending: Option<bool>,
+    pub inference_pending: Option<bool>,
 }
 
 pub(super) fn coordinate(value: &str) -> Result<&str> {
@@ -77,6 +78,7 @@ impl RhodesEventPage {
         !self.has_more
             && self.cleanup_pending == Some(false)
             && self.publication_pending != Some(true)
+            && self.inference_pending != Some(true)
             && matches!(self.status.as_str(), "completed" | "failed" | "cancelled")
     }
 }
@@ -216,6 +218,7 @@ mod tests {
             status: "failed".into(),
             cleanup_pending: Some(true),
             publication_pending: None,
+            inference_pending: None,
         }
     }
     #[test]
@@ -228,6 +231,10 @@ mod tests {
         p.publication_pending = Some(true);
         assert!(!p.drained());
         p.publication_pending = Some(false);
+        assert!(p.drained());
+        p.inference_pending = Some(true);
+        assert!(!p.drained());
+        p.inference_pending = Some(false);
         assert!(p.drained());
         p.cleanup_pending = None;
         assert!(!p.drained());
