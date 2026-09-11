@@ -1,3 +1,5 @@
+import { BenchmarkStatus } from "../../../chrome/BenchmarkStatus.tsx";
+import { benchmarkSnapshotRows, latestBenchmarkObservations } from "../../../runtime/benchmarkObservation.ts";
 /**
  * Harbor eval live viewer (A2 posture): trial → attempt evidence as it
  * streams, verifier truth (reward.txt fails closed; native and wrapped
@@ -164,7 +166,11 @@ export function Shell(props: ShellProps) {
     () => harborEvalSnapshot(props.experiment ?? (props.data as { experiment?: unknown } | undefined)?.experiment),
     [props.experiment, props.data]
   );
-  const settled = snapshot?.lifecycle === "terminal";
+  const benchmarkRows = latestBenchmarkObservations([
+    ...benchmarkSnapshotRows(props.experiment ?? props.data), ...projectLiveEval(visibleEvents).benchmarkObservations
+  ]);
+  const settled = snapshot?.lifecycle === "terminal" ||
+    (benchmarkRows.length > 0 && benchmarkRows.every((row) => row.terminal));
   const terminal =
     settled || ["completed", "finished", "failed", "cancelled"].includes(statusText.toLowerCase());
   // A reopened terminal visual has no stream to rejoin: the producer sealed
@@ -187,6 +193,7 @@ export function Shell(props: ShellProps) {
       testId="visual-live-harbor-eval"
       footer="live.harbor_eval.v1 · ATIF is a projection of this evidence, not the log"
     >
+      <BenchmarkStatus rows={benchmarkRows} />
       <MetricStrip
         metrics={
           restored && snapshot
