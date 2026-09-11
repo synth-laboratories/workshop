@@ -124,6 +124,7 @@ import { drainPromptQueues, removeQueuedPrompt } from "../runtime/promptQueue";
 import { bridges } from "../runtime/desktopBridge";
 import { observeScopedCloudHistory } from "../runtime/scopedCloudHistory";
 import { emptyScopedHistory } from "../stores/scopedCloudHistory";
+import { executionLocationPresentation } from "../runtime/executionLocation";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { responseTraceStore } from "../runtime/responseTraceStore";
 import {
@@ -888,13 +889,22 @@ export function useAppController() {
 				const override = preferences.conversations[chat.id]?.titleOverride;
 				return override ? { ...chat, title: override } : chat;
 			});
-		const withTitles = { ...base, chats };
+		const active = sessions.find(session => session.id === activeSessionId);
+		const owned = scopedCloudHistory.sessions.find(session => session.id === activeSessionId);
+		const withTitles = { ...base, chats, executionLocation: executionLocationPresentation({
+			sessionKind: owned?.kind ?? (active ? active.target.kind === "intern" ? "intern" : "codex" : activeSessionId ? "unknown" : undefined),
+			selectedTargetId,
+			scope: scopedCloudHistory.scope,
+			creationTransportReady: false
+		}) };
 		if (withTitles.model.status !== "downloading") return withTitles;
 		return {
 			...withTitles,
 			model: { ...withTitles.model, downloadPaused }
 		};
 	}, [
+		activeSessionId,
+		scopedCloudHistory,
 		accountView.cloudBlockedReason,
 		apiKeyConfigured,
 		backendSettings?.openrouterApiKeyConfigured,

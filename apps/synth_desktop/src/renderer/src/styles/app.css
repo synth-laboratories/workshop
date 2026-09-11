@@ -2208,6 +2208,14 @@ html:not(.sidebar-hidden):not(.visual-expanded) .titlebar:not(.titlebar-native-i
 	}
 }
 
+.execution-location-summary { position: relative; flex: 0 0 auto; color: var(--color-text-muted); font-size:var(--fs-meta); }
+.execution-location-summary > summary { cursor: pointer; border-radius:var(--radius-xs); padding: var(--sp-1) var(--sp-2); list-style: none; }
+.execution-location-summary > summary::-webkit-details-marker { display: none; }
+.execution-location-summary > summary:hover, .execution-location-summary > summary:focus-visible { background: var(--color-bg-subtle); }
+.execution-location-detail { position: absolute; bottom: calc(100% + var(--sp-2)); left: 0; z-index: 50; width: min(250px, calc(100vw - 48px)); padding: var(--sp-3); border: 1px solid var(--color-border); border-radius:var(--radius-sm); background: var(--color-bg); box-shadow: var(--shadow-md); }
+.execution-location-detail p { margin: 0; line-height: var(--lh-body); }
+.execution-location-detail p + p { margin-top: var(--sp-2); }
+
 .composer-left,
 .composer-right {
 	display: flex;

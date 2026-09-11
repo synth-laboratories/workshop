@@ -1,0 +1,97 @@
+{
+  "schema": "synth.workshop-dispatch-source-evidence.v1",
+  "recorded_at": "2026-09-11T21:39:21.828219+00:00",
+  "parent_commit": "c6338f46316cf01fce4aefa2ba8b9f7084a4e369",
+  "offline_only": true,
+  "live_activation": false,
+  "migration_registered": false,
+  "legacy_routes_redirected": false,
+  "paid_provider_calls": false,
+  "keychain_access": false,
+  "verification": {
+    "reviewed-cloud-native.log": {
+      "sha256": "bac0e200cebf58b3a4b2bed76f6794c31fb812f5ea3c06a1ac53add58cf5ed2b",
+      "result": "pass",
+      "passed": 75,
+      "failed": 0,
+      "ignored": 0
+    },
+    "reviewed-core-native.log": {
+      "sha256": "22bf5059ff2084b9a01bfcf4eff10ee0663d3f3e6578cb27b347e164c449c772",
+      "result": "pass",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    "reviewed-contract-native.log": {
+      "sha256": "257e3349725ee411967a8aaafdc30314408120c93f5875dd0918622d8135bad6",
+      "result": "pass",
+      "passed": 18,
+      "failed": 0,
+      "ignored": 1
+    },
+    "reviewed-settlement-sdk.log": {
+      "sha256": "2e889c907cb92ba4761df8358b5c3ef7734b63a25a15432b7108a505fa41a293",
+      "result": "pass",
+      "passed": 21,
+      "failed": 0,
+      "ignored": 0
+    },
+    "reviewed-renderer-tests.log": {
+      "sha256": "a344de0babc54d6b6a882069025315306cef46273225cf875070e595e5b6743e",
+      "result": "pass"
+    },
+    "reviewed-typecheck.log": {
+      "sha256": "1e498f55bbe094f4669ec10e85e3b3b806cd3d4539ee23d2f9fc66efae3053ec",
+      "result": "pass"
+    },
+    "reviewed-frontend-build.log": {
+      "sha256": "01e91c2629f985f0fa42e56928b5344f761a0823ac247f2bf593d158e4b1ac8c",
+      "result": "pass"
+    },
+    "reviewed-library-native.log": {
+      "sha256": "e0eaa1cc2f3604ff749be7dfcee082b8c12772aeb4f7e375fdb24eca4ae3f477",
+      "result": "pass"
+    }
+  },
+  "review_fixes": {
+    "dispatch_review": "be8e8b8",
+    "settlement_consumer": "5edd41a3",
+    "settlement_producer": "5536b3efd32a4b224232a5357bb05910c132f6dc"
+  },
+  "fixture_sha256": "58072d72a9d49074b410ec8d663755a3228f0951e29359b4d979ca3ed6dc6fd9",
+  "css_baseline": {
+    "incremental_font_size_radius_color_debt": 0,
+    "preexisting_font_size_count": 538,
+    "preexisting_radius_count": 340,
+    "preexisting_color_count": 565,
+    "aggregate_existing_baseline_failure": true
+  },
+  "ui_fixture": {
+    "component": "ExecutionLocationSummary",
+    "cua_inspected": true,
+    "narrow_width": 360,
+    "packaged_app_acceptance": false,
+    "temporary_tab_closed": true,
+    "temporary_server_stopped": true
+  },
+  "known_baseline_exclusion": "algorithm_version_matches_the_contract: 0.2.19 default vs 0.2.20 contract",
+  "source_sha256": {
+    "apps/synth_desktop/src-tauri/src/cloud/scoped_runtime.rs": "8dab5eedf8255e92cc80d3a6df009745af9646b77e24ffacf5575b50981ebd63",
+    "apps/synth_desktop/src-tauri/src/cloud/scoped_runtime/dispatch.rs": "7585b6ce104bba79d88a5469046ac64812f8d247233d1c87e2d629b1988fb910",
+    "apps/synth_desktop/src-tauri/src/core_runtime.rs": "89d263c54ce7da668cc9269814d116500975021e5fa01505cf31643d4099d770",
+    "apps/synth_desktop/src/renderer/src/components/Composer.tsx": "8bfdf0885654b88e42de95f9a059f17c7089d06be4241ef264f19d3472eca66d",
+    "apps/synth_desktop/src/renderer/src/components/ExecutionLocationSummary.tsx": "05d1c6e0e84b6079d20ede9ba4f2e2aca77df956082d60f245b53748f6c11925",
+    "apps/synth_desktop/src/renderer/src/hooks/useAppController.ts": "21297a1abe56330bd7fcaae88c7286feb04e3e3f07bf9a382423f19521f14f69",
+    "apps/synth_desktop/src/renderer/src/runtime/executionLocation.ts": "b252b4ac70220810766b5a744e12ddcce4b659e2f4df3e2488f69a2839feb352",
+    "apps/synth_desktop/src/renderer/src/runtime/resourceSettlement.ts": "3ea8ca048e23fd9308b0933402c9d1f2b6fd85d45d865edeccf2dcf5956334d5",
+    "apps/synth_desktop/src/renderer/src/styles/app.css": "acef577aafc3ccf51b1039bf9b77b766c7c298b5a1d856cbcad76a1cca39f9e6",
+    "apps/synth_desktop/src/renderer/src/types/landing.ts": "bc59f1e0629d947eb32960bde6341a00e7511c1d7065e07bbe79461991010a9b",
+    "apps/synth_desktop/tests/execution_location.test.mjs": "a18a2ea30128842fc77ae9f1b9c96d20ff17e06b2650cbbacb9432640198f91c",
+    "apps/synth_desktop/tests/resource_settlement.test.mjs": "0472cd77c147aab8d67e0a82623a234d1d77b4d015651245943630034839d53a",
+    "apps/synth_desktop/tests/resource_settlement_proof.test.mjs": "ec7827bc50f8d1fc8df13c4cc8a13851ca2e3dfdf5339f904d2d88075be4ef53",
+    "crates/synth-api-client/src/settlement.rs": "0286266f2b198042687143661dd29ae82c32cc906465a49a28b1d79705a2900a",
+    "crates/synth-api-client/tests/fixtures/run_resource_settlement.json": "58072d72a9d49074b410ec8d663755a3228f0951e29359b4d979ca3ed6dc6fd9",
+    "crates/synth-api-client/tests/settlement_protocol.rs": "48a8fa80d5a2402a8174e11dbcb89e2b4174e2b228d5fdeedc6a76f8ed755399"
+  }
+}

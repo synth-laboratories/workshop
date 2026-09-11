@@ -15,6 +15,9 @@ use serde::Serialize;
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::{watch, Mutex};
 
+mod dispatch;
+pub use dispatch::ScopedCreation;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum Availability {
@@ -43,6 +46,7 @@ struct State {
 pub struct ScopedCloudRuntime {
     state: Arc<Mutex<State>>,
     changes: watch::Sender<ScopeView>,
+    verification_attempts: watch::Sender<u64>,
 }
 #[derive(Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +68,7 @@ impl ScopedCloudRuntime {
             availability: Availability::QualificationRequired,
         };
         let (changes, _) = watch::channel(view);
+        let (verification_attempts, _) = watch::channel(0);
         Self {
             state: Arc::new(Mutex::new(State {
                 store: None,
@@ -72,6 +77,7 @@ impl ScopedCloudRuntime {
                 attempt: 0,
             })),
             changes,
+            verification_attempts,
         }
     }
     pub fn subscribe(&self) -> watch::Receiver<ScopeView> {
@@ -102,6 +108,7 @@ impl ScopedCloudRuntime {
             .checked_add(1)
             .context("identity attempt exhausted")?;
         state.active = None;
+        self.verification_attempts.send_replace(state.attempt);
         state.view.generation = state
             .view
             .generation
@@ -144,7 +151,8 @@ impl ScopedCloudRuntime {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<IdentityObservation>>,
     {
-        let attempt = {
+        let mut attempts = self.verification_attempts.subscribe();
+        let (attempt, verification) = {
             let mut state = self.state.lock().await;
             self.expire(&mut state).await?;
             if state.store.is_none() {
@@ -154,9 +162,22 @@ impl ScopedCloudRuntime {
                 .attempt
                 .checked_add(1)
                 .context("identity attempt exhausted")?;
-            state.attempt
+            self.verification_attempts.send_replace(state.attempt);
+            (state.attempt, verify())
         };
-        let observed = verify().await.and_then(|observation| {
+        let verification = tokio::time::timeout(crate::limits::INTERN_HTTP_TIMEOUT, verification);
+        tokio::pin!(verification);
+        let result = loop {
+            if *attempts.borrow_and_update() != attempt {
+                bail!("identity observation was superseded");
+            }
+            tokio::select! {
+                biased;
+                changed = attempts.changed() => { changed.context("identity observer closed")?; }
+                result = &mut verification => break result.context("identity verification timed out").and_then(|value| value),
+            }
+        };
+        let observed = result.and_then(|observation| {
             let identity = observation.validate(expected_origin, Utc::now())?;
             Ok((identity, observation.valid_until))
         });
@@ -375,6 +396,331 @@ mod tests {
             .unwrap();
         id
     }
+
+    fn creation_plan() -> crate::cloud::storage::CreationIntent {
+        use crate::cloud::storage::{CreationIntent, FirstCommand};
+        CreationIntent {
+            creation_id: "create-1".into(),
+            adapter: Adapter::InternSync,
+            operation_id: "create".into(),
+            idempotency_key: "create-key".into(),
+            body: br#"{"objective":"fixture","idempotency_key":"create-key"}"#.to_vec(),
+            title: "draft fixture".into(),
+            first: FirstCommand {
+                command_id: "first-1".into(),
+                operation_id: "send".into(),
+                idempotency_key: "first-key".into(),
+                body: br#"{"body":"first message","expected_generation":0}"#.to_vec(),
+                expected_generation: Some(0),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn gated_creation_composition_never_invokes_identity_or_transport() {
+        let runtime = ScopedCloudRuntime::qualification_gated();
+        let result = runtime
+            .create_and_first_send_with(
+                "https://fixture.invalid",
+                creation_plan(),
+                || {
+                    panic!("gated identity callback");
+                    #[allow(unreachable_code)]
+                    async {
+                        Ok(observation(10))
+                    }
+                },
+                |_| async { panic!("gated creation transport") },
+                |_| async { panic!("gated command transport") },
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn creation_first_send_revalidates_twice_and_keeps_exact_original_request() {
+        use crate::cloud::storage::{CreationReceipt, DeliveryReceipt, ReceiptStage};
+        let (_dir, core, _store) = setup().await;
+        let mut verifications = 0;
+        let (created, sent) = core
+            .scoped_cloud()
+            .create_and_first_send_with(
+                "https://fixture.invalid",
+                creation_plan(),
+                || {
+                    verifications += 1;
+                    async { Ok(observation(10)) }
+                },
+                |record| async move {
+                    assert_eq!(record.state, "outcome_unknown");
+                    assert_eq!(record.intent.body, creation_plan().body);
+                    Ok(CreationReceipt {
+                        creation_id: record.intent.creation_id,
+                        adapter: record.intent.adapter,
+                        idempotency_key: record.intent.idempotency_key,
+                        external_id: "remote-1".into(),
+                    })
+                },
+                |request| async move {
+                    assert_eq!(request.state, "outcome_unknown");
+                    assert_eq!(request.body, creation_plan().first.body);
+                    assert_eq!(request.idempotency_key, "first-key");
+                    Ok(DeliveryReceipt {
+                        command_id: request.command_id,
+                        stream: Stream {
+                            adapter: Adapter::InternSync,
+                            external_id: "remote-1".into(),
+                        },
+                        stage: ReceiptStage::Applied,
+                        detail: json!({"applied":true}),
+                    })
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(verifications, 2);
+        assert_eq!(sent.state, "applied");
+        assert_eq!(
+            core.sessions()
+                .get(created.record.local_session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_send_never_follows_creation_into_a_different_account() {
+        use crate::cloud::storage::CreationReceipt;
+        let (_dir, core, _store) = setup().await;
+        let mut account = 9;
+        let result = core
+            .scoped_cloud()
+            .create_and_first_send_with(
+                "https://fixture.invalid",
+                creation_plan(),
+                || {
+                    account += 1;
+                    let account = account;
+                    async move { Ok(observation(account)) }
+                },
+                |record| async move {
+                    Ok(CreationReceipt {
+                        creation_id: record.intent.creation_id,
+                        adapter: record.intent.adapter,
+                        idempotency_key: record.intent.idempotency_key,
+                        external_id: "remote-1".into(),
+                    })
+                },
+                |_| async { panic!("first message must not cross account scope") },
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(core
+            .scoped_session_history()
+            .await
+            .unwrap()
+            .sessions
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn signout_cancels_creation_wait_and_preserves_unknown_outcome() {
+        let (_dir, core, store) = setup().await;
+        let runtime = core.scoped_cloud().clone();
+        let worker = runtime.clone();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let request = tokio::spawn(async move {
+            worker
+                .create_once_with(
+                    "https://fixture.invalid",
+                    creation_plan(),
+                    || async { Ok(observation(10)) },
+                    |_| async {
+                        started.send(()).unwrap();
+                        std::future::pending().await
+                    },
+                )
+                .await
+        });
+        ready.await.unwrap();
+        runtime.invalidate().await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), request)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        runtime
+            .revalidate_with("https://fixture.invalid", || async { Ok(observation(10)) })
+            .await
+            .unwrap();
+        let lease = runtime
+            .state
+            .lock()
+            .await
+            .active
+            .as_ref()
+            .unwrap()
+            .lease
+            .clone();
+        assert_eq!(
+            store.creation(&lease, "create-1").unwrap().state,
+            "outcome_unknown"
+        );
+        assert!(store.command(&lease, "first-1").is_err());
+    }
+
+    #[tokio::test]
+    async fn remote_auth_denial_invalidates_a_successful_preflight_observation() {
+        let (_dir, core, _store) = setup().await;
+        let result = core
+            .scoped_cloud()
+            .create_once_with(
+                "https://fixture.invalid",
+                creation_plan(),
+                || async { Ok(observation(10)) },
+                |_| async {
+                    Err(crate::cloud::intern::InternClientError::Http {
+                        status: reqwest::StatusCode::UNAUTHORIZED,
+                        detail: "denied".into(),
+                        code: None,
+                        request_id: None,
+                        retry_after: None,
+                    }
+                    .into())
+                },
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(
+            core.scoped_cloud().view().await.unwrap().availability,
+            Availability::SignedOut
+        );
+        assert!(core
+            .scoped_session_history()
+            .await
+            .unwrap()
+            .sessions
+            .is_empty());
+    }
+    #[tokio::test]
+    async fn stale_scope_never_constructs_an_eager_transport_callback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (_dir, core, _store) = setup().await;
+        let runtime = core.scoped_cloud();
+        let generation = runtime
+            .revalidate_with("https://fixture.invalid", || async { Ok(observation(10)) })
+            .await
+            .unwrap()
+            .generation;
+        runtime.invalidate().await.unwrap();
+        for phase in ["creation", "first-send"] {
+            let calls = AtomicUsize::new(0);
+            let result = runtime
+                .await_scoped(generation, || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    async { Ok(phase) }
+                })
+                .await;
+            assert!(result.is_err());
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn signout_cancels_stalled_verification_before_create_and_first_send() {
+        use crate::cloud::storage::CreationReceipt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for stalled_check in [1, 2] {
+            let (_dir, core, store) = setup().await;
+            let runtime = core.scoped_cloud().clone();
+            let worker = runtime.clone();
+            let creations = Arc::new(AtomicUsize::new(0));
+            let sends = Arc::new(AtomicUsize::new(0));
+            let created = creations.clone();
+            let sent = sends.clone();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let request = tokio::spawn(async move {
+                let mut check = 0;
+                let mut started = Some(started);
+                worker
+                    .create_and_first_send_with(
+                        "https://fixture.invalid",
+                        creation_plan(),
+                        || {
+                            check += 1;
+                            let signal = if check == stalled_check {
+                                started.take()
+                            } else {
+                                None
+                            };
+                            async move {
+                                if let Some(signal) = signal {
+                                    signal.send(()).unwrap();
+                                    std::future::pending().await
+                                } else {
+                                    Ok(observation(10))
+                                }
+                            }
+                        },
+                        move |record| {
+                            created.fetch_add(1, Ordering::SeqCst);
+                            async move {
+                                Ok(CreationReceipt {
+                                    creation_id: record.intent.creation_id,
+                                    adapter: record.intent.adapter,
+                                    idempotency_key: record.intent.idempotency_key,
+                                    external_id: "remote-1".into(),
+                                })
+                            }
+                        },
+                        move |_| {
+                            sent.fetch_add(1, Ordering::SeqCst);
+                            async { panic!("stalled verification must not reach send") }
+                        },
+                    )
+                    .await
+            });
+            ready.await.unwrap();
+            runtime.invalidate().await.unwrap();
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(5), request)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_err()
+            );
+            assert_eq!(
+                creations.load(Ordering::SeqCst),
+                usize::from(stalled_check == 2)
+            );
+            assert_eq!(sends.load(Ordering::SeqCst), 0);
+            runtime
+                .revalidate_with("https://fixture.invalid", || async { Ok(observation(10)) })
+                .await
+                .unwrap();
+            let lease = runtime
+                .state
+                .lock()
+                .await
+                .active
+                .as_ref()
+                .unwrap()
+                .lease
+                .clone();
+            if stalled_check == 1 {
+                assert!(store.creation(&lease, "create-1").is_err());
+            } else {
+                assert_eq!(store.creation(&lease, "create-1").unwrap().state, "bound");
+                assert_eq!(store.command(&lease, "first-1").unwrap().state, "pending");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn gated_core_never_fetches_identity_or_requires_candidate_schema() {
         let dir = tempfile::tempdir().unwrap();
@@ -579,7 +925,7 @@ mod tests {
         });
         ready.await.unwrap();
         runtime.invalidate().await.unwrap();
-        release.send(()).unwrap();
+        let _ = release.send(()); // Cancellation may already have dropped verification.
         assert!(pending.await.unwrap().is_err());
         assert_eq!(
             runtime.view().await.unwrap().availability,

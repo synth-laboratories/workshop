@@ -16,7 +16,7 @@ test('source fixtures preserve untracked counts and incomplete global coverage',
  assert.equal(present('root-run',examples[1]).state,'partial');
 });
 test('root and owned-subtree confirmations stay distinct; contradictory snapshots refuse completion',()=>{
- const root={...examples[1],settled:true,coverage_complete:true};
+ const root={...examples[1],settled:true,coverage_complete:true,root_confirmed:true};
  assert.equal(present('root-run',root).state,'settled_root');
  const child={...root,run_id:'child',scope_kind:'owned_subtree',edge_id:'edge'};
  assert.equal(present('child',child).state,'settled_subtree');

@@ -845,6 +845,36 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
+    async fn gated_cloud_creation_never_falls_back_to_legacy_intern() {
+        use crate::cloud::storage::{Adapter, CreationIntent, FirstCommand};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed = attempts.clone();
+        let legacy = Arc::new(InternRuntime::lazy(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Err(crate::cloud::intern::InternClientError::CloudUnavailable)
+        }));
+        let dir = tempdir().unwrap();
+        let core = CoreRuntime::open_with_cloud(dir.path(), legacy).unwrap();
+        let intent = CreationIntent {
+            creation_id: "create".into(), adapter: Adapter::InternSync,
+            operation_id: "create".into(), idempotency_key: "create-key".into(),
+            body: br#"{"idempotency_key":"create-key"}"#.to_vec(), title: "fixture".into(),
+            first: FirstCommand { command_id: "first".into(), operation_id: "send".into(),
+                idempotency_key: "first-key".into(), body: b"{}".to_vec(), expected_generation: None },
+        };
+        let result = core.scoped_cloud().create_and_first_send_with(
+            "https://fixture.invalid", intent,
+            || async { panic!("unqualified identity request") },
+            |_| async { panic!("unqualified creation request") },
+            |_| async { panic!("unqualified first send") },
+        ).await;
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert!(crate::cloud::storage::CloudStore::open(core.storage.database().clone()).is_err());
+    }
+
+    #[tokio::test]
     async fn local_journal_opens_with_unavailable_cloud_configuration() {
         for url in ["not a URL", "file:///invalid", "http://127.0.0.1:1"] {
             let dir = tempdir().unwrap();
