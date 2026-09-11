@@ -301,44 +301,8 @@ impl CloudStore {
     }
 
     pub fn enqueue(&self, lease: &ScopeLease, intent: &CommandIntent) -> Result<PendingCommand> {
-        for id in [
-            &intent.command_id,
-            &intent.operation_id,
-            &intent.idempotency_key,
-        ] {
-            valid_id(id)?;
-        }
-        if intent.body.len() > MAX_BODY {
-            bail!("command body exceeds limit");
-        }
-        let body =
-            serde_json::from_slice::<Value>(&intent.body).context("command body must be JSON")?;
-        if intent.expected_generation.is_some()
-            && body.get("expected_generation").and_then(Value::as_u64) != intent.expected_generation
-        {
-            bail!("stored generation does not match command body");
-        }
-        let body_digest = digest(&intent.body);
-        let generation = intent.expected_generation.map(i64::try_from).transpose()?;
-        self.db.transaction(|conn| {
-            fence(conn,lease)?;
-            binding(conn,lease,&intent.stream)?;
-            let existing:Option<(String,String,String,Option<i64>,i64,String)> = conn.query_row(
-                "SELECT command_id,body_sha256,external_id,expected_generation,auth_epoch,adapter FROM cloud_command_outbox WHERE scope_id=?1 AND operation_id=?2 AND idempotency_key=?3",
-                params![lease.scope_id,intent.operation_id,intent.idempotency_key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
-            if let Some((id,hash,external,gen,epoch,adapter))=existing {
-                if id!=intent.command_id || hash!=body_digest || external!=intent.stream.external_id || gen!=generation || epoch!=lease.epoch || adapter!=intent.stream.adapter.as_str() { bail!("idempotency conflict or stale command authority"); }
-                return load_command(conn,lease,&id);
-            }
-            let session=binding(conn,lease,&intent.stream)?;
-            let local_command_id=local_command_id(lease,&intent.command_id)?;
-            let now=chrono::Utc::now().to_rfc3339();
-            let source=match intent.stream.adapter {Adapter::InternSync|Adapter::InternAsync=>"intern",_=>"remote"};
-            conn.execute("INSERT INTO command_receipts(command_id,session_id,source,kind,status,request_json,created_at,updated_at) VALUES(?1,?2,?3,?4,'accepted',?5,?6,?6)",params![local_command_id,session,source,intent.operation_id,std::str::from_utf8(&intent.body)?,now])?;
-            conn.execute("INSERT INTO cloud_command_outbox(scope_id,command_id,local_command_id,adapter,external_id,operation_id,idempotency_key,body,body_sha256,auth_epoch,expected_generation,delivery_state) VALUES(?1,?2,?11,?3,?4,?5,?6,?7,?8,?9,?10,'pending')",
-                params![lease.scope_id,intent.command_id,intent.stream.adapter.as_str(),intent.stream.external_id,intent.operation_id,intent.idempotency_key,intent.body,body_digest,lease.epoch,generation,local_command_id])?;
-            load_command(conn,lease,&intent.command_id)
-        })
+        self.db
+            .transaction(|conn| enqueue_conn(conn, lease, intent))
     }
 
     /// Commit the uncertainty marker BEFORE handing bytes to the network.
@@ -543,6 +507,69 @@ impl CloudStore {
     }
 }
 
+fn enqueue_conn(
+    conn: &Connection,
+    lease: &ScopeLease,
+    intent: &CommandIntent,
+) -> Result<PendingCommand> {
+    enqueue_conn_with_epoch(conn, lease, intent, lease.epoch)
+}
+
+fn enqueue_conn_with_epoch(
+    conn: &Connection,
+    lease: &ScopeLease,
+    intent: &CommandIntent,
+    command_epoch: i64,
+) -> Result<PendingCommand> {
+    for id in [
+        &intent.command_id,
+        &intent.operation_id,
+        &intent.idempotency_key,
+    ] {
+        valid_id(id)?;
+    }
+    if intent.body.len() > MAX_BODY {
+        bail!("command body exceeds limit");
+    }
+    let body =
+        serde_json::from_slice::<Value>(&intent.body).context("command body must be JSON")?;
+    if intent.expected_generation.is_some()
+        && body.get("expected_generation").and_then(Value::as_u64) != intent.expected_generation
+    {
+        bail!("stored generation does not match command body");
+    }
+    let body_digest = digest(&intent.body);
+    let generation = intent.expected_generation.map(i64::try_from).transpose()?;
+    fence(conn, lease)?;
+    binding(conn, lease, &intent.stream)?;
+    let existing:Option<(String,String,String,Option<i64>,i64,String)> = conn.query_row(
+                "SELECT command_id,body_sha256,external_id,expected_generation,auth_epoch,adapter FROM cloud_command_outbox WHERE scope_id=?1 AND operation_id=?2 AND idempotency_key=?3",
+                params![lease.scope_id,intent.operation_id,intent.idempotency_key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
+    if let Some((id, hash, external, gen, epoch, adapter)) = existing {
+        if id != intent.command_id
+            || hash != body_digest
+            || external != intent.stream.external_id
+            || gen != generation
+            || epoch != command_epoch
+            || adapter != intent.stream.adapter.as_str()
+        {
+            bail!("idempotency conflict or stale command authority");
+        }
+        return load_command(conn, lease, &id);
+    }
+    let session = binding(conn, lease, &intent.stream)?;
+    let local_command_id = local_command_id(lease, &intent.command_id)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let source = match intent.stream.adapter {
+        Adapter::InternSync | Adapter::InternAsync => "intern",
+        _ => "remote",
+    };
+    conn.execute("INSERT INTO command_receipts(command_id,session_id,source,kind,status,request_json,created_at,updated_at) VALUES(?1,?2,?3,?4,'accepted',?5,?6,?6)",params![local_command_id,session,source,intent.operation_id,std::str::from_utf8(&intent.body)?,now])?;
+    conn.execute("INSERT INTO cloud_command_outbox(scope_id,command_id,local_command_id,adapter,external_id,operation_id,idempotency_key,body,body_sha256,auth_epoch,expected_generation,delivery_state) VALUES(?1,?2,?11,?3,?4,?5,?6,?7,?8,?9,?10,'pending')",
+                params![lease.scope_id,intent.command_id,intent.stream.adapter.as_str(),intent.stream.external_id,intent.operation_id,intent.idempotency_key,intent.body,body_digest,command_epoch,generation,local_command_id])?;
+    load_command(conn, lease, &intent.command_id)
+}
+
 fn invalidate(conn: &Connection) -> Result<i64> {
     let epoch: i64 = conn.query_row(
         "SELECT epoch FROM cloud_auth_state WHERE singleton=1",
@@ -689,3 +716,6 @@ fn validate_page(
 
 #[cfg(test)]
 mod tests;
+
+mod creation;
+pub use creation::{CreationIntent, CreationReceipt, CreationRecord, FirstCommand};

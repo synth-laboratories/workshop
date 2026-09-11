@@ -1,0 +1,24 @@
+{
+  "native_cloud_tests": {
+    "passed": 60,
+    "failed": 0,
+    "ignored": 0
+  },
+  "candidate_schema_registered": false,
+  "live_creation_transport": false,
+  "invariants": [
+    "creation plus first-command bytes immutable",
+    "uncertainty persisted before network",
+    "atomic remote binding and first-command outbox",
+    "original draft survives restart",
+    "prior-epoch first command cannot auto-flush",
+    "timeout cannot mint new key"
+  ],
+  "source_sha256": {
+    "apps/synth_desktop/src-tauri/src/cloud/storage/schema.sql": "a717caa82434f6ad0b256a315e55904e1a5c2fc47c2e9aae8b5a147b2b4cbca5",
+    "apps/synth_desktop/src-tauri/src/cloud/storage/creation.rs": "3293ac88a0b8a94af17c4395299e6d1166e0de8dfa429459118a53daff97a898",
+    "apps/synth_desktop/src-tauri/src/cloud/storage/README.md": "9ff99924e7eff58eaba72a1d90d1d71510a41412d9ae650a78f63acc8ede6113",
+    "apps/synth_desktop/src-tauri/src/cloud/storage/mod.rs": "9a6f86ce87ce73dec82933c729a958bb233a8174d7c9977425f51e8f3024538c",
+    "apps/synth_desktop/src-tauri/src/cloud/storage/tests.rs": "8e4bb9d8d28d45d46901d32964654d28e93fa57e48a62e4c3ec06facdda918d1"
+  }
+}

@@ -158,3 +158,20 @@ memory facts. The unchanged real-model memory gate refused insufficient free
 memory. No cloud provider run or Keychain operation occurred. Harness requests
 now inherit the actual machine permission policy and explicitly select the local
 provider for both creation and sending.
+
+## Durable creation and first-send candidate
+
+The native candidate now persists creation and first-send intent before a remote
+runtime exists. One authoritative creation result binds the original draft and
+admits the original first command atomically. Timeout/cancellation remains
+outcome_unknown; retry cannot regenerate a creation key. Restart/account recovery
+preserves the original first-command epoch, so an observed creation result does
+not authorize automatic sending of an older pending message. Shared command
+receipts track creation separately from remote execution completion.
+
+Combined native cloud suite: 60 passed, zero failed/ignored. New tests cover
+injected transaction failure, exact request preservation, mutation conflict,
+restart/account fencing and timeout after the durable claim. Evidence:
+`artifacts/cloud-foundations/creation-recovery-evidence.json`. No live creation
+adapter, receipt lookup contract, migration registration or cloud capability was
+enabled. The packaged app and deterministic daemon were stopped after verification.

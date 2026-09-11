@@ -74,3 +74,23 @@ CREATE TABLE cloud_event_bindings (
  PRIMARY KEY(scope_id,adapter,external_id,remote_event_id),
  FOREIGN KEY(scope_id,adapter,external_id) REFERENCES cloud_session_bindings(scope_id,adapter,external_id)
 );
+
+-- Durable creation precedes remote binding. No retry after an uncertain create.
+CREATE TABLE cloud_creation_intents (
+ scope_id TEXT NOT NULL REFERENCES cloud_scopes(id),
+ creation_id TEXT NOT NULL,
+ adapter TEXT NOT NULL CHECK(adapter IN ('intern_sync','intern_async')),
+ operation_id TEXT NOT NULL,
+ idempotency_key TEXT NOT NULL,
+ local_session_id TEXT NOT NULL,
+ auth_epoch INTEGER NOT NULL CHECK(auth_epoch>=0),
+ plan BLOB NOT NULL,
+ plan_sha256 TEXT NOT NULL,
+ delivery_state TEXT NOT NULL CHECK(delivery_state IN ('pending','outcome_unknown','bound')),
+ external_id TEXT,
+ PRIMARY KEY(scope_id,creation_id),
+ UNIQUE(scope_id,operation_id,idempotency_key),
+ FOREIGN KEY(scope_id,local_session_id) REFERENCES cloud_owned_sessions(scope_id,local_session_id)
+);
+CREATE TRIGGER immutable_cloud_creation BEFORE UPDATE OF scope_id,creation_id,adapter,operation_id,idempotency_key,local_session_id,auth_epoch,plan,plan_sha256 ON cloud_creation_intents
+BEGIN SELECT RAISE(ABORT,'creation identity and first-send intent are immutable'); END;

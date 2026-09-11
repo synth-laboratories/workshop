@@ -610,3 +610,178 @@ fn outbox_extends_shared_receipts_and_delivered_is_not_completed() {
         .unwrap();
     assert_eq!(status(), "completed");
 }
+
+fn creation_intent() -> CreationIntent {
+    CreationIntent {
+        creation_id: "create-1".into(),
+        adapter: Adapter::InternSync,
+        operation_id: "create".into(),
+        idempotency_key: "create-key".into(),
+        body: br#"{"objective":"fixture","idempotency_key":"create-key"}"#.to_vec(),
+        title: "draft fixture".into(),
+        first: FirstCommand {
+            command_id: "first-1".into(),
+            operation_id: "send".into(),
+            idempotency_key: "first-key".into(),
+            body: br#"{"body":"first message","expected_generation":0}"#.to_vec(),
+            expected_generation: Some(0),
+        },
+    }
+}
+
+#[test]
+fn creation_preserves_first_send_and_binds_both_in_one_transaction() {
+    let (_dir, db, store, lease, _) = setup();
+    let plan = creation_intent();
+    let staged = store.stage_creation(&lease, &plan).unwrap();
+    assert_eq!(staged.state, "pending");
+    assert!(store
+        .bind_created(&lease, &plan.creation_id, "created-runtime")
+        .is_err());
+    assert!(store.command(&lease, &plan.first.command_id).is_err());
+    let dispatched = store.begin_creation(&lease, &plan.creation_id).unwrap();
+    assert_eq!(dispatched.intent.body, plan.body);
+    assert!(store.begin_creation(&lease, &plan.creation_id).is_err());
+    db.with_conn(|c| {c.execute_batch("CREATE TRIGGER fail_first BEFORE INSERT ON cloud_command_outbox BEGIN SELECT RAISE(ABORT,'fixture failure'); END;")?;Ok(())}).unwrap();
+    assert!(store
+        .bind_created(&lease, &plan.creation_id, "created-runtime")
+        .is_err());
+    assert_eq!(
+        store.creation(&lease, &plan.creation_id).unwrap().state,
+        "outcome_unknown"
+    );
+    let bindings: i64 = db
+        .with_conn(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM cloud_session_bindings WHERE external_id='created-runtime'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(bindings, 0);
+
+    db.with_conn(|c| {
+        c.execute_batch("DROP TRIGGER fail_first;")?;
+        Ok(())
+    })
+    .unwrap();
+    let bound = store
+        .bind_created(&lease, &plan.creation_id, "created-runtime")
+        .unwrap();
+    assert_eq!(bound.local_session_id, staged.local_session_id);
+    assert_eq!(bound.state, "bound");
+    let first = store.command(&lease, &plan.first.command_id).unwrap();
+    assert_eq!(first.body, plan.first.body);
+    assert_eq!(first.state, "pending");
+    assert_eq!(
+        store
+            .bind_created(&lease, &plan.creation_id, "created-runtime")
+            .unwrap()
+            .local_session_id,
+        staged.local_session_id
+    );
+    assert!(store
+        .bind_created(&lease, &plan.creation_id, "different-runtime")
+        .is_err());
+}
+
+#[test]
+fn creation_timeout_restart_keeps_identity_and_fences_automatic_first_send() {
+    let (_dir, db, store, lease, _) = setup();
+    let plan = creation_intent();
+    let original = store.stage_creation(&lease, &plan).unwrap();
+    store.begin_creation(&lease, &plan.creation_id).unwrap();
+    let reopened = CloudStore::open(db).unwrap();
+    assert!(store
+        .bind_created(&lease, &plan.creation_id, "late-runtime")
+        .is_err());
+    let other = reopened.activate_verified(&identity("b")).unwrap();
+    assert!(reopened.creation(&other, &plan.creation_id).is_err());
+    let refreshed = reopened.activate_verified(&identity("a")).unwrap();
+    let recovered = reopened.creation(&refreshed, &plan.creation_id).unwrap();
+    assert_eq!(recovered.local_session_id, original.local_session_id);
+    assert_eq!(recovered.intent.body, plan.body);
+    assert_eq!(recovered.intent.first.body, plan.first.body);
+    assert!(reopened
+        .begin_creation(&refreshed, &plan.creation_id)
+        .is_err());
+    assert!(reopened.stage_creation(&refreshed, &plan).is_err());
+    // An authoritative lookup can resolve creation, but the earlier-epoch
+    // first command is not silently authorized by signing back in.
+    reopened
+        .bind_created(&refreshed, &plan.creation_id, "reconciled-runtime")
+        .unwrap();
+    assert!(reopened
+        .begin_send(&refreshed, &plan.first.command_id)
+        .is_err());
+}
+
+#[test]
+fn creation_identity_and_first_message_are_immutable() {
+    let (_dir, db, store, lease, _) = setup();
+    let plan = creation_intent();
+    let original = store.stage_creation(&lease, &plan).unwrap();
+    assert_eq!(
+        store
+            .stage_creation(&lease, &plan)
+            .unwrap()
+            .local_session_id,
+        original.local_session_id
+    );
+    let mut changed = plan.clone();
+    changed.first.body = br#"{"body":"changed","expected_generation":0}"#.to_vec();
+    assert!(store.stage_creation(&lease, &changed).is_err());
+    changed = plan.clone();
+    changed.adapter = Adapter::InternAsync;
+    assert!(store.stage_creation(&lease, &changed).is_err());
+    let mutation = db.with_conn(|c| {
+        c.execute("UPDATE cloud_creation_intents SET plan=x'00'", [])?;
+        Ok(())
+    });
+    assert!(mutation.is_err());
+    assert!(!format!("{original:?}").contains("first message"));
+}
+
+#[tokio::test]
+async fn creation_dispatch_timeout_never_recreates_or_loses_first_message() {
+    let (_dir, _db, store, lease, _) = setup();
+    let plan = creation_intent();
+    let worker = store.clone();
+    let worker_lease = lease.clone();
+    let worker_plan = plan.clone();
+    let (started, observed) = tokio::sync::oneshot::channel();
+    let mut request = tokio::spawn(async move {
+        worker
+            .dispatch_creation_once(&worker_lease, &worker_plan, |record| async move {
+                assert_eq!(record.state, "outcome_unknown");
+                assert_eq!(record.intent.first.body, creation_intent().first.body);
+                started.send(()).unwrap();
+                std::future::pending::<Result<CreationReceipt>>().await
+            })
+            .await
+    });
+    // Begin the simulated network deadline only after the durable send claim.
+    tokio::time::timeout(std::time::Duration::from_secs(10), observed)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), &mut request)
+            .await
+            .is_err()
+    );
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    assert_eq!(
+        store.creation(&lease, &plan.creation_id).unwrap().state,
+        "outcome_unknown"
+    );
+    let retried = store
+        .dispatch_creation_once(&lease, &plan, |_| async {
+            panic!("uncertain creation must not send twice")
+        })
+        .await;
+    assert!(retried.is_err());
+    assert!(store.command(&lease, &plan.first.command_id).is_err());
+}

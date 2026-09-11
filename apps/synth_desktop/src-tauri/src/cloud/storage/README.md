@@ -58,3 +58,14 @@ Fixtures use the real native database and migration code. They exercise interrup
 upgrade rollback, existing rows, account/backend/org/profile separation, old epochs,
 concurrent claim races, timeout/restart, late/wrong receipts, transaction failure,
 replay identity, cursor adapters, external ownership and native execution location.
+
+Creation recovery now stages the exact creation body/key and first-command
+body/key/generation with a fresh scope-owned draft before any network call.
+An uncertain create is never automatically replayed. An authoritative creation
+result binds that same draft and enqueues its first command in one transaction;
+any binding/outbox failure rolls the entire operation back. After restart or
+account revalidation, lookup may resolve the original creation, but the first
+command retains its original epoch and cannot silently flush under the new one.
+Creation delivery uses the same shared receipt store; it does not complete a run.
+The injected creation dispatcher uses blocking database workers and rejects
+receipt identity drift. Live creation lookup/retention semantics remain gated.
