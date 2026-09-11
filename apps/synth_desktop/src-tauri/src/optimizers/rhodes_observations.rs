@@ -8,6 +8,7 @@ pub(crate) fn critical_observations(events: &[Value]) -> serde_json::Map<String,
     for event in events {
         let field = match event.get("event_type").and_then(Value::as_str) {
             Some("rollout.phase") => "lastExecutionPhase",
+            Some("rollout.resource_intent") => "lastResourceIntent",
             Some("rollout.limit_refused") => "lastLimitRefusal",
             Some("rollout.inference_budget_reserved") => "lastBudgetReservation",
             Some("rollout.inference_accounting") => "lastInferenceAccounting",
@@ -29,9 +30,11 @@ mod tests {
             serde_json::json!({"event_type":"rollout.phase","sequence":4,"phase":"agent","state":"started"}),
             serde_json::json!({"event_type":"rollout.phase","sequence":5,"phase":"agent","state":"exited","exit_code":7}),
             serde_json::json!({"event_type":"rollout.completed","sequence":6}),
+            serde_json::json!({"event_type":"rollout.resource_intent","sequence":7,"provider":"docker","owner":"owned"}),
         ];
         let projection = super::critical_observations(&events);
-        assert_eq!(projection.len(), 3);
+        assert_eq!(projection.len(), 4);
+        assert_eq!(projection["lastResourceIntent"]["owner"], "owned");
         assert_eq!(projection["lastExecutionPhase"]["sequence"], 5);
         assert_eq!(projection["lastExecutionPhase"]["exit_code"], 7);
         assert!(projection["lastExecutionPhase"].get("score").is_none());

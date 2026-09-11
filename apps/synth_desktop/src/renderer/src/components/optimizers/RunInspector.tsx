@@ -264,6 +264,7 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 						<dt>Rollout</dt><dd>{stringOrNull(rhodes.rolloutId) ?? "—"}</dd>
 						<dt>Score</dt><dd>{numberOrNull(rhodesResult.score) ?? "—"}</dd>
 						{rhodes.lastExecutionPhase ? <><dt>Latest execution phase</dt><dd>{stringOrNull(record(rhodes.lastExecutionPhase).phase) ?? "Unknown"} · {stringOrNull(record(rhodes.lastExecutionPhase).state) ?? "Unknown"}{numberOrNull(record(rhodes.lastExecutionPhase).exit_code) != null ? ` · exit ${numberOrNull(record(rhodes.lastExecutionPhase).exit_code)}` : ""}</dd></> : null}
+						{rhodes.lastResourceIntent ? <><dt>Latest sandbox intent</dt><dd>{stringOrNull(record(rhodes.lastResourceIntent).provider) ?? "Unknown"}</dd><dt>Sandbox owner</dt><dd><code className="optimizer-inspector-digest">{stringOrNull(record(rhodes.lastResourceIntent).owner) ?? "Unknown"}</code></dd></> : null}
 						<dt>Cleanup</dt><dd>{rhodes.cleanupPending === true ? "Pending confirmation" : rhodes.cleanupPending === false ? "Confirmed" : "Unknown"}</dd>
 						<dt>Trace publication</dt><dd>{stringOrNull(rhodesPublication.status) ?? "Unknown"}</dd>
 						<dt>Result publication</dt><dd>{stringOrNull(record(rhodesResult.resultPublication).status) ?? "Unknown"}</dd>
