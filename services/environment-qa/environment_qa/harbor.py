@@ -2,10 +2,8 @@
 import json
 import os
 import shutil
-import signal
 import subprocess
 import tempfile
-import time
 import hashlib
 import re
 import tomllib
@@ -115,29 +113,21 @@ printf '%s\\n%s\\n' "$first" "$second" > /logs/verifier/qa-repeat.txt
                 component=plan['experiments'][selected_gate['slot']].get('execution_kind')=='component'
                 if component: command.append('--disable-verification')
             log_path = work / ((gate_id or agent) + ".log")
-            with log_path.open("w") as log:
-                process = subprocess.Popen(command, env=env, cwd=home, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-                deadline = time.monotonic() + timeout_seconds
-                interrupted = False
-                while process.poll() is None:
-                    if time.monotonic() >= deadline or store.get(run["id"])["status"] in {"cancelling", "cancelled"}:
-                        interrupted = True
-                        os.killpg(process.pid, signal.SIGINT)
-                        try:
-                            process.wait(timeout=15)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(process.pid, signal.SIGKILL)
-                            process.wait()
-                        break
-                    time.sleep(0.2)
+            from .shared_process import run_probe_process
+            returncode, interrupted, execution_error = run_probe_process(
+                command, output=log_path, environment=env, cwd=home,
+                timeout_seconds=timeout_seconds,
+                max_output_bytes=run['policy'].get('pipeline', {}).get('process_output_max_bytes', 16 * 1024 * 1024),
+                cancelled=lambda: store.get(run["id"])["status"] in {"cancelling", "cancelled"},
+            )
             results = []
             for candidate in (work / job).glob("*/result.json"):
                 data = json.loads(candidate.read_text())
                 rewards = (data.get("verifier_result") or {}).get("rewards")
                 results.append({"trial": candidate.parent.name, "rewards": rewards,
                                 "exception": (data.get("exception_info") or {}).get("exception_type")})
-            entry = {"agent": agent, "harbor_version": version, "exit_code": process.returncode,
-                     "interrupted": interrupted, "results": results, "log": str(log_path.relative_to(store.root)),
+            entry = {"agent": agent, "harbor_version": version, "exit_code": returncode,
+                     "interrupted": interrupted, "execution_error": execution_error, "results": results, "log": str(log_path.relative_to(store.root)),
                      "transformation": transformation}
             evidence.append(entry)
             entry['execution_kind']='component' if component else 'full_verifier'
@@ -147,10 +137,10 @@ printf '%s\\n%s\\n' "$first" "$second" > /logs/verifier/qa-repeat.txt
                 try: events=json.loads(trajectories[0].read_text()) if len(trajectories)==1 else []
                 except (ValueError,OSError): events=[]
                 observed=any('observation' in e and not e.get('instrumentation') for e in events)
-                if interrupted or process.returncode or len(results)!=1 or results[0]['exception'] or not observed or not component_complete(events):
+                if interrupted or returncode or len(results)!=1 or results[0]['exception'] or not observed or not component_complete(events):
                     limits.append('Component experiment incomplete or missing observations; no grade inferred')
                 continue
-            if interrupted or process.returncode or len(results) != 1 or results[0]["exception"] or not results[0]["rewards"]:
+            if interrupted or returncode or len(results) != 1 or results[0]["exception"] or not results[0]["rewards"]:
                 limits.append(f"Harbor {agent} did not produce one valid trial; inspect saved logs and resources")
                 continue
             rewards = results[0]["rewards"]
