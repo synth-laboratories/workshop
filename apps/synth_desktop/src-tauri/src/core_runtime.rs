@@ -535,6 +535,32 @@ impl CoreRuntime {
         });
     }
 
+    /// Ownership survives sign-out and must not be bypassed through legacy IPC.
+    /// An absent candidate table preserves existing installations without
+    /// registering or applying the gated cloud migration.
+    pub(crate) async fn is_scoped_cloud_session(&self, session_id: &str) -> Result<bool> {
+        let db = self.storage.database().clone();
+        let session_id = session_id.to_owned();
+        tokio::task::spawn_blocking(move || db.with_conn(|conn| {
+            let installed: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='cloud_owned_sessions')",
+                [], |row| row.get(0),
+            )?;
+            if !installed { return Ok(false); }
+            Ok(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM cloud_owned_sessions WHERE local_session_id=?1)",
+                [&session_id], |row| row.get(0),
+            )?)
+        })).await.context("join cloud ownership check")?
+    }
+
+    pub(crate) async fn require_legacy_intern_session(&self, session_id: &str) -> Result<()> {
+        if self.is_scoped_cloud_session(session_id).await? {
+            anyhow::bail!("scoped Cloud session requires qualified dispatch");
+        }
+        Ok(())
+    }
+
     pub async fn start_intern_provider(
         &self,
         session_id: String,
@@ -542,6 +568,7 @@ impl CoreRuntime {
         runtime_kind: RuntimeKind,
         title: Option<String>,
     ) -> Result<bool> {
+        self.require_legacy_intern_session(&session_id).await?;
         let (committed_tx, mut committed_rx) = tokio::sync::mpsc::channel(128);
         let binding = InternSessionBinding {
             session_id,
@@ -590,6 +617,9 @@ impl CoreRuntime {
                 continue;
             }
             if session.kind != SessionKind::Intern.as_str() {
+                continue;
+            }
+            if self.is_scoped_cloud_session(&session.id).await? {
                 continue;
             }
             let Some(runtime_id) = session.remote_id.clone() else {
@@ -843,6 +873,52 @@ impl CoreRuntime {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn legacy_entrypoints_refuse_scoped_sessions_after_signout() {
+        use crate::cloud::storage::{Adapter, CloudScopeIdentity, CloudStore, Stream, MIGRATION_CANDIDATE};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed = attempts.clone();
+        let legacy = Arc::new(InternRuntime::lazy(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Err(crate::cloud::intern::InternClientError::CloudUnavailable)
+        }));
+        let dir = tempdir().unwrap();
+        let core = CoreRuntime::open_with_cloud(dir.path(), legacy).unwrap();
+        // An ordinary installation remains usable without the candidate schema.
+        core.require_legacy_intern_session("legacy").await.unwrap();
+        let db = core.storage.database().clone();
+        db.transaction(|conn| { conn.execute_batch(MIGRATION_CANDIDATE)?; Ok(()) }).unwrap();
+        let store = CloudStore::open(db).unwrap();
+        let lease = store.activate_verified(&CloudScopeIdentity {
+            backend_origin: "https://fixture.invalid".into(), backend_id: "backend".into(),
+            account_id: "old-account".into(), org_id: "org".into(), profile_id: "fixture".into(),
+        }).unwrap();
+        let mut sessions = Vec::new();
+        for (adapter, kind) in [(Adapter::InternSync, RuntimeKind::Sync), (Adapter::InternAsync, RuntimeKind::Async)] {
+            let session = store.create_conversation(&lease, &Stream {
+                adapter, external_id: format!("runtime-{adapter:?}"),
+            }, "scoped fixture").unwrap();
+            sessions.push((session, kind));
+        }
+        store.sign_out().unwrap();
+        for (session, kind) in sessions {
+            let sent = crate::intern_api::send(&core, crate::intern_api::InternSessionSendRequest {
+                session_id: session.clone(), body: "must not reach legacy".into(),
+            }).await.unwrap_err();
+            assert!(sent.to_string().contains("qualified dispatch"));
+            let controlled = crate::intern_api::control(&core, crate::intern_api::InternSessionControlRequest {
+                session_id: session.clone(), kind: "close".into(), payload: serde_json::Map::new(),
+            }).await.unwrap_err();
+            assert!(controlled.to_string().contains("qualified dispatch"));
+            assert!(core.start_intern_provider(session, "remote".into(), kind, None).await
+                .unwrap_err().to_string().contains("qualified dispatch"));
+        }
+        assert_eq!(core.resume_intern_providers().await.unwrap(), 0);
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        core.require_legacy_intern_session("legacy").await.unwrap();
+    }
 
     #[tokio::test]
     async fn gated_cloud_creation_never_falls_back_to_legacy_intern() {
