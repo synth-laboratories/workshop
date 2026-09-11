@@ -266,12 +266,12 @@ pub async fn create(
 }
 
 async fn existing_async_binding(core: &CoreRuntime) -> Result<Option<SessionRecord>> {
-    Ok(core
+    let candidates = core
         .sessions()
         .list(2_000)
         .await?
         .into_iter()
-        .find(|session| {
+        .filter(|session| {
             session.remote_id.is_some()
                 && session.metadata.get("runtime").and_then(Value::as_str) == Some("rust-intern")
                 && session
@@ -281,13 +281,20 @@ async fn existing_async_binding(core: &CoreRuntime) -> Result<Option<SessionReco
                     != Some("demo")
                 && session.kind == SessionKind::Intern.as_str()
                 && session.target.intern_mode() == Some(InternMode::Async)
-        }))
+        });
+    for session in candidates {
+        if !core.is_scoped_cloud_session(&session.id).await? {
+            return Ok(Some(session));
+        }
+    }
+    Ok(None)
 }
 
 pub async fn send(
     core: &CoreRuntime,
     request: InternSessionSendRequest,
 ) -> Result<InternSendResult> {
+    core.require_legacy_intern_session(&request.session_id).await?;
     if request.body.trim().is_empty() {
         bail!("message body is required");
     }
@@ -359,6 +366,7 @@ pub async fn control(
     core: &CoreRuntime,
     request: InternSessionControlRequest,
 ) -> Result<InternControlResult> {
+    core.require_legacy_intern_session(&request.session_id).await?;
     let session = core
         .sessions()
         .get(request.session_id.clone())

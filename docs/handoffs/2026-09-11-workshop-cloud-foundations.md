@@ -1,5 +1,29 @@
 # Workshop cloud foundations — September 11, 2026
 
+## Legacy route separation continuation after fe9499c7
+
+Integration independently verified the dispatch fixes in `fe9499c7`: 13 scoped-runtime,
+4 CoreRuntime, and 14 renderer tests plus typechecking passed; review evidence
+`b5b6a5e` closes WD-01/WD-02 offline.
+
+The subsequent narrow WL-01 change rejects persistently scoped-owned sessions at
+legacy send/control/provider-start entrypoints, skips them before restart
+reconciliation, and excludes them from legacy Async singleton adoption. Ownership
+is checked independently of active identity so sign-out cannot remove this fence.
+An absent candidate table preserves existing installations; no migration is
+registered or applied. Historical unscoped conversations and account-transition
+policy remain a separate open compatibility decision. This does not claim global
+legacy account isolation or live qualification.
+
+Validation: all five CoreRuntime tests pass, including Sync/Async legacy
+send/control/provider-start refusal after durable sign-out, restart skipping,
+zero lazy-client construction and absent-schema compatibility. All eight existing
+Intern API tests pass, including create/send/control, Async reuse, and restart
+reattachment. Logs: `legacy-scoped-boundary-reviewed.log` and
+`legacy-compatibility-reviewed.log` in `artifacts/cloud-foundations/`.
+The initial compile used an incorrect private import; the corrected frozen source
+produced these passing runs. No remote provider was used.
+
 Workshop task: `01a091c5-9b09-75f3-ad94-2e5fdb6295a3`.
 Cloud counterpart: `01a091c5-9b09-75f3-ad94-2e3d7be81763`.
 Parent: `01a09132-34bc-7010-b309-26c341127bf3`.
