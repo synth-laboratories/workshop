@@ -20,6 +20,28 @@ pub struct IdentityObservation {
     pub revocation_contract: String,
 }
 
+impl TryFrom<synth_api_client::identity::IdentityDocument> for IdentityObservation {
+    type Error = anyhow::Error;
+    fn try_from(wire: synth_api_client::identity::IdentityDocument) -> Result<Self> {
+        Ok(Self {
+            schema_version: wire.schema_version,
+            backend_origin: wire.backend_origin,
+            backend_id: wire.backend_id,
+            account_id: wire.account_id,
+            org_id: wire.org_id,
+            profile_id: wire.profile_id,
+            verified_at: wire.verified_at.parse()?,
+            valid_until: wire.valid_until.parse()?,
+            credential_expiry: wire
+                .credential_expiry
+                .map(|value| value.parse())
+                .transpose()?,
+            revalidate_before_remote_operation: wire.revalidate_before_remote_operation,
+            revocation_contract: wire.revocation_contract,
+        })
+    }
+}
+
 impl IdentityObservation {
     /// Validate a response against the transport's expected origin and local
     /// clock. The caller must still fetch afresh before every remote operation.

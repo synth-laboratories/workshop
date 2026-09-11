@@ -785,3 +785,86 @@ async fn creation_dispatch_timeout_never_recreates_or_loses_first_message() {
     assert!(retried.is_err());
     assert!(store.command(&lease, &plan.first.command_id).is_err());
 }
+
+#[test]
+fn expired_identity_observation_fences_storage_without_a_ui_or_worker_reset() {
+    let (_dir, db, store, old, _) = setup();
+    let expires = chrono::Utc::now() + chrono::Duration::seconds(60);
+    let active = store
+        .activate_verified_until(&identity("a"), expires)
+        .unwrap();
+    store.enqueue(&active, &intent()).unwrap();
+    assert!(store.bound_sessions(&old).is_err());
+    db.with_conn(|c| {
+        c.execute("UPDATE cloud_auth_state SET valid_until_ms=0", [])?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(store.bound_sessions(&active).is_err());
+    assert!(store.command(&active, &intent().command_id).is_err());
+    assert!(store.begin_send(&active, &intent().command_id).is_err());
+    assert!(store
+        .commit_page(
+            &active,
+            &stream(),
+            None,
+            &Checkpoint::Intern {
+                sequence: 1,
+                generation: 0
+            },
+            &[event("expired-event", 1)]
+        )
+        .is_err());
+    assert!(store
+        .activate_verified_until(
+            &identity("a"),
+            chrono::Utc::now() - chrono::Duration::seconds(1)
+        )
+        .is_err());
+    assert!(store
+        .activate_verified_until(
+            &identity("a"),
+            chrono::Utc::now() + chrono::Duration::seconds(61)
+        )
+        .is_err());
+    let refreshed = store
+        .activate_verified_until(&identity("a"), expires)
+        .unwrap();
+    assert!(store.bound_sessions(&active).is_err());
+    assert!(store.bound_sessions(&refreshed).is_ok());
+    // Revalidation does not re-authorize the queued command from an old epoch.
+    assert!(store.begin_send(&refreshed, &intent().command_id).is_err());
+}
+
+#[test]
+fn fresh_unchanged_identity_renews_without_reviving_expired_workers() {
+    let (_dir, db, store, _old, _) = setup();
+    let expires = chrono::Utc::now() + chrono::Duration::seconds(60);
+    let lease = store
+        .activate_verified_until(&identity("a"), expires)
+        .unwrap();
+    store.enqueue(&lease, &intent()).unwrap();
+    assert!(store
+        .refresh_verified_until(&lease, &identity("b"), expires)
+        .is_err());
+    store
+        .refresh_verified_until(&lease, &identity("a"), expires)
+        .unwrap();
+    assert!(store.begin_send(&lease, &intent().command_id).is_ok());
+    db.with_conn(|c| {
+        c.execute("UPDATE cloud_auth_state SET valid_until_ms=0", [])?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(store
+        .refresh_verified_until(&lease, &identity("a"), expires)
+        .is_err());
+    assert!(store
+        .record_receipt(
+            &lease,
+            &intent().command_id,
+            ReceiptStage::Applied,
+            &json!({"status":"applied"})
+        )
+        .is_err());
+}

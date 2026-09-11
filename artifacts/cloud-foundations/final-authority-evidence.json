@@ -1,0 +1,33 @@
+{
+  "tests": {
+    "native_cloud": {
+      "passed": 62,
+      "failed": 0,
+      "ignored": 0
+    },
+    "sdk": {
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0
+    },
+    "native_non_test_library_check": "passed"
+  },
+  "identity_contract_source": "5f9166a30 and compatible follow-ups",
+  "live_authority_activated": false,
+  "migration_registered": false,
+  "source_sha256": {
+    "apps/synth_desktop/src-tauri/src/cloud/identity.rs": "9bf075f8f3aed5f609519fd4cabaa6bf643d802dcca953c07df3fab2f32b34a0",
+    "apps/synth_desktop/src-tauri/src/cloud/storage/creation.rs": "3293ac88a0b8a94af17c4395299e6d1166e0de8dfa429459118a53daff97a898",
+    "apps/synth_desktop/src-tauri/src/cloud/storage/mod.rs": "556ec7dcd635e1d6acc0fa0545140b2a94a8fa209d5e820ef74886f94c354cc2",
+    "apps/synth_desktop/src-tauri/src/cloud/storage/tests.rs": "a532c8fff6991e747c36a3701f34fbecaddde7c0af00995cb41446acadc73dad",
+    "apps/synth_desktop/src-tauri/src/cloud/storage/schema.sql": "c724e42db7e83505d2beb465fafa3a501ef7788c6771765404fd40210e35e08e",
+    "crates/synth-api-client/src/checkpoints.rs": "ab429928371a64395eb6c0dbfdfa2fd87d21a772062d766d752f6c86298f7151",
+    "crates/synth-api-client/src/sse.rs": "f78c6df703618dc5e38956d0b47faad7b3e672a2de495e81fd9fa0687df4f3a2",
+    "crates/synth-api-client/src/client.rs": "0e87fc287723c6740e8e3cbe5ac58c84d300c906b85a0c4c84281fb93916db28",
+    "crates/synth-api-client/src/lib.rs": "8f0f6541b9f0c652284e014a51be4795ff86200567b669863b95a35754eb62c1",
+    "crates/synth-api-client/src/models.rs": "5a4194f8c0d45cf19d226f25f6c20a6f90b20e5bedd1466db04c51f9e56cb6d9",
+    "crates/synth-api-client/src/identity.rs": "de2a3f414d8cc4f2e5791cc0ca6131fce6476a6ece9911f2ed1f6ba5453ca88a",
+    "crates/synth-api-client/src/availability.rs": "01d969dd227297b45baadc9ba2ab5181839dd1711650302eaa561be3a973da5a",
+    "crates/synth-api-client/tests/identity_protocol.rs": "a1bb95b823d8e071c879a7139f0dcb5dcf94298b37509a4458e0b77c005f68e9"
+  }
+}

@@ -12,9 +12,10 @@ receipt/event IDs prevent identical remote IDs in different accounts colliding.
 No credentials are stored, hashed into identity, read from the environment or
 loaded from Keychain by this service.
 
-`activate_verified` requires an already verified origin/backend/account/org/profile
-tuple. It validates local shape, not remote truth. The cloud authority adapter is
-still missing. Opening the service, switching identity and signing out invalidate
+`activate_verified_until` requires an already verified origin/backend/account/org/profile
+tuple and a future observation deadline no more than 60 seconds away. It validates
+local shape, not remote truth. The unlimited helper exists only in unit tests.
+The live authority adapter is still gated. Opening the service, switching identity and signing out invalidate
 old leases. Old outbox requests survive; they cannot silently flush under a new
 auth epoch. Scoped reads fail for stale leases. Legacy sessions are never adopted:
 only `create_conversation` can allocate a new scope-owned conversation, and all
@@ -69,3 +70,10 @@ command retains its original epoch and cannot silently flush under the new one.
 Creation delivery uses the same shared receipt store; it does not complete a run.
 The injected creation dispatcher uses blocking database workers and rejects
 receipt identity drift. Live creation lookup/retention semantics remain gated.
+
+Every database fence also checks observation expiry, independent of UI timers or
+worker cancellation. A fresh verified observation for the unchanged tuple may
+renew an unexpired epoch with `refresh_verified_until`. An expired observation
+cannot revive its epoch. Credential replacement must invalidate the scope before
+renewal, even for the same account. Remote operations still require fresh server
+revalidation: observation freshness is not an authorization lease.

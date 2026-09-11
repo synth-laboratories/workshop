@@ -210,7 +210,56 @@ impl CloudStore {
 
     /// Caller must have verified every identity component with the qualified
     /// authority. Currently only offline tests call this; no live caller exists.
+    #[cfg(test)]
     pub fn activate_verified(&self, identity: &CloudScopeIdentity) -> Result<ScopeLease> {
+        self.activate_identity(identity, None)
+    }
+
+    /// Finite identity observation, not an authorization lease. The host must
+    /// still revalidate before every remote operation. No live caller exists.
+    pub fn activate_verified_until(
+        &self,
+        identity: &CloudScopeIdentity,
+        valid_until: chrono::DateTime<chrono::Utc>,
+    ) -> Result<ScopeLease> {
+        let now = chrono::Utc::now();
+        if valid_until <= now || valid_until - now > chrono::Duration::seconds(60) {
+            bail!("cloud identity observation is expired or exceeds the freshness bound");
+        }
+        self.activate_identity(identity, Some(valid_until.timestamp_millis()))
+    }
+
+    /// Renew a freshly revalidated, unchanged authority without interrupting
+    /// active workers. Expired observations cannot revive their old epoch.
+    /// Credential replacement must sign out first even if the tuple is unchanged.
+    pub fn refresh_verified_until(
+        &self,
+        lease: &ScopeLease,
+        identity: &CloudScopeIdentity,
+        valid_until: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let now = chrono::Utc::now();
+        if valid_until <= now
+            || valid_until - now > chrono::Duration::seconds(60)
+            || identity.key()? != lease.scope_id
+        {
+            bail!("invalid identity observation refresh");
+        }
+        self.db.transaction(|conn| {
+            fence(conn, lease)?;
+            conn.execute(
+                "UPDATE cloud_auth_state SET valid_until_ms=?1 WHERE singleton=1",
+                params![valid_until.timestamp_millis()],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn activate_identity(
+        &self,
+        identity: &CloudScopeIdentity,
+        valid_until_ms: Option<i64>,
+    ) -> Result<ScopeLease> {
         let key = identity.key()?;
         self.db.transaction(|conn| {
             conn.execute(
@@ -226,8 +275,8 @@ impl CloudStore {
             )?;
             let epoch = invalidate(conn)?;
             conn.execute(
-                "UPDATE cloud_auth_state SET active_scope_id=?1 WHERE singleton=1",
-                params![key],
+                "UPDATE cloud_auth_state SET active_scope_id=?1,valid_until_ms=?2 WHERE singleton=1",
+                params![key, valid_until_ms],
             )?;
             Ok(ScopeLease {
                 scope_id: key.clone(),
@@ -579,18 +628,22 @@ fn invalidate(conn: &Connection) -> Result<i64> {
     let next = epoch.checked_add(1).context("auth epoch exhausted")?;
     conn.execute("UPDATE cloud_execution_bindings SET remote_state='reconciling' WHERE remote_state IN ('running','paused')",[])?;
     conn.execute(
-        "UPDATE cloud_auth_state SET epoch=?1,active_scope_id=NULL WHERE singleton=1",
+        "UPDATE cloud_auth_state SET epoch=?1,active_scope_id=NULL,valid_until_ms=NULL WHERE singleton=1",
         params![next],
     )?;
     Ok(next)
 }
 fn fence(conn: &Connection, lease: &ScopeLease) -> Result<()> {
-    let current: (i64, Option<String>) = conn.query_row(
-        "SELECT epoch,active_scope_id FROM cloud_auth_state WHERE singleton=1",
+    let current: (i64, Option<String>, Option<i64>) = conn.query_row(
+        "SELECT epoch,active_scope_id,valid_until_ms FROM cloud_auth_state WHERE singleton=1",
         [],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    if current != (lease.epoch, Some(lease.scope_id.clone())) {
+    if (current.0, current.1) != (lease.epoch, Some(lease.scope_id.clone()))
+        || current
+            .2
+            .is_some_and(|until| until <= chrono::Utc::now().timestamp_millis())
+    {
         bail!("stale cloud authentication epoch");
     }
     Ok(())

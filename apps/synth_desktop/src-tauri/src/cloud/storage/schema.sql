@@ -12,9 +12,10 @@ CREATE TABLE cloud_scopes (
 CREATE TABLE cloud_auth_state (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
  epoch INTEGER NOT NULL CHECK(epoch>=0),
- active_scope_id TEXT REFERENCES cloud_scopes(id)
+ active_scope_id TEXT REFERENCES cloud_scopes(id),
+ valid_until_ms INTEGER
 );
-INSERT INTO cloud_auth_state VALUES(1,0,NULL);
+INSERT INTO cloud_auth_state VALUES(1,0,NULL,NULL);
 CREATE TABLE cloud_owned_sessions (
  local_session_id TEXT PRIMARY KEY REFERENCES sessions(id),
  scope_id TEXT NOT NULL REFERENCES cloud_scopes(id),

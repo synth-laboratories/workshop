@@ -124,6 +124,76 @@ impl InternClient {
         })
     }
 
+    /// Candidate identity endpoint. Always fetches afresh; no local authority
+    /// cache. The host validates origin, UUIDs, timestamps and qualification
+    /// before using it. This method does not enable cloud storage.
+    pub async fn identity_observation(
+        &self,
+    ) -> Result<crate::identity::IdentityDocument, InternClientError> {
+        let url = self
+            .base_url
+            .join("/api/v1/desktop/cloud-identity")
+            .map_err(protocol)?;
+        let mut response = self
+            .http
+            .get(url.clone())
+            .bearer_auth(&self.api_key)
+            .header("Cache-Control", "no-store")
+            .send()
+            .await
+            .map_err(InternClientError::Transport)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(InternClientError::Http {
+                status,
+                detail: "identity authority unavailable".into(),
+                code: None,
+                request_id: response
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned),
+                retry_after: response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned),
+            });
+        }
+        if response.url() != &url {
+            return Err(protocol("identity authority redirected"));
+        }
+        let no_store = response
+            .headers()
+            .get_all("cache-control")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .any(|value| value.trim().eq_ignore_ascii_case("no-store"));
+        if !no_store {
+            return Err(protocol("identity response lacks no-store contract"));
+        }
+        const LIMIT: usize = 16 * 1024;
+        if response
+            .content_length()
+            .is_some_and(|length| length > LIMIT as u64)
+        {
+            return Err(protocol("identity response exceeds limit"));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(InternClientError::Transport)?
+        {
+            if bytes.len().saturating_add(chunk.len()) > LIMIT {
+                return Err(protocol("identity response exceeds limit"));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&bytes).map_err(|_| protocol("invalid identity response JSON"))
+    }
+
     pub async fn create_sync(
         &self,
         request: &SyncCreateRequest,
