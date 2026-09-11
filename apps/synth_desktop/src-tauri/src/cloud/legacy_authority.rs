@@ -27,6 +27,18 @@ mod tests {
         assert!(authority.admit_created("late", generation, client).is_err());
         assert!(authority.session("late").is_err());
     }
+
+    #[test]
+    fn conditional_invalidation_ignores_superseded_generations() {
+        let authority = LegacyAuthority::default();
+        let stale = authority.generation();
+        authority.invalidate();
+        let current = authority.generation();
+        assert_eq!(authority.invalidate_if_current(stale), None);
+        assert_eq!(authority.generation(), current);
+        assert_eq!(authority.invalidate_if_current(current), Some(current + 1));
+        assert!(authority.ensure(current).is_err());
+    }
 }
 
 impl Default for LegacyAuthority {
@@ -41,6 +53,25 @@ impl LegacyAuthority {
     pub fn invalidate(&self) {
         self.epoch.send_modify(|epoch| *epoch = epoch.saturating_add(1));
         self.admitted.lock().unwrap().clear();
+    }
+
+    /// Retire `generation` only if it is still current, atomically with the
+    /// check. Returns the fenced epoch, or `None` when a transition already
+    /// superseded it; the caller must then leave the newer configuration alone.
+    pub fn invalidate_if_current(&self, generation: u64) -> Option<u64> {
+        let mut fenced = None;
+        self.epoch.send_if_modified(|epoch| {
+            if *epoch != generation || generation == u64::MAX {
+                return false;
+            }
+            *epoch = epoch.saturating_add(1);
+            fenced = Some(*epoch);
+            true
+        });
+        if fenced.is_some() {
+            self.admitted.lock().unwrap().clear();
+        }
+        fenced
     }
 
     pub fn ensure(&self, generation: u64) -> Result<()> {

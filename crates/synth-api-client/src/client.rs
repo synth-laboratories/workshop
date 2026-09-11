@@ -30,6 +30,9 @@ impl InternClientError {
         matches!(self, Self::Http { status, .. } if *status == StatusCode::FORBIDDEN)
     }
 
+    /// 401 or 403. A 403 is an authorization result for one resource, not a
+    /// rejected credential: credential-level teardown must key on
+    /// [`Self::is_unauthenticated`] alone.
     pub fn is_auth_failure(&self) -> bool {
         matches!(self, Self::Http { status, .. } if *status == StatusCode::UNAUTHORIZED || *status == StatusCode::FORBIDDEN)
     }

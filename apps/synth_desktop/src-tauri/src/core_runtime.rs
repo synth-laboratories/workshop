@@ -726,6 +726,27 @@ impl CoreRuntime {
         self.disable_cloud_runtime_inner().await
     }
 
+    /// Credential-level teardown for a request the backend rejected with 401.
+    /// Unlike [`Self::disable_cloud_runtime`], it takes effect only while the
+    /// generation that issued the request is still current: a late rejection
+    /// from a replaced account must never disable its successor. Returns
+    /// whether this call disabled the runtime.
+    pub(crate) async fn disable_cloud_runtime_for_generation(&self, generation: u64) -> Result<bool> {
+        let Some(fenced) = self.legacy_authority.invalidate_if_current(generation) else {
+            return Ok(false);
+        };
+        let _provider_guard = self.legacy_authority.provider_gate.write().await;
+        // A transition that invalidated after the fence has already retired
+        // this configuration and may have installed a replacement.
+        if self.legacy_authority.generation() != fenced {
+            return Ok(false);
+        }
+        // Fence any reader that captured the client before this writer queued.
+        self.legacy_authority.invalidate();
+        self.disable_cloud_runtime_inner().await?;
+        Ok(true)
+    }
+
     async fn lock_legacy_transition_after_invalidation(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
         let guard = self.legacy_authority.provider_gate.write().await;
         // A concurrent reader may have captured the old client after the early
@@ -956,6 +977,45 @@ mod tests {
             assert!(core.legacy_authority.admit_created("late", generation, old_client).is_err());
             assert!(core.legacy_authority.session("late").is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn credential_rejection_disables_only_the_generation_that_issued_it() {
+        let dir = tempdir().unwrap();
+        let core = CoreRuntime::open_with_intern(dir.path(), InternRuntime::configured(
+            "https://old.fixture.invalid", "old", Duration::from_secs(1),
+        ).unwrap()).unwrap();
+        let (stale, _) = core.legacy_creation_client().await.unwrap();
+        core.replace_intern_configuration(|| {
+            Ok(Some(("https://new.fixture.invalid".into(), "new".into())))
+        }).await.unwrap();
+        // The old account's late 401 must not tear down its replacement.
+        assert!(!core.disable_cloud_runtime_for_generation(stale).await.unwrap());
+        assert!(core.intern.client().await.is_ok());
+
+        // A transition that invalidates after the rejection is fenced, but
+        // before the rejection's writer takes the gate, also wins.
+        let (current, _) = core.legacy_creation_client().await.unwrap();
+        let reader = core.legacy_authority.provider_gate.read().await;
+        let worker = core.clone();
+        let racing = tokio::spawn(async move {
+            worker.disable_cloud_runtime_for_generation(current).await
+        });
+        while core.legacy_authority.generation() == current {
+            tokio::task::yield_now().await;
+        }
+        core.legacy_authority.invalidate();
+        drop(reader);
+        assert!(!tokio::time::timeout(Duration::from_secs(5), racing).await.unwrap().unwrap().unwrap());
+        assert!(core.intern.client().await.is_ok());
+
+        // The current configuration's own 401 still disables it.
+        let (current, _) = core.legacy_creation_client().await.unwrap();
+        assert!(core.disable_cloud_runtime_for_generation(current).await.unwrap());
+        assert!(matches!(
+            core.intern.client().await,
+            Err(crate::cloud::intern::InternClientError::CloudUnavailable)
+        ));
     }
 
     #[tokio::test]

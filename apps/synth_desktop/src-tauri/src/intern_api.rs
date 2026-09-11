@@ -1,7 +1,9 @@
 use crate::cloud::intern::{
-    AsyncCommandKind, AsyncCommandRequest, AsyncEnsureRequest, CommandReceipt, RuntimeBinding,
-    RuntimeKind, SyncCommandKind, SyncCommandRequest, SyncCreateRequest,
+    AsyncCommandKind, AsyncCommandRequest, AsyncEnsureRequest, CommandReceipt, InternClient,
+    InternClientError, RuntimeBinding, RuntimeKind, SyncCommandKind, SyncCommandRequest,
+    SyncCreateRequest,
 };
+use std::sync::Arc;
 use crate::core_runtime::CoreRuntime;
 use crate::domain::{
     CommandReceiptInput, InternMode, RunCreate, RunStatus, RuntimeTarget, SessionCreate,
@@ -204,7 +206,7 @@ pub async fn create(
     let projection = match remote {
         Ok(projection) => projection,
         Err(error) => {
-            if error.is_auth_failure() { let _ = core.disable_cloud_runtime().await; }
+            disable_if_credential_rejected(core, generation, &error).await;
             let failed = core
                 .sessions()
                 .transition(
@@ -247,24 +249,95 @@ pub async fn create(
         })
         .await?;
     core.broadcast_committed(ready.event);
-    core.legacy_authority().admit_created(&ready.value.id, generation, client)?;
-    if let Err(error) = core
-        .start_intern_provider(
-            ready.value.id.clone(),
-            runtime_id,
-            if request.target.mode == "sync" {
-                RuntimeKind::Sync
-            } else {
-                RuntimeKind::Async
-            },
-            Some(title),
-        )
+    let runtime_kind = if request.target.mode == "sync" {
+        RuntimeKind::Sync
+    } else {
+        RuntimeKind::Async
+    };
+    attach_created_session(core, ready.value, generation, client, runtime_id, runtime_kind, title)
         .await
+}
+
+/// The remote creation is known to have succeeded once this runs. A local
+/// admission refusal or provider start failure never relabels it as failed:
+/// the row keeps Ready and its remote identity, and records why nothing local
+/// is attached. Remote operations then require ownership verification.
+async fn attach_created_session(
+    core: &CoreRuntime,
+    ready: SessionRecord,
+    generation: u64,
+    client: Arc<InternClient>,
+    runtime_id: String,
+    runtime_kind: RuntimeKind,
+    title: String,
+) -> Result<InternSessionWire> {
+    if let Err(error) = core
+        .legacy_authority()
+        .admit_created(&ready.id, generation, client)
     {
-        fail_session(core, ready.value.id, error.to_string()).await?;
+        record_unattached_creation(core, &ready, "admission_withdrawn", &error)
+            .await
+            .with_context(|| error.to_string())?;
         return Err(error);
     }
-    Ok(ready.value.into())
+    if let Err(error) = core
+        .start_intern_provider(ready.id.clone(), runtime_id, runtime_kind, Some(title))
+        .await
+    {
+        record_unattached_creation(core, &ready, "provider_start_failed", &error)
+            .await
+            .with_context(|| error.to_string())?;
+        return Err(error);
+    }
+    Ok(ready.into())
+}
+
+async fn record_unattached_creation(
+    core: &CoreRuntime,
+    ready: &SessionRecord,
+    reason: &str,
+    error: &anyhow::Error,
+) -> Result<()> {
+    let mut metadata = ready.metadata.clone();
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("creationOutcome".into(), json!("created"));
+        object.insert(
+            "localProvider".into(),
+            json!({"state": "not_started", "reason": reason, "error": error.to_string()}),
+        );
+    }
+    let recorded = core
+        .sessions()
+        .create_or_update(SessionCreate {
+            id: ready.id.clone(),
+            title: ready.title.clone(),
+            kind: SessionKind::Intern,
+            target: ready.target.clone(),
+            project_id: ready.project_id.clone(),
+            remote_id: ready.remote_id.clone(),
+            codex_thread_id: None,
+            status: SessionStatus::Ready,
+            state_generation: ready.state_generation,
+            metadata,
+            source: EventSource::Intern,
+        })
+        .await?;
+    core.broadcast_committed(recorded.event);
+    Ok(())
+}
+
+/// Only a 401 rejects the credential itself; a 403 is an authorization result
+/// for one resource and surfaces as an ordinary error. The credential-level
+/// disable is fenced by the generation that issued the request, so a stale
+/// rejection from a replaced account cannot tear down its successor.
+async fn disable_if_credential_rejected(
+    core: &CoreRuntime,
+    generation: u64,
+    error: &InternClientError,
+) {
+    if error.is_unauthenticated() {
+        let _ = core.disable_cloud_runtime_for_generation(generation).await;
+    }
 }
 
 async fn existing_async_binding(core: &CoreRuntime) -> Result<Option<SessionRecord>> {
@@ -368,7 +441,7 @@ pub async fn send(
             return Err(error);
         }
     };
-    finish_command(core, command_id, run_id.clone(), remote).await?;
+    finish_command(core, generation, command_id, run_id.clone(), remote).await?;
     Ok(InternSendResult { run_id })
 }
 
@@ -480,7 +553,7 @@ pub async fn control(
     let receipt = match remote {
         Ok(receipt) => receipt,
         Err(error) => {
-            if error.is_auth_failure() { let _ = core.disable_cloud_runtime().await; }
+            disable_if_credential_rejected(core, generation, &error).await;
             let resolved = core
                 .runs()
                 .resolve_command(
@@ -536,6 +609,7 @@ async fn fail_session(core: &CoreRuntime, session_id: String, error: String) -> 
 
 async fn finish_command(
     core: &CoreRuntime,
+    generation: u64,
     command_id: String,
     run_id: String,
     remote: std::result::Result<CommandReceipt, crate::cloud::intern::InternClientError>,
@@ -578,7 +652,7 @@ async fn finish_command(
             }
         }
         Err(error) => {
-            if error.is_auth_failure() { let _ = core.disable_cloud_runtime().await; }
+            disable_if_credential_rejected(core, generation, &error).await;
             let resolved = core
                 .runs()
                 .resolve_command(
@@ -800,6 +874,10 @@ mod tests {
                     "last_event_sequence": 0
                 }),
             )
+        } else if method == "POST" && path.ends_with("/commands") && command_outcome == 3 {
+            ("403 Forbidden", json!({"detail":"mock resource forbidden"}))
+        } else if method == "POST" && path.ends_with("/commands") && command_outcome == 4 {
+            ("401 Unauthorized", json!({"detail":"mock credential rejected"}))
         } else if method == "POST" && path.ends_with("/commands") && fail_commands {
             ("503 Service Unavailable", json!({"detail":"mock outage"}))
         } else if method == "POST" && path.ends_with("/commands") {
@@ -1346,6 +1424,96 @@ mod tests {
             .unwrap();
         assert_eq!(resolved.value.status, "completed");
         restarted.stop_intern_providers_for_test().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn forbidden_command_surfaces_without_disabling_cloud() {
+        let mock = MockIntern::start().await;
+        let dir = tempdir().unwrap();
+        let core = CoreRuntime::open_with_intern(dir.path(), mock.runtime()).unwrap();
+        let session = create(&core, sync_create()).await.unwrap();
+        mock.command_outcome.store(3, Ordering::SeqCst);
+        assert!(send(&core, InternSessionSendRequest {
+            session_id: session.id.clone(), body: "forbidden".into(),
+        }).await.is_err());
+        assert!(control(&core, InternSessionControlRequest {
+            session_id: session.id.clone(), kind: "pause".into(), payload: Map::new(),
+        }).await.is_err());
+        // A per-resource 403 leaves the credential, configuration and the
+        // fresh session's admission intact.
+        assert!(core.intern().client().await.is_ok());
+        assert!(core.legacy_authority().session(&session.id).is_ok());
+        mock.command_outcome.store(0, Ordering::SeqCst);
+        send(&core, InternSessionSendRequest {
+            session_id: session.id.clone(), body: "still admitted".into(),
+        }).await.unwrap();
+        core.stop_intern_providers_for_test().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn current_unauthenticated_command_disables_its_configuration() {
+        for controlling in [false, true] {
+            let mock = MockIntern::start().await;
+            let dir = tempdir().unwrap();
+            let core = CoreRuntime::open_with_intern(dir.path(), mock.runtime()).unwrap();
+            let session = create(&core, sync_create()).await.unwrap();
+            mock.command_outcome.store(4, Ordering::SeqCst);
+            let result = if controlling {
+                control(&core, InternSessionControlRequest {
+                    session_id: session.id.clone(), kind: "pause".into(), payload: Map::new(),
+                }).await.map(|_| ())
+            } else {
+                send(&core, InternSessionSendRequest {
+                    session_id: session.id.clone(), body: "rejected".into(),
+                }).await.map(|_| ())
+            };
+            assert!(result.is_err());
+            assert!(matches!(core.intern().client().await, Err(InternClientError::CloudUnavailable)));
+            assert!(core.legacy_authority().session(&session.id).is_err());
+            // History stays readable after the credential-level disable.
+            assert_eq!(list(&core).await.unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn local_attach_failure_preserves_known_remote_creation() {
+        for reason in ["admission_withdrawn", "provider_start_failed"] {
+            let mock = MockIntern::start().await;
+            let dir = tempdir().unwrap();
+            let core = CoreRuntime::open_with_intern(dir.path(), mock.runtime()).unwrap();
+            let (generation, current) = core.legacy_creation_client().await.unwrap();
+            // The remote create already returned and the row is Ready.
+            let ready = core.sessions().create_or_update(SessionCreate {
+                id: "created-remotely".into(), title: "Created".into(), kind: SessionKind::Intern,
+                target: RuntimeTarget::InternRuntime { mode: InternMode::Sync, binding: None },
+                project_id: None, remote_id: Some("remote-sync-1".into()), codex_thread_id: None,
+                status: SessionStatus::Ready, state_generation: Some(1),
+                metadata: json!({"runtime":"rust-intern"}), source: EventSource::Intern,
+            }).await.unwrap().value;
+            let client = if reason == "admission_withdrawn" {
+                // An account transition lands before admission.
+                core.legacy_authority().invalidate();
+                current
+            } else {
+                // Admission succeeds, then provider start refuses a client
+                // that is no longer the current one.
+                Arc::new(InternClient::connect(&mock.url, "other-key", Duration::from_secs(2)).unwrap())
+            };
+            let error = attach_created_session(
+                &core, ready, generation, client, "remote-sync-1".into(), RuntimeKind::Sync, "Created".into(),
+            ).await.unwrap_err();
+            let row = core.sessions().get("created-remotely".into()).await.unwrap().unwrap();
+            assert_eq!(row.status, "ready", "{reason}");
+            assert_eq!(row.remote_id.as_deref(), Some("remote-sync-1"));
+            assert_eq!(row.metadata["creationOutcome"], "created");
+            assert_eq!(row.metadata["localProvider"]["state"], "not_started");
+            assert_eq!(row.metadata["localProvider"]["reason"], reason);
+            assert_eq!(row.metadata["localProvider"]["error"], error.to_string());
+            if reason == "admission_withdrawn" {
+                assert!(core.legacy_authority().session("created-remotely").is_err());
+                assert_eq!(core.resume_intern_providers().await.unwrap(), 0);
+            }
+        }
     }
 
     #[tokio::test]
