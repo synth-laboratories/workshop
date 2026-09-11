@@ -131,6 +131,13 @@ pub struct SessionRecord {
 }
 
 impl SessionRecord {
+    /// Explicit session ownership is authoritative, never target.kind == cloud.
+    pub fn execution_location(&self) -> anyhow::Result<crate::domain::ExecutionLocation> {
+        Ok(crate::domain::SessionKind::parse(&self.kind)?.execution_location())
+    }
+}
+
+impl SessionRecord {
     /// Opaque JSON bag for call sites that still need `Value` (prefer `target`).
     pub fn target_json(&self) -> Value {
         self.target.to_json_value()

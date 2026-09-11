@@ -94,6 +94,9 @@ Usage: ./scripts/desktop-instance.sh <command> [name] [--verbose]
 Names must match [a-z][a-z0-9-]{0,31}. The default name is
 codex-<worktree-hash> so two checkouts cannot collide without intent.
 
+Set SYNTH_DESKTOP_SEED_CREDENTIALS=0 for a fresh credential-free instance.
+This skips provider and ChatGPT credential seeding; it does not erase saved credentials.
+
 Optimizer services use the immutable installed plugin runtime by default.
 Set SYNTH_OPTIMIZER_USE_LOCAL_SOURCE=1 only when intentionally testing a
 reviewed local synth-optimizers checkout.
@@ -388,6 +391,7 @@ print_operation_lock_status() {
 # allowlisted values are copied; instance routing and other settings remain
 # isolated. The destination is private and is never printed.
 stage_test_credentials() {
+  [[ "${SYNTH_DESKTOP_SEED_CREDENTIALS:-1}" == "1" ]] || return 0
   local source_env="${SYNTH_DESKTOP_TEST_CREDENTIALS_FILE:-$HOME/.synth-desktop/.env}"
   local destination_env="$DATA_ROOT/.env"
   python3 - "$source_env" "$destination_env" <<'PY'
@@ -451,7 +455,7 @@ write_contract() {
   chmod 700 "$INSTANCE_ROOT" "$DATA_ROOT" "$WORKSPACE"
 
   if [[ ! -e "$DATA_ROOT/config.toml" ]]; then
-    if [[ "${SYNTH_DESKTOP_SEED_GLOBAL_CONFIG:-0}" == "1" && -f "$HOME/.synth-desktop/config.toml" ]]; then
+    if [[ "${SYNTH_DESKTOP_SEED_CREDENTIALS:-1}" == "1" && "${SYNTH_DESKTOP_SEED_GLOBAL_CONFIG:-0}" == "1" && -f "$HOME/.synth-desktop/config.toml" ]]; then
       cp "$HOME/.synth-desktop/config.toml" "$DATA_ROOT/config.toml"
     else
       local profile="${SYNTH_INTERN_PROFILE:-local-slot1}"
@@ -478,7 +482,7 @@ EOF
     chmod 600 "$DATA_ROOT/eval-admission.toml"
   fi
   if [[ ! -e "$DATA_ROOT/.env" ]]; then
-    if [[ "${SYNTH_DESKTOP_SEED_GLOBAL_CONFIG:-0}" == "1" && -f "$HOME/.synth-desktop/.env" ]]; then
+    if [[ "${SYNTH_DESKTOP_SEED_CREDENTIALS:-1}" == "1" && "${SYNTH_DESKTOP_SEED_GLOBAL_CONFIG:-0}" == "1" && -f "$HOME/.synth-desktop/.env" ]]; then
       cp "$HOME/.synth-desktop/.env" "$DATA_ROOT/.env"
       chmod 600 "$DATA_ROOT/.env"
     else
@@ -1335,26 +1339,32 @@ export_instance_env() {
   # Debug instances use the existing Codex file as a seed and never touch
   # Keychain. Refreshed credentials live in one private machine-local cache so
   # rebuilds and differently named instances reuse a still-valid session.
-  local shared_oauth_root="${SYNTH_DESKTOP_SHARED_ROOT:-$HOME/.synth-desktop/shared}/oauth"
-  mkdir -p "$shared_oauth_root"
-  chmod 700 "$shared_oauth_root"
-  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" && -f "$HOME/.codex/auth.json" ]]; then
-    SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
-  fi
-  if [[ -n "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" ]]; then
-    if [[ ! -s "$SYNTH_DESKTOP_DEV_OAUTH_FILE" ]]; then
-      echo "[desktop:$NAME] ERROR ChatGPT auth is required but missing: $SYNTH_DESKTOP_DEV_OAUTH_FILE" >&2
+  if [[ "${SYNTH_DESKTOP_SEED_CREDENTIALS:-1}" == "1" ]]; then
+    local shared_oauth_root="${SYNTH_DESKTOP_SHARED_ROOT:-$HOME/.synth-desktop/shared}/oauth"
+    mkdir -p "$shared_oauth_root"
+    chmod 700 "$shared_oauth_root"
+    if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" && -f "$HOME/.codex/auth.json" ]]; then
+      SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
+    fi
+    if [[ -n "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" ]]; then
+      if [[ ! -s "$SYNTH_DESKTOP_DEV_OAUTH_FILE" ]]; then
+        echo "[desktop:$NAME] ERROR ChatGPT auth is required but missing: $SYNTH_DESKTOP_DEV_OAUTH_FILE" >&2
+        return 1
+      fi
+      export SYNTH_DESKTOP_DEV_OAUTH_FILE
+    else
+      echo "[desktop:$NAME] ERROR ChatGPT auth is required for local Workshop launches; expected $HOME/.codex/auth.json" >&2
       return 1
     fi
-    export SYNTH_DESKTOP_DEV_OAUTH_FILE
+    if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}" ]]; then
+      SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$shared_oauth_root/codex.json"
+    fi
+    export SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE
   else
-    echo "[desktop:$NAME] ERROR ChatGPT auth is required for local Workshop launches; expected $HOME/.codex/auth.json" >&2
-    return 1
+    # A fresh local instance uses its empty private credential store. Do not
+    # discover machine auth or create a shared OAuth cache for this lane.
+    unset SYNTH_DESKTOP_DEV_OAUTH_FILE SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE
   fi
-  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}" ]]; then
-    SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$shared_oauth_root/codex.json"
-  fi
-  export SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE
   export CARGO_TARGET_DIR="$TARGET_ROOT"
 
   # Profile/account-backend routing is instance-owned: it comes from the

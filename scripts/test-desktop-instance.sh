@@ -89,6 +89,25 @@ rg -q '^SYNTH_API_KEY=.synth-fixture.$' "$alpha_env"
 rg -q '^OPENROUTER_API_KEY=.openrouter-fixture.$' "$alpha_env"
 rg -q '^OPENAI_API_KEY=.openai-fixture.$' "$alpha_env"
 
+# Credential-free preparation ignores both explicit fixture credentials and
+# opt-in global config seeding; no secret is copied into the fresh instance.
+SYNTH_DESKTOP_SEED_CREDENTIALS=0 SYNTH_DESKTOP_SEED_GLOBAL_CONFIG=1 \
+  "$ROOT/scripts/desktop-instance.sh" print local-only >/dev/null
+[[ ! -s "$TEST_ROOT/instances/v09/local-only/data/.env" ]]
+# Exercise the actual OAuth selection branch without invoking a build/launch.
+# With seeding disabled it must clear inherited seed/state paths and must not
+# create a shared cache or require an existing account.
+oauth_branch="$(sed -n '/^  if \[\[ "${SYNTH_DESKTOP_SEED_CREDENTIALS:-1}" == "1" \]\]; then$/,/^  export CARGO_TARGET_DIR=/p' "$ROOT/scripts/desktop-instance.sh" | sed '$d')"
+[[ -n "$oauth_branch" ]]
+(
+  export SYNTH_DESKTOP_SEED_CREDENTIALS=0
+  export SYNTH_DESKTOP_SHARED_ROOT="$TEST_ROOT/unused-oauth-cache"
+  eval "$oauth_branch"
+  [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" ]]
+  [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}" ]]
+  [[ ! -e "$SYNTH_DESKTOP_SHARED_ROOT" ]]
+)
+
 # Packaged apps must run exclusively from their isolated instance. A cwd or
 # runtime fallback under ~/Documents causes macOS Files & Folders prompts.
 dev_instance_body="$(sed -n '/^dev_instance()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"

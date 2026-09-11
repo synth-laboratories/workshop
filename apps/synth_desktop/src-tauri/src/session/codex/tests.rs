@@ -701,12 +701,14 @@ async fn interrupt_terminates_non_cooperative_tool_tree_and_allows_a_new_turn() 
 }
 
 #[tokio::test]
-async fn final_answer_before_app_server_exit_completes_the_run() {
+async fn local_actor_completes_and_reopens_with_cloud_disabled() {
     let _machine =
         crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    core.intern().disable().await;
+    assert!(core.intern().client().await.is_err());
     let manager = CodexManager::with_paths(
         SessionPersistence::from_core(Some(core.clone())),
         codex_root.clone(),
@@ -739,6 +741,17 @@ async fn final_answer_before_app_server_exit_completes_the_run() {
 
     wait_for_record_status(&manager, &request.session_id, SessionStatus::Ready.as_str()).await;
     wait_for_run_status(&core, &turn_id, RunStatus::Completed.as_str()).await;
+    let session = core.sessions().get(request.session_id.clone()).await.unwrap().unwrap();
+    assert_eq!(session.execution_location().unwrap(), crate::domain::ExecutionLocation::Local);
+    assert!(core.intern().client().await.is_err());
+    manager.close(&request.session_id).await.unwrap();
+    drop(manager);
+    drop(core);
+    let reopened = CoreRuntime::open(temp.path().join("core")).unwrap();
+    let run = reopened.runs().get(turn_id).await.unwrap().unwrap();
+    assert_eq!(run.status, RunStatus::Completed.as_str());
+    let session = reopened.sessions().get(request.session_id).await.unwrap().unwrap();
+    assert_eq!(session.execution_location().unwrap(), crate::domain::ExecutionLocation::Local);
 }
 
 #[tokio::test]

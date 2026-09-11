@@ -101,3 +101,34 @@ The initial evidence above belongs to commit `ce5ea5db` and remains historical.
 No new UI, live contract DTO pin, cloud route remount, migration registration,
 paid provider run, Keychain access, push, merge, deployment or publication was
 performed. Existing Local hosted-model sessions remain Local; Jesterky optional.
+
+## Native repository and Local follow-through
+
+The prior Python SQL prototype is superseded by `cloud/storage`, a native
+Database-backed repository with 17 passing tests. Candidate schema remains
+unregistered. Scope ownership, boot/account epochs, scoped history, external
+execution bindings, atomic journal/checkpoint CAS and immutable exact-byte
+outbox now exist behind that gate. Outbox extends shared command receipts;
+received/delivered never imply remote execution completion. Async dispatch
+runs SQLite work on blocking workers and persists outcome_unknown before send.
+Timeout, cancellation and restart preserve original command identity for recovery.
+
+Candidate identity validation pins backend `5f9166a30`: exact schema and fresh
+revalidation contract, canonical HTTPS origin bound to the expected transport,
+UUID tuple and at-most-60-second observation window. No live caller activates
+storage. Identity observations are not authorization leases.
+
+Combined native cloud suite: 56 passed, zero failed/ignored. Native Local actor
+fixture completes a turn and reopens completed results with cloud disabled:
+1 passed. This is component evidence, not packaged E06 qualification.
+Launcher now accepts `SYNTH_DESKTOP_SEED_CREDENTIALS=0` to skip personal provider
+and ChatGPT seeding for fresh instances. Existing saved credentials are not
+removed. Full desktop instance contract regression passes, including no-seed
+preparation and clearing inherited OAuth seed/state paths. Ad-hoc signing remains
+the explicit Keychain-free packaging option. Evidence is recorded in
+`artifacts/cloud-foundations/scoped-native-evidence.json`.
+
+Still outstanding: packaged Local E06, qualified identity activation and registered
+migration, live scoped routing and UI epoch resets, creation/first-send recovery,
+and qualified remote reconciliation/stream transport integration. These are not
+claimed complete by the native repository or fixture tests.

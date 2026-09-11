@@ -17,7 +17,22 @@ pub enum SessionKind {
     Intern,
 }
 
+/// Execution ownership, independent of the model's inference location.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecutionLocation {
+    Local,
+    Cloud,
+}
+
 impl SessionKind {
+    pub fn execution_location(self) -> ExecutionLocation {
+        match self {
+            Self::Codex => ExecutionLocation::Local,
+            Self::Intern => ExecutionLocation::Cloud,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Codex => "codex",

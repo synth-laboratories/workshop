@@ -1,0 +1,30 @@
+{
+  "candidate_backend_identity_sha": "5f9166a30",
+  "tests": {
+    "native_cloud": {
+      "passed": 56,
+      "failed": 0,
+      "ignored": 0
+    },
+    "native_local_actor_completion_reopen": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "desktop_instance_contract": "passed"
+  },
+  "qualification": {
+    "migration_registered": false,
+    "live_identity": false,
+    "packaged_local_e06": false
+  },
+  "source_sha256": {
+    "apps/synth_desktop/src-tauri/src/cloud/storage/schema.sql": "363d708a5bd1fb188c921f8dd5beaaffcbb63cdb13edd4f0d3c10bbbc9d60ca8",
+    "apps/synth_desktop/src-tauri/src/cloud/storage/README.md": "f0736550139ea9b16ddf8efc759554f8c80300b260abb935730e3684bdc438f3",
+    "apps/synth_desktop/src-tauri/src/cloud/storage/mod.rs": "55e76e48b873b13615ed2c0f2e42b89d72998d4e0c48bafce12fca331d9c6988",
+    "apps/synth_desktop/src-tauri/src/cloud/storage/tests.rs": "a3d4ab3194b3dd2442e1d9bd32fb096275c5da4f68fcfc726ac011d0f647cf4f",
+    "apps/synth_desktop/src-tauri/src/cloud/identity.rs": "54e8cc671debd3058cfdd82667bfebdd66dad70ebc87dcda53d56278fe39da17",
+    "scripts/desktop-instance.sh": "fdbeae5f18c0b09940d8e9fe865212fad1ddf4a63ee90329f6f22003b77c052c",
+    "scripts/test-desktop-instance.sh": "106ca662ae7eb531a5d6e59cc51b1bf4040816c713cdc6236a1a0ecc2c7a9b59"
+  }
+}
