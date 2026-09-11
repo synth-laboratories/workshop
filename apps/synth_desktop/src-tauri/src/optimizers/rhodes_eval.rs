@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn critical_observations_preserve_independent_facts() {
         let events = vec![
-            serde_json::json!({"event_type":"rollout.limit_refused","sequence":1,"payload":{"error_code":"spend_limit"}}),
+            serde_json::json!({"event_type":"rollout.limit_refused","sequence":1,"error_code":"spend_limit"}),
             serde_json::json!({"event_type":"rollout.inference_accounting","sequence":2}),
             serde_json::json!({"event_type":"rollout.inference_accounting","sequence":3}),
             serde_json::json!({"event_type":"rollout.completed","sequence":4}),
