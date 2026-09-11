@@ -122,6 +122,8 @@ import { loadDeviceUsage } from "../runtime/deviceUsage";
 import { createSemanticEvalApi } from "../runtime/evalApi";
 import { drainPromptQueues, removeQueuedPrompt } from "../runtime/promptQueue";
 import { bridges } from "../runtime/desktopBridge";
+import { observeScopedCloudHistory } from "../runtime/scopedCloudHistory";
+import { emptyScopedHistory } from "../stores/scopedCloudHistory";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { responseTraceStore } from "../runtime/responseTraceStore";
 import {
@@ -544,6 +546,14 @@ export function useAppController() {
 		setFailedSend({ sessionId, text, messageId, message: turnFailureMessage(failure) });
 		showToast(turnFailureMessage(failure));
 	}, [allocateNativeSequence, showToast]);
+
+	// Keep the new scoped cache independent until Cloud profile qualification.
+	// This read-only observer has no bearing on Local boot readiness.
+	const [scopedCloudHistory, setScopedCloudHistory] = useState(emptyScopedHistory);
+	useEffect(() => {
+		if (!isDesktop) return;
+		return observeScopedCloudHistory(setScopedCloudHistory);
+	}, [isDesktop]);
 
 	const refreshSessions = useCallback(async () => {
 		if (nativeIntern) {
@@ -2282,6 +2292,7 @@ export function useAppController() {
 
 
 	return {
+		scopedCloudHistory,
 		isDesktop,
 		nativeCodex,
 		nativeIntern,

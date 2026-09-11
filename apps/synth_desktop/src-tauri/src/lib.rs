@@ -240,6 +240,42 @@ async fn core_events_after(
         .map_err(AppError::from)
 }
 
+// Read-only scoped surfaces remain qualification-gated. They do not install
+// the candidate schema or initialize a cloud client.
+#[tauri::command]
+#[specta::specta]
+async fn cloud_scope_view(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<cloud::scoped_runtime::ScopeView, AppError> {
+    state.scoped_cloud().view().await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn cloud_scoped_history(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<cloud::scoped_runtime::ScopedSessions, AppError> {
+    state.scoped_session_history().await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn cloud_scoped_events_after(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+    after_sequence: contract::specta::OpaqueInteger<i64>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<cloud::scoped_runtime::ScopedEvents, AppError> {
+    state
+        .scoped_session_events_after(
+            session_id,
+            after_sequence.0,
+            limit.map(|value| value.0).unwrap_or(500),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn core_session_events_after(
@@ -4437,6 +4473,7 @@ async fn account_sign_out(
     core: State<'_, Arc<CoreRuntime>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
 ) -> Result<BackendSettings, AppError> {
+    core.disable_cloud_runtime().await.map_err(AppError::from)?;
     synth_config::remove_api_key().map_err(AppError::from)?;
     // Cloud facts belong to the signed-out session; local history and the
     // device ledger stay untouched. Optional analytics drop; the install id

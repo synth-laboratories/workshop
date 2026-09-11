@@ -1,0 +1,188 @@
+{
+  "status": "source_fixture_not_live_profile",
+  "method": "GET",
+  "path": "/smr/runs/{run_id}/resource-settlement",
+  "cache_control": "no-store",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "run_id": {
+        "title": "Run Id",
+        "type": "string"
+      },
+      "observed_at": {
+        "format": "date-time",
+        "title": "Observed At",
+        "type": "string"
+      },
+      "coverage": {
+        "enum": [
+          "untracked",
+          "explicit-v1"
+        ],
+        "title": "Coverage",
+        "type": "string"
+      },
+      "settled": {
+        "title": "Settled",
+        "type": "boolean"
+      },
+      "registered_tree_settled": {
+        "default": false,
+        "title": "Registered Tree Settled",
+        "type": "boolean"
+      },
+      "coverage_complete": {
+        "default": false,
+        "title": "Coverage Complete",
+        "type": "boolean"
+      },
+      "scope_kind": {
+        "anyOf": [
+          {
+            "enum": [
+              "root_tree",
+              "owned_subtree"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Scope Kind"
+      },
+      "root_run_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Root Run Id"
+      },
+      "edge_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Edge Id"
+      },
+      "pending": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Pending"
+      },
+      "unknown": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Unknown"
+      },
+      "confirmed": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Confirmed"
+      },
+      "excluded": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Excluded"
+      },
+      "root_confirmed": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Root Confirmed"
+      }
+    },
+    "required": [
+      "run_id",
+      "observed_at",
+      "coverage",
+      "settled"
+    ],
+    "title": "RunResourceSettlementResponse",
+    "type": "object"
+  },
+  "examples": [
+    {
+      "run_id": "legacy-run",
+      "observed_at": "2026-09-11T12:00:00Z",
+      "coverage": "untracked",
+      "settled": false,
+      "registered_tree_settled": false,
+      "coverage_complete": false,
+      "scope_kind": null,
+      "root_run_id": null,
+      "edge_id": null,
+      "pending": null,
+      "unknown": null,
+      "confirmed": null,
+      "excluded": null,
+      "root_confirmed": null
+    },
+    {
+      "run_id": "root-run",
+      "observed_at": "2026-09-11T12:00:00Z",
+      "coverage": "explicit-v1",
+      "settled": false,
+      "registered_tree_settled": true,
+      "coverage_complete": false,
+      "scope_kind": "root_tree",
+      "root_run_id": "root-run",
+      "edge_id": null,
+      "pending": 0,
+      "unknown": 0,
+      "confirmed": 2,
+      "excluded": 1,
+      "root_confirmed": null
+    }
+  ]
+}

@@ -101,6 +101,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::runtime_contracts,
             crate::core_events_after,
             crate::core_session_events_after,
+            crate::cloud_scope_view,
+            crate::cloud_scoped_history,
+            crate::cloud_scoped_events_after,
             crate::core_session_events_tail,
             crate::core_session_events_before,
             crate::intern_sessions_list,
@@ -576,8 +579,11 @@ mod tests {
         // intervening release read-model commands.
         // 306 → 323: first-class human annotation task/session/draft/audio,
         // transcription, status, cancellation, export, and submission.
+        // The existing generated graph already contained 329 commands; the
+        // old 323 assertion had not followed those additions. Three scoped
+        // read-only Cloud commands bring the reviewed graph to 332.
         assert_eq!(
-            exported, 323,
+            exported, 332,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

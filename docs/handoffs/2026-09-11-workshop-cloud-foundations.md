@@ -47,14 +47,49 @@ The main checkout was not modified. All changes are local, unmerged candidates.
   Host validation checks exact schema/revalidation semantics, expected canonical
   HTTPS origin, UUID tuple and timestamps. Source contract: backend `5f9166a30`
   and compatible follow-ups. No live authority caller is wired.
+- CoreRuntime now owns a qualification-gated scope coordinator. Credential reload
+  and sign-out invalidate it; late identity/history results cannot restore a
+  previous account. Finite observation expiry publishes a reset even while idle.
+  Scoped history applies ownership before the row limit and rechecks expiry after
+  the database read. Local reads require neither identity nor candidate schema.
+- Read-only `cloud_scope_view`, `cloud_scoped_history`, and
+  `cloud_scoped_events_after` IPC surfaces and generated TypeScript contracts are
+  wired. `cloud:scope` forwards resets. App controller boot attaches an isolated
+  scoped cache before fetching its snapshot; stale pages cannot refill it after
+  account change. This cache is exposed to future qualified Cloud presentation,
+  and does not replace the existing legacy Intern UI or enable Cloud creation.
+- SDK fresh settlement reads use the backend `f67bc0fb204cb4f93c680e8a702657e9c8d99bbb`
+  source fixture. The bounded authenticated `no-store` GET preserves nullable
+  counts and rejects wrong-run or contradictory coverage. A read failure never
+  becomes successful untracked evidence. The gated renderer status projection
+  distinguishes pending/unknown, incomplete coverage, root and owned subtree
+  confirmation. No live settlement caller is wired.
 - Explicit session kind determines execution location. A hosted model used by a
   native Codex session remains Local.
 
 ## Verified evidence
 
-- Native combined cloud suite: **62 passed**, zero failed or ignored.
-- Independent SDK suite: **16 passed**, zero failed or ignored.
-- Native Local actor completion/reopen with cloud disabled: **1 passed**.
+- Native combined cloud suite: **68 passed**, zero failed or ignored.
+- Independent SDK suite: **19 passed**, zero failed or ignored.
+- Native Local actor completion/reopen with cloud disabled: **1 passed** (earlier evidence).
+- Current CoreRuntime Local startup/journal regressions: **3 passed**.
+- Renderer ownership/race/settlement/status tests: **22 passed**.
+- TypeScript checking and frontend build pass.
+- Final scoped contract checks: **18 passed**, with the manual regeneration
+  test intentionally ignored and one pre-existing optimizer pin mismatch
+  explicitly excluded. The full broader run exposed
+  `DEFAULT_ALGORITHM_VERSION = synth-optimizers-0.2.19` versus the existing
+  runtime contract's `0.2.20`; both values are present at parent `7056320e`.
+  This Cloud lane does not change optimizer runtime pins.
+- The generated command assertion now matches the reviewed graph: the parent
+  already exported 329 commands despite its stale assertion of 323; the three
+  scoped reads bring it to 332. The newly exposed history generation field
+  correctly preserves `number | null`.
+- Exact-current source hashes and final offline results are recorded in
+  `artifacts/cloud-foundations/scoped-runtime-evidence.json`. Final isolated
+  logs use the `qualified-` filename prefix for fixture verification only;
+  this does not mean a live profile was qualified. Earlier overlapping
+  `scoped-*-verified.log` attempts are historical, not the final evidence.
 - Desktop instance contract suite passes, including credential-free preparation
   and an untracked-source provenance regression.
 - Final non-test library check and source hashes are recorded in
@@ -96,10 +131,25 @@ behavior. No stable IDs or live profile were assigned by this task. An account
 snapshot or source fixture is not authority. See the cloud counterpart packet:
 `/Users/joshuapurtell/GitHub/testing/docs/internal/cloud-fundamentals-20260911/HANDOFF.md`.
 
-After qualification, register the additive migration and integrate the scoped
-repository/authority lifecycle into CoreRuntime, global discovery/history, UI
-reset and worker cancellation. Existing legacy Intern live paths remain unscoped;
-they must not substitute for that integration or enable new Cloud capability.
+The gated CoreRuntime, scoped history IPC and renderer cache/reset integration
+are implemented and fixture-tested. There is intentionally no production store
+installation entry point. Existing legacy Intern live paths remain unscoped;
+they must not substitute for this path or enable new Cloud capability.
+
+| Next step | Owner/dependency | Why the fixture does not authorize it |
+| --- | --- | --- |
+| Install the store and register migration | Workshop + deployment owner, qualified stable identity/profile | A fake tuple cannot establish ownership of real account history. |
+| Enable scoped Cloud creation/dispatch and presentation | Workshop + qualified identity and operation profile | Local fixture success cannot establish remote admission, receipts, or revocation behavior. |
+| Wire live worker transport/cancellation/recovery | Workshop + cloud transport contract and served revision | Fixtures exercise fences but do not qualify actual retention, cursors, reconnect, grants, or lookup semantics. |
+| Qualify remote stop/settlement UI | Cloud owner + fresh settlement/coverage contract | Stop acknowledgement and resource snapshot are not global settlement; current coverage remains incomplete. |
+| Real-model packaged E06 | Local model/runtime resources and qualification | The completed packaged FakeBackend run proves UI/persistence behavior, not real model execution. |
+
+Backend follow-up describes optional `resource_settlement` on stop receipts.
+Do not infer fresh/global settlement from that snapshot, `capacity_released`, or
+registered-tree settlement. Backend `f67bc0fb` now supplies a fresh GET source contract at
+`/smr/runs/{run_id}/resource-settlement`; the SDK and renderer projections are
+fixture-tested against its checked-in schema/examples. It is not a served live
+profile or a `wait_settled` contract.
 
 Remote creation/receipt lookup, replay retention/reset, stream reconnect and MQ
 subscription/grant renewal require qualified operation contracts and live checks.

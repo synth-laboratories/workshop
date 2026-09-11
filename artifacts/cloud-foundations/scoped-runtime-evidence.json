@@ -1,0 +1,96 @@
+{
+  "schema": "synth.workshop-cloud-source-evidence.v1",
+  "recorded_at": "2026-09-11T20:57:19.385666+00:00",
+  "parent_commit": "7056320e64a8a0a39163c6b61b769102d413535a",
+  "branch": "codex/workshop-cloud-foundations-20260911",
+  "qualification": {
+    "offline_fixtures_only": true,
+    "live_profile": false,
+    "migration_registered": false,
+    "production_activation_entrypoint": false,
+    "live_settlement_caller": false,
+    "paid_provider_calls": false,
+    "keychain_access": false,
+    "deployment": false
+  },
+  "verification": {
+    "qualified-protocol-generation.log": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "sha256": "311e081716835f3f84894e4f0f0d8ad5024f1523cfb611d452c771647f375bd3"
+    },
+    "qualified-cloud-tests.log": {
+      "passed": 68,
+      "failed": 0,
+      "ignored": 0,
+      "sha256": "b615e49e3d3df90efaf2be3d9d5267365eb6b20ec281048e9f45e9be7ded3170"
+    },
+    "qualified-contract-tests.log": {
+      "passed": 18,
+      "failed": 0,
+      "ignored": 1,
+      "sha256": "2d761f90b75b0710b6f9ce5cfcdfb19b38e2e9e7c73e329e5b1074b54b97e277"
+    },
+    "qualified-local-tests.log": {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "sha256": "ccbf8dabcd954a7bc441b04da6ce6b73288b7a50bfa7612a5bab58dcfd9ef5ab"
+    },
+    "settlement-sdk-tests.log": {
+      "passed": 19,
+      "failed": 0,
+      "sha256": "ec903c691acfdfca7571b5bbdd8d2f3a55091fa81158489d9aceb398980ddab4"
+    },
+    "qualified-renderer-tests.log": {
+      "result": "pass",
+      "sha256": "e1c6f53e5ca1f8390259c209c71236f89e9da4256a4cf95e34ed03b56f6f5651"
+    },
+    "qualified-typecheck.log": {
+      "result": "pass",
+      "sha256": "1e498f55bbe094f4669ec10e85e3b3b806cd3d4539ee23d2f9fc66efae3053ec"
+    },
+    "qualified-frontend-build.log": {
+      "result": "pass",
+      "sha256": "9c95beb945c738355ccce75a191f9e6af57abc9a42c45629ebe96653dcedd128"
+    },
+    "qualified-library-check.log": {
+      "result": "pass",
+      "sha256": "5a8565e90418a72c8f8b8182633c832ff921e716f0df416b8b3d1b8ad6b6eb2c"
+    }
+  },
+  "known_baseline_failure": {
+    "test": "contract::runtimes::tests::algorithm_version_matches_the_contract",
+    "parent_default": "synth-optimizers-0.2.19",
+    "parent_contract": "0.2.20",
+    "action": "preserved; excluded by name from focused final contract run"
+  },
+  "settlement_source_commit": "f67bc0fb204cb4f93c680e8a702657e9c8d99bbb",
+  "packaged_local_evidence": "packaged-local-evidence.json (earlier candidate; no claim of current packaged qualification)",
+  "source_sha256": {
+    "apps/synth_desktop/src-tauri/src/cloud/mod.rs": "d7f0077b642345417e30af154228e793af9d5e9123c25963ae245b1945828e2b",
+    "apps/synth_desktop/src-tauri/src/cloud/scoped_runtime.rs": "4a17ef2fa7f962d53bb4187807097765f03b390b587013311788f29face09c5f",
+    "apps/synth_desktop/src-tauri/src/cloud/storage/mod.rs": "de069e77c25dd94bb01a456ce7cc6aa84f180bd421ac2443a674931156743e31",
+    "apps/synth_desktop/src-tauri/src/contract/commands.rs": "1541b58cef00e277185efbd1abe84bc15616221d121cd774583a448e6613cdaa",
+    "apps/synth_desktop/src-tauri/src/contract/events.rs": "1c27368ae39c2b77adffb90168c1e80c32e9a6c9db4df0b7ecfcd546d63683f0",
+    "apps/synth_desktop/src-tauri/src/contract/specta.rs": "d9c069a70d5040c009ed9c6e8d060de8de730a6473d6c20bf55f1fe6568a4f23",
+    "apps/synth_desktop/src-tauri/src/core_runtime.rs": "c3cebb9f3165e7ab1ee37fa913f626fa73f64b63717c738db42a287f4cf4e75a",
+    "apps/synth_desktop/src-tauri/src/domain/session_run.rs": "a2c32fd3d87c283e0b4c48e0c321dc1f113e787156872c0435c9d94129191181",
+    "apps/synth_desktop/src-tauri/src/lib.rs": "6284cb57c018bff58664965be7bc46c18579c963c511966d52089e5b6c1130a8",
+    "apps/synth_desktop/src-tauri/src/storage/models.rs": "a6b13c917eb772fe8ad0b364b2bec523b28b40505d82a823b9ac5899b0ef406a",
+    "apps/synth_desktop/src/renderer/src/bridge/protocolConstants.ts": "59bc75b602154013cbdbf4c62d37946a09be2aceeaa469d1cc73025c65fe7e3b",
+    "apps/synth_desktop/src/renderer/src/generated/protocol.ts": "77ceb0976bb6ca891b026e1afd816d59971c87c7a3adb605bda0bb3f034fd92e",
+    "apps/synth_desktop/src/renderer/src/hooks/useAppController.ts": "0bd551bdd1a0a015bf8ef0c21f4999eaef70198bd1abdcc95ef0331619b3c906",
+    "apps/synth_desktop/src/renderer/src/runtime/resourceSettlement.ts": "846a122c68344596f8bf10c60f6cdee2898d9b3d576dd3776cc38d4a807ff6ee",
+    "apps/synth_desktop/src/renderer/src/runtime/scopedCloudHistory.ts": "929cda73da24e4409ad4112a61227d1e4aee36474786f636c646f21876e5929d",
+    "apps/synth_desktop/src/renderer/src/stores/scopedCloudHistory.ts": "59e64401cfef8fe624b95d56d45423b081bb80231e55c4c512bd8969826cd0de",
+    "apps/synth_desktop/tests/resource_settlement.test.mjs": "69866204fff1cf1f784b3496314343919068dec46a9609717d9b820c162eeae8",
+    "apps/synth_desktop/tests/scoped_cloud_history.test.mjs": "79aa28dd899d8e89e32f530d9da592b461fbb3d5958d6f7b052dfdf0cf66b081",
+    "crates/synth-api-client/src/client.rs": "e268e6f8835bf21f3fe5a18689042d562731dc153914239c7ca9e53eb561f338",
+    "crates/synth-api-client/src/lib.rs": "e22c4b2b0d693add4c4bd867b16e3fc6ee5fa9222988b77645180427bc7dfdca",
+    "crates/synth-api-client/src/settlement.rs": "09c24b2bdedacf1d45db2adace578da42bd6efab445ef240b1236360ce51eaaf",
+    "crates/synth-api-client/tests/fixtures/run_resource_settlement.json": "60da1c2b330d0843e6695c45a1e317d1363aeb50d24f3df75957832b43129a00",
+    "crates/synth-api-client/tests/settlement_protocol.rs": "e4a1fe93a5b22486e1d51b3afa6ace059093d508dd16e4f8f37cd740d41a1ff2"
+  }
+}

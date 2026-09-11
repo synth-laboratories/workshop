@@ -37,6 +37,7 @@ pub struct CoreRuntime {
     computer_use: Arc<crate::computer_use::service::ComputerUseService>,
     diagnostics: Arc<crate::diagnostics::DiagnosticsService>,
     intern: Arc<InternRuntime>,
+    scoped_cloud: crate::cloud::scoped_runtime::ScopedCloudRuntime,
     intern_provider: Arc<InternProviderManager>,
     sessions: SessionService,
     runs: RunService,
@@ -258,6 +259,7 @@ impl CoreRuntime {
             computer_use,
             diagnostics,
             intern,
+            scoped_cloud: crate::cloud::scoped_runtime::ScopedCloudRuntime::qualification_gated(),
             intern_provider,
             sessions,
             runs,
@@ -327,6 +329,32 @@ impl CoreRuntime {
 
     pub fn intern(&self) -> &Arc<InternRuntime> {
         &self.intern
+    }
+
+    pub(crate) fn scoped_cloud(&self) -> &crate::cloud::scoped_runtime::ScopedCloudRuntime {
+        &self.scoped_cloud
+    }
+
+    pub(crate) async fn scoped_session_history(
+        &self,
+    ) -> Result<crate::cloud::scoped_runtime::ScopedSessions> {
+        self.scoped_cloud
+            .project_sessions(&self.sessions)
+            .await
+    }
+
+    pub(crate) async fn scoped_session_events_after(
+        &self,
+        session_id: String,
+        after: i64,
+        limit: i64,
+    ) -> Result<crate::cloud::scoped_runtime::ScopedEvents> {
+        let session = self.sessions.get(session_id.clone()).await?.context("session not found")?;
+        self.scoped_cloud
+            .read_session_events(&session, || {
+                self.journal.session_events_after(session_id, after, limit.clamp(1, 2000))
+            })
+            .await
     }
 
     pub fn sessions(&self) -> &SessionService {
@@ -629,12 +657,20 @@ impl CoreRuntime {
         Ok(())
     }
 
+    /// Fence both scoped readers and legacy pollers before credential changes.
+    /// Even a persistence failure must leave the old client disabled.
+    pub(crate) async fn disable_cloud_runtime(&self) -> Result<()> {
+        let invalidation = self.scoped_cloud.invalidate().await;
+        let shutdown = self.intern_provider.shutdown().await;
+        self.intern.disable().await;
+        invalidation?;
+        shutdown
+    }
+
     /// Rotate the cloud endpoint and credential without leaving pollers on the
     /// previous identity alive. Missing credentials deliberately fail closed.
     pub async fn reload_intern_config(&self) -> Result<()> {
-        let shutdown = self.intern_provider.shutdown().await;
-        self.intern.disable().await;
-        shutdown?;
+        self.disable_cloud_runtime().await?;
         let backend = crate::synth_config::resolve()
             .map_err(|_| crate::cloud::intern::InternClientError::CloudUnavailable)?;
         match backend.api_key {
@@ -773,6 +809,14 @@ impl CoreRuntime {
     }
 
     pub fn spawn_forwarder(self: &Arc<Self>, app: AppHandle) {
+        let mut scope_changes = self.scoped_cloud.subscribe();
+        let scope_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            while scope_changes.changed().await.is_ok() {
+                let view = *scope_changes.borrow_and_update();
+                let _ = scope_app.emit(EventChannel::CLOUD_SCOPE, view);
+            }
+        });
         let mut rx = self.subscribe();
         tauri::async_runtime::spawn(async move {
             loop {

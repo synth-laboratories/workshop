@@ -340,6 +340,15 @@ impl CloudStore {
         })
     }
 
+    pub fn authorize_session(&self, lease: &ScopeLease, session_id: &str) -> Result<()> {
+        self.db.transaction(|conn| {
+            fence(conn,lease)?;
+            let owned:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM cloud_owned_sessions WHERE scope_id=?1 AND local_session_id=?2)",params![lease.scope_id,session_id],|row|row.get(0))?;
+            if !owned {bail!("session is not owned by the active cloud scope");}
+            Ok(())
+        })
+    }
+
     pub fn bound_sessions(&self, lease: &ScopeLease) -> Result<Vec<String>> {
         self.db.transaction(|conn| {
             fence(conn,lease)?;

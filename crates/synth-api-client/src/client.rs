@@ -134,6 +134,30 @@ impl InternClient {
             .base_url
             .join("/api/v1/desktop/cloud-identity")
             .map_err(protocol)?;
+        self.fresh_json(url).await
+    }
+
+    /// Source-qualified read contract only. This fetch does not activate a
+    /// profile, authorize a mutation, or reuse a stop-time receipt snapshot.
+    pub async fn resource_settlement(
+        &self,
+        run_id: &str,
+    ) -> Result<crate::settlement::ResourceSettlement, InternClientError> {
+        if run_id.trim().is_empty() || matches!(run_id, "." | "..") || run_id.len() > 512 {
+            return Err(protocol("invalid settlement run ID"));
+        }
+        let mut url = self.base_url.join("smr/runs/").map_err(protocol)?;
+        url.path_segments_mut()
+            .map_err(|_| protocol("invalid settlement URL"))?
+            .pop_if_empty()
+            .push(run_id)
+            .push("resource-settlement");
+        let observation: crate::settlement::ResourceSettlement = self.fresh_json(url).await?;
+        observation.validate_for_run(run_id).map_err(protocol)?;
+        Ok(observation)
+    }
+
+    async fn fresh_json<R: DeserializeOwned>(&self, url: Url) -> Result<R, InternClientError> {
         let mut response = self
             .http
             .get(url.clone())
@@ -146,7 +170,7 @@ impl InternClient {
         if !status.is_success() {
             return Err(InternClientError::Http {
                 status,
-                detail: "identity authority unavailable".into(),
+                detail: "fresh authority read unavailable".into(),
                 code: None,
                 request_id: response
                     .headers()
@@ -161,7 +185,7 @@ impl InternClient {
             });
         }
         if response.url() != &url {
-            return Err(protocol("identity authority redirected"));
+            return Err(protocol("fresh authority read redirected"));
         }
         let no_store = response
             .headers()
@@ -171,14 +195,14 @@ impl InternClient {
             .flat_map(|value| value.split(','))
             .any(|value| value.trim().eq_ignore_ascii_case("no-store"));
         if !no_store {
-            return Err(protocol("identity response lacks no-store contract"));
+            return Err(protocol("fresh response lacks no-store contract"));
         }
         const LIMIT: usize = 16 * 1024;
         if response
             .content_length()
             .is_some_and(|length| length > LIMIT as u64)
         {
-            return Err(protocol("identity response exceeds limit"));
+            return Err(protocol("fresh response exceeds limit"));
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = response
@@ -187,11 +211,11 @@ impl InternClient {
             .map_err(InternClientError::Transport)?
         {
             if bytes.len().saturating_add(chunk.len()) > LIMIT {
-                return Err(protocol("identity response exceeds limit"));
+                return Err(protocol("fresh response exceeds limit"));
             }
             bytes.extend_from_slice(&chunk);
         }
-        serde_json::from_slice(&bytes).map_err(|_| protocol("invalid identity response JSON"))
+        serde_json::from_slice(&bytes).map_err(|_| protocol("invalid fresh response JSON"))
     }
 
     pub async fn create_sync(

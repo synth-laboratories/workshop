@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub struct EventChannel;
 
 impl EventChannel {
+    pub const CLOUD_SCOPE: &'static str = "cloud:scope";
     /// Single origin-tagged session/runtime stream (Provider | Desktop).
     pub const RUNTIME: &'static str = "runtime:event";
     /// Deprecated alias — producers must not emit here. Renderer may still
@@ -28,6 +29,7 @@ impl EventChannel {
 
 /// All known channels (for drift checks / docs).
 pub const EVENT_CHANNELS: &[&str] = &[
+    EventChannel::CLOUD_SCOPE,
     EventChannel::RUNTIME,
     EventChannel::CODEX,
     EventChannel::VISUAL_SHOW,

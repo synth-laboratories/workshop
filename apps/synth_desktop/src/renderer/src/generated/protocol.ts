@@ -20,6 +20,9 @@ export const commands = {
 	runtimeContracts: () => typedError<RuntimeContractView[], AppError_Serialize>(__TAURI_INVOKE("runtime_contracts")),
 	coreEventsAfter: (afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("core_events_after", { afterSequence, limit })),
 	coreSessionEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("core_session_events_after", { sessionId, afterSequence, limit })),
+	cloudScopeView: () => typedError<ScopeView, AppError_Serialize>(__TAURI_INVOKE("cloud_scope_view")),
+	cloudScopedHistory: () => typedError<ScopedSessions, AppError_Serialize>(__TAURI_INVOKE("cloud_scoped_history")),
+	cloudScopedEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<ScopedEvents, AppError_Serialize>(__TAURI_INVOKE("cloud_scoped_events_after", { sessionId, afterSequence, limit })),
 	coreSessionEventsTail: (sessionId: string, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("core_session_events_tail", { sessionId, limit })),
 	coreSessionEventsBefore: (sessionId: string, beforeSequence: number, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("core_session_events_before", { sessionId, beforeSequence, limit })),
 	internSessionsList: () => typedError<InternSessionWire[], AppError_Serialize>(__TAURI_INVOKE("intern_sessions_list")),
@@ -805,6 +808,10 @@ export type AttachmentSource = "user_picker" | "recent_folder" | "agent_request"
 export type AuthAction = "connect" | "wait" | "none" | "reauthenticate" | "retry";
 
 export type AuthState = "disconnected" | "authenticating" | "ready" | "expiring" | "expired" | "refresh_failed";
+
+export type AuthoringAffordance = "temporalControls" | "traceInspector" | "realEvidence";
+
+export type Availability = "qualification_required" | "signed_out" | "ready";
 
 export type BackendSettings = {
 	configPath: string,
@@ -2246,10 +2253,21 @@ export type InstanceDiagnostics = {
 	manifest: string | null,
 };
 
+/**  Optional Intern factory / effort binding (renderer camelCase). */
+export type InternBinding = {
+	factoryId?: string | null,
+	projectId?: string | null,
+	effortId?: string | null,
+	runId?: string | null,
+};
+
 export type InternControlResult = {
 	accepted: boolean,
 	receipt: CommandReceipt,
 };
+
+/**  Sync vs async Intern wire mode. */
+export type InternMode = "sync" | "async";
 
 export type InternSendResult = {
 	runId: string,
@@ -3973,6 +3991,9 @@ export type RuntimeContractView = {
 
 export type RuntimeKind = "sync" | "async";
 
+/**  Codegen-only mirror of RuntimeTarget's custom serde wire representation. */
+export type RuntimeTargetContract = { kind: "local"; model: string; adapter: string | null } | { kind: "remote"; model: string; adapter: string | null } | { kind: "cloud"; model: string; adapter: string | null } | { kind: "intern"; mode: InternMode; binding: InternBinding | null };
+
 export type SavedLoraCheckpoint = {
 	schemaVersion: string,
 	checkpointId: string,
@@ -4086,6 +4107,21 @@ export type SavedLoraStorage = {
 	contentType: string,
 };
 
+export type ScopeView = {
+	generation: number,
+	availability: Availability,
+};
+
+export type ScopedEvents = {
+	generation: number,
+	events: AppEvent[],
+};
+
+export type ScopedSessions = {
+	generation: number,
+	sessions: SessionRecord[],
+};
+
 export type SealedTerminal = {
 	kind: TerminalKind,
 	reason?: TerminalReason | null,
@@ -4148,6 +4184,28 @@ export type SecretsInbox = {
 export type SecretsProxyStatus = {
 	origin: string | null,
 	running: boolean,
+};
+
+export type SessionRecord = {
+	id: string,
+	title: string,
+	/**
+	 *  SessionKind as a DB/wire string (`codex` | `intern`). Prefer
+	 *  `SessionKind::parse` at call sites — do not re-read `target.kind`.
+	 */
+	kind?: string,
+	/**  Typed runtime substrate (DB column remains `target_json`). */
+	target: RuntimeTargetContract,
+	projectId: string | null,
+	remoteId: string | null,
+	codexThreadId: string | null,
+	status: string,
+	stateGeneration: number | null,
+	latestCursor: number,
+	activeRunId: string | null,
+	metadata: unknown,
+	createdAt: string,
+	updatedAt: string,
 };
 
 export type SftProjection = {
@@ -4244,6 +4302,12 @@ export type TelemetryPolicy = {
 export type TemplateMeta = {
 	schemaVersion: string,
 	id: string,
+	/**
+	 *  Digest of every file in this template package. Certification binds to
+	 *  this value so template changes stale earlier reviews without requiring
+	 *  a cosmetic visual revision bump.
+	 */
+	templateDigest?: string,
 	title?: string,
 	genre?: string | null,
 	/**
@@ -4283,6 +4347,17 @@ export type TemplateReadinessContract = {
 	minimumRenderedFrameCount?: number,
 	minimumSemanticEventCount?: number,
 	requireTerminal?: boolean,
+	/**
+	 *  Which evidence affordances this surface actually offers, out of
+	 *  `temporalControls`, `traceInspector`, `realEvidence`.
+	 *
+	 *  Absent means all three, so no existing template is relaxed by this
+	 *  field. A template opts out only by declaring the shorter list in its
+	 *  manifest, which is reviewable — unlike a reviewer ticking a box that is
+	 *  false. A static analysis projection of immutable sealed evidence has no
+	 *  temporal control to offer, and demanding one made it uncertifiable.
+	 */
+	authoringAffordances?: AuthoringAffordance[] | null,
 };
 
 export type TerminalCreateRequest = {

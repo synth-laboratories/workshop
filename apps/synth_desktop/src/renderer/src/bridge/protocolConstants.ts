@@ -4,6 +4,7 @@
  */
 
 export const EVENT_CHANNELS = {
+	CLOUD_SCOPE: "cloud:scope",
 	/** Single origin-tagged session/runtime stream (Provider | Desktop). */
 	RUNTIME: "runtime:event",
 	/**

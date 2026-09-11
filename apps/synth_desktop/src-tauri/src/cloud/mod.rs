@@ -6,3 +6,4 @@ pub(crate) mod storage;
 
 // Candidate DTO validation only; no live authority activation.
 pub(crate) mod identity;
+pub(crate) mod scoped_runtime;

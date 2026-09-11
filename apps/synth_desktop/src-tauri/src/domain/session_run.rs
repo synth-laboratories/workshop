@@ -268,6 +268,26 @@ impl SessionService {
             .await
     }
 
+    /// Apply ownership before pagination so another account's rows cannot
+    /// crowd Local conversations out of scoped discovery. No cloud schema is
+    /// required: only the host coordinator supplies admitted IDs.
+    pub(crate) async fn list_scoped(&self, cloud_ids: Vec<String>) -> Result<Vec<SessionRecord>> {
+        let db = self.db.clone();
+        let ids = serde_json::to_string(&cloud_ids)?;
+        db.run(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, title, kind, target_json, project_id, remote_id, codex_thread_id, status,
+                        state_generation, latest_cursor, active_run_id, metadata_json, created_at, updated_at
+                 FROM sessions WHERE kind = 'codex' OR
+                   (kind = 'intern' AND id IN (SELECT value FROM json_each(?1)))
+                 ORDER BY updated_at DESC LIMIT 2000",
+            )?;
+            let rows = stmt.query_map(params![ids], session_from_row)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        })
+        .await
+    }
+
     /// Changes the user-facing title and its provenance in one transaction.
     /// Automatic titles may only replace a default title; a manual title is
     /// therefore never overwritten by a delayed automatic naming attempt.

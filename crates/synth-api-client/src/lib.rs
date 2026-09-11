@@ -6,3 +6,4 @@ pub use models::*;
 pub mod checkpoints;
 pub mod identity;
 pub mod sse;
+pub mod settlement;
