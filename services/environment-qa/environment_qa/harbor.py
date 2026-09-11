@@ -62,6 +62,10 @@ def probe(store, run, path, agents=None, gate_id=None, timeout_seconds=600):
                          "QA_MAX_APP_SERVERS"):
                 if name in os.environ:
                     env[name] = os.environ[name]
+        if run['policy'].get('pipeline', {}).get('backend') == 'daytona':
+            if not os.environ.get('DAYTONA_API_KEY'):
+                raise ValueError('Daytona QA requires an authorized runtime DAYTONA_API_KEY')
+            env['DAYTONA_API_KEY'] = os.environ['DAYTONA_API_KEY']
         version = subprocess.check_output([executable, "--version"], env=env, timeout=20, text=True).strip()
         for agent in (agents or ("oracle", "nop", "oracle-repeat")):
             if store.get(run["id"])["status"] in {"cancelling", "cancelled"}:
@@ -116,14 +120,12 @@ printf '%s\\n%s\\n' "$first" "$second" > /logs/verifier/qa-repeat.txt
             pipeline = run['policy'].get('pipeline', {})
             native_outcome = None
             if pipeline.get('native_image'):
-                if component:
-                    raise ValueError('Native component probes require a separate observation adapter; full verification cannot be substituted')
                 if version != '0.22.0':
                     raise ValueError('Native QA requires Harbor 0.22.0')
                 from .native_runtime import run_native_probe
                 native_outcome, log_path = run_native_probe(
                     task=task, work=work, job=job, agent=selected_agent, environment=env,
-                    pipeline=pipeline, timeout_seconds=timeout_seconds, executable=executable,
+                    pipeline=pipeline, timeout_seconds=timeout_seconds, executable=executable, component=component,
                     cancelled=lambda: store.get(run["id"])["status"] in {"cancelling", "cancelled"},
                 )
                 returncode = native_outcome['execution_returncode']

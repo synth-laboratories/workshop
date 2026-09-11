@@ -282,7 +282,28 @@ assessment remain authoritative. Lifecycle evidence lives beside Harbor jobs
 in `*-native/`; cleanup is established by the shared exact-provider custody
 receipt, never by process exit or Compose label inference. Cancellation stops
 the child and attempts bounded independent cleanup; pending absence makes the
-QA gate inconclusive. Native component-only probes currently fail admission
-rather than silently replacing observations with a full grader run. Policies
+QA gate inconclusive. Native component-only probes use the generic observation lifecycle described below. Policies
 without `native_image` retain the existing Dockerfile/component path. This is a
 development candidate, with no provider qualification performed.
+
+### Native component and Daytona QA
+
+Native component probes now use the generic durable lifecycle and always pass
+`--disable-verification`. Source verifier declarations remain intact; no
+private/shared verifier substitution is made and no reward is inferred.
+The verifier phase records observation custody, while the existing component
+completion logic remains authoritative. Separate-verifier source tasks can be
+observed without running their verifier. Full-verifier trials retain the staged
+Harbor coordinator and its existing verifier compatibility admission.
+
+A policy with `pipeline.backend: "daytona"` requires `native_image` as a
+prepared registry digest reference and `native_environment_digest` matching
+containers' `sha256:...` digest of the exact source `environment/` directory.
+The task must explicitly declare CPU, memory and storage within shared native
+admission. Prepared images must already contain the task environment. Runtime
+credentials come only from the already authorized service environment's
+`DAYTONA_API_KEY`; they remain in the host Harbor process, never command argv.
+No image preparation, publication, credential discovery, or provider execution
+is performed by planning. Both native component and full-verifier Daytona
+trials use shared owned-provider adapters and independent cleanup receipts.
+Default Dockerfile policies remain available without native selection.

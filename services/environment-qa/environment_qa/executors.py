@@ -286,12 +286,21 @@ def execute_gate(store, run, gate, path):
     executor = gate["executor"]
     if executor == "admission":
         config = tomllib.loads((path/"task.toml").read_text())
-        if run["policy"]["pipeline"]["backend"] != "docker": raise ValueError("Backend has not passed conformance")
+        pipeline = run["policy"]["pipeline"]
+        backend = pipeline["backend"]
+        if backend not in {"docker", "daytona"} or (backend == "daytona" and not pipeline.get("native_image")):
+            raise ValueError("Daytona QA requires an explicit prepared native image")
+        if backend == "daytona":
+            from synth_containers.harbor_environment import _tree_digest, is_pinned_harbor_image
+            if not is_pinned_harbor_image(pipeline["native_image"], "daytona"):
+                raise ValueError("Daytona QA requires a registry digest image")
+            if pipeline.get("native_environment_digest") != _tree_digest(path / "environment"):
+                raise ValueError("Prepared native environment source digest differs")
         from .admission import validate_compose
         compose = validate_compose(path)
         if config.get("steps"): raise ValueError("Multi-step execution requires a qualified per-step evidence adapter")
         if not shutil.which("harbor"): raise ValueError("Harbor is unavailable")
-        return {"findings":[],"limitations":[],"backend":"docker","config_digest":digest(config),"admitted_compose":compose}
+        return {"findings":[],"limitations":[],"backend":backend,"config_digest":digest(config),"admitted_compose":compose}
     if executor == "structure":
         from .checks import check_task
         result=check_task(path)

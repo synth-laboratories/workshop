@@ -1,2 +1,6 @@
 ./vendor/synth-containers/synth_containers-0.4.3.dev2026091126-py3-none-any.whl
 -e .
+harbor==0.22.0
+daytona==0.210.0
+docker==7.1.0
+toml>=0.10,<1
