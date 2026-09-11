@@ -291,7 +291,7 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 						<dt>Published provider traces</dt><dd>{providerTraceItems.length} in this snapshot · model calls</dd>
 						{providerTracePublications.all_publications_in_event_log === true ? <><dt>Provider trace history</dt><dd>Complete publication history in the event log</dd></> : null}
 						<dt>Native application traces</dt><dd>{nativeAgentItems.length} in this snapshot · application events only</dd>
-						{nativeAgentItems.length > 0 ? <><dt>Native capture source</dt><dd>Process stdout observed after completion; no live or full capture verification</dd><dt>Native trace custody</dt><dd>{nativeAgentItems.map((item) => stringOrNull(record(item).status) ?? "Unknown").join(", ")}</dd></> : null}
+						{nativeAgentItems.length > 0 ? <><dt>Native capture source</dt><dd>{nativeAgentItems.map((item) => record(item).source === "process_stdout_live_observed" ? "Live process stdout observed" : record(item).source === "process_stdout_observed_after_completion" ? "Process stdout observed after completion" : "Source not reported").join("; ")}. Full attempt capture and lossless delivery are not verified</dd><dt>Native trace custody</dt><dd>{nativeAgentItems.map((item) => stringOrNull(record(item).status) ?? "Unknown").join(", ")}</dd></> : null}
 						<dt>Last native ingest</dt><dd>{stringOrNull(nativeEvidence.last_ingested_at) ?? "Unknown"}</dd>
 						<dt>Last observer contact</dt><dd>{stringOrNull(rhodes.lastObservedAt) ?? "Unknown"}</dd>
 						<dt>Replay backlog</dt><dd>{rhodes.hasMore === true ? "Catching up" : rhodes.hasMore === false ? "Drained through source cursor" : "Unknown"}</dd>
