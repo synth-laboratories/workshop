@@ -876,6 +876,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scoped_async_binding_is_not_reused_before_or_after_signout() {
+        use crate::cloud::storage::{Adapter, CloudScopeIdentity, CloudStore, Stream, MIGRATION_CANDIDATE};
+        let dir = tempdir().unwrap();
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = attempts.clone();
+        let runtime = InternRuntime::lazy(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Err(crate::cloud::intern::InternClientError::CloudUnavailable)
+        });
+        let core = CoreRuntime::open_with_intern(dir.path(), runtime).unwrap();
+        let db = core.storage().database().clone();
+        db.transaction(|conn| { conn.execute_batch(MIGRATION_CANDIDATE)?; Ok(()) }).unwrap();
+        let store = CloudStore::open(db.clone()).unwrap();
+        let lease = store.activate_verified(&CloudScopeIdentity {
+            backend_origin: "https://fixture.invalid".into(), backend_id: "backend".into(),
+            account_id: "account".into(), org_id: "org".into(), profile_id: "fixture".into(),
+        }).unwrap();
+        let id = store.create_conversation(&lease, &Stream {
+            adapter: Adapter::InternAsync, external_id: "scoped-singleton".into(),
+        }, "scoped async").unwrap();
+        // Match every legacy selector predicate: ownership must be the reason
+        // this row is rejected, not incidental metadata on today's creator.
+        db.transaction(|conn| {
+            conn.execute("UPDATE sessions SET metadata_json=?1 WHERE id=?2",
+                rusqlite::params![json!({"runtime":"rust-intern"}).to_string(), id])?;
+            Ok(())
+        }).unwrap();
+        for signed_out in [false, true] {
+            if signed_out { store.sign_out().unwrap(); }
+            assert!(existing_async_binding(&core).await.unwrap().is_none());
+            // Public create must proceed to unavailable legacy configuration,
+            // rather than silently returning/adopting the scoped singleton.
+            assert!(create(&core, async_create()).await.is_err());
+            assert_eq!(core.sessions().list(2_000).await.unwrap().len(), 1);
+            assert!(core.is_scoped_cloud_session(&id).await.unwrap());
+        }
+        assert!(attempts.load(Ordering::SeqCst) > 0);
+    }
+
+    #[tokio::test]
+    async fn async_reuse_without_scoped_schema_needs_no_transport() {
+        let dir = tempdir().unwrap();
+        let runtime = InternRuntime::lazy(|| panic!("legacy reuse must not construct transport"));
+        let core = CoreRuntime::open_with_intern(dir.path(), runtime).unwrap();
+        core.sessions().create_or_update(SessionCreate {
+            id: "legacy-async".into(), title: "legacy".into(), kind: SessionKind::Intern,
+            target: RuntimeTarget::InternRuntime { mode: InternMode::Async, binding: None },
+            project_id: None, remote_id: Some("legacy-singleton".into()), codex_thread_id: None,
+            status: SessionStatus::Ready, state_generation: None,
+            metadata: json!({"runtime":"rust-intern"}), source: EventSource::Intern,
+        }).await.unwrap();
+        assert_eq!(existing_async_binding(&core).await.unwrap().unwrap().id, "legacy-async");
+        assert_eq!(create(&core, async_create()).await.unwrap().id, "legacy-async");
+        let installed: bool = core.storage().database().with_conn(|conn| Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='cloud_owned_sessions')",
+            [], |row| row.get(0),
+        )?)).unwrap();
+        assert!(!installed);
+    }
+
+    #[tokio::test]
     async fn repeated_async_create_reuses_the_local_singleton_binding() {
         let mock = MockIntern::start().await;
         let dir = tempdir().unwrap();
