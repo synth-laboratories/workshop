@@ -375,5 +375,9 @@ mod tests {
             .0;
         assert_eq!(replay.cursor_seq, cursor);
         assert_eq!(replay.summary["rhodes"]["cleanupPending"], false);
+        if let Ok(expected) = std::env::var("EI_RHODES_FIXTURE_REFUSAL_CODE") {
+            assert_eq!(replay.summary["rhodes"]["lastLimitRefusal"]["error_code"], expected);
+            assert_eq!(replay.summary["rhodes"]["inferencePending"], false);
+        }
     }
 }
