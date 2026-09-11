@@ -103,6 +103,7 @@ pub(super) fn result_snapshot(remote: &Value) -> Value {
         "sealedTraceAttachments": remote.pointer("/metadata/sealed_trace_attachments"),
         "importedTracePublication": remote.pointer("/metadata/imported_trace_publication"),
         "providerTracePublications": remote.pointer("/metadata/provider_trace_publications"),
+        "nativeAgentPublications": remote.pointer("/metadata/native_agent_publications"),
         "budgetSettlement": remote.pointer("/metadata/budget_settlement"),
     })
 }

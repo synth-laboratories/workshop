@@ -142,6 +142,8 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 	const budgetSettlement = record(rhodesResult.budgetSettlement);
 	const providerTracePublications = record(rhodesResult.providerTracePublications);
 	const providerTraceItems = Array.isArray(providerTracePublications.items) ? providerTracePublications.items : [];
+	const nativeAgentPublications = record(rhodesResult.nativeAgentPublications);
+	const nativeAgentItems = Array.isArray(nativeAgentPublications.items) ? nativeAgentPublications.items : [];
 	const sealedTraceAttachments = Array.isArray(rhodesResult.sealedTraceAttachments) ? rhodesResult.sealedTraceAttachments : [];
 	const acceptedWorkSeconds = numberOrNull(record(rhodesResult.acceptedExecutionLimits).timeout_s);
 	const executionDeadline = stringOrNull(rhodesResult.executionDeadlineAt);
@@ -288,6 +290,8 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 						{importedTracePublication.full_native_capture === false ? <><dt>Provider capture</dt><dd>Not captured by this import</dd></> : null}
 						<dt>Published provider traces</dt><dd>{providerTraceItems.length} in this snapshot · model calls</dd>
 						{providerTracePublications.all_publications_in_event_log === true ? <><dt>Provider trace history</dt><dd>Complete publication history in the event log</dd></> : null}
+						<dt>Native application traces</dt><dd>{nativeAgentItems.length} in this snapshot · application events only</dd>
+						{nativeAgentItems.length > 0 ? <><dt>Native capture source</dt><dd>Process stdout observed after completion; no live or full capture verification</dd><dt>Native trace custody</dt><dd>{nativeAgentItems.map((item) => stringOrNull(record(item).status) ?? "Unknown").join(", ")}</dd></> : null}
 						<dt>Last native ingest</dt><dd>{stringOrNull(nativeEvidence.last_ingested_at) ?? "Unknown"}</dd>
 						<dt>Last observer contact</dt><dd>{stringOrNull(rhodes.lastObservedAt) ?? "Unknown"}</dd>
 						<dt>Replay backlog</dt><dd>{rhodes.hasMore === true ? "Catching up" : rhodes.hasMore === false ? "Drained through source cursor" : "Unknown"}</dd>
