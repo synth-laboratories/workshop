@@ -37,6 +37,7 @@ pub struct CoreRuntime {
     computer_use: Arc<crate::computer_use::service::ComputerUseService>,
     diagnostics: Arc<crate::diagnostics::DiagnosticsService>,
     intern: Arc<InternRuntime>,
+    legacy_authority: Arc<crate::cloud::legacy_authority::LegacyAuthority>,
     scoped_cloud: crate::cloud::scoped_runtime::ScopedCloudRuntime,
     intern_provider: Arc<InternProviderManager>,
     sessions: SessionService,
@@ -259,6 +260,7 @@ impl CoreRuntime {
             computer_use,
             diagnostics,
             intern,
+            legacy_authority: Arc::new(Default::default()),
             scoped_cloud: crate::cloud::scoped_runtime::ScopedCloudRuntime::qualification_gated(),
             intern_provider,
             sessions,
@@ -561,6 +563,29 @@ impl CoreRuntime {
         Ok(())
     }
 
+    pub(crate) fn legacy_authority(&self) -> &crate::cloud::legacy_authority::LegacyAuthority {
+        &self.legacy_authority
+    }
+
+    pub(crate) async fn legacy_creation_client(&self) -> Result<(u64, Arc<crate::cloud::intern::InternClient>)> {
+        let _configuration_guard = self.legacy_authority.provider_gate.read().await;
+        let generation = self.legacy_authority.generation();
+        let client = self.intern.client().await?;
+        self.legacy_authority.ensure(generation)?;
+        Ok((generation, client))
+    }
+
+    pub(crate) async fn legacy_session_client(&self, id: &str) -> Result<(u64, Arc<crate::cloud::intern::InternClient>)> {
+        self.require_legacy_intern_session(id).await?;
+        let (generation, created_with) = self.legacy_authority.session(id)?;
+        let current = self.intern.client().await?;
+        self.legacy_authority.ensure(generation)?;
+        if !Arc::ptr_eq(&current, &created_with) {
+            anyhow::bail!("Intern client changed; ownership verification is required");
+        }
+        Ok((generation, current))
+    }
+
     pub async fn start_intern_provider(
         &self,
         session_id: String,
@@ -568,7 +593,8 @@ impl CoreRuntime {
         runtime_kind: RuntimeKind,
         title: Option<String>,
     ) -> Result<bool> {
-        self.require_legacy_intern_session(&session_id).await?;
+        let _provider_guard = self.legacy_authority.provider_gate.read().await;
+        self.legacy_session_client(&session_id).await?;
         let (committed_tx, mut committed_rx) = tokio::sync::mpsc::channel(128);
         let binding = InternSessionBinding {
             session_id,
@@ -635,6 +661,11 @@ impl CoreRuntime {
             if reconcile_restart {
                 self.reconcile_intern_active_run(&session).await?;
             }
+            // Restart has no volatile creation provenance. Keep history and
+            // reconcile uncertain local receipts, but never reattach authority.
+            if self.legacy_authority.session(&session.id).is_err() {
+                continue;
+            }
             if self
                 .start_intern_provider(session.id, runtime_id, runtime_kind, Some(session.title))
                 .await?
@@ -690,6 +721,20 @@ impl CoreRuntime {
     /// Fence both scoped readers and legacy pollers before credential changes.
     /// Even a persistence failure must leave the old client disabled.
     pub(crate) async fn disable_cloud_runtime(&self) -> Result<()> {
+        self.legacy_authority.invalidate();
+        let _provider_guard = self.lock_legacy_transition_after_invalidation().await;
+        self.disable_cloud_runtime_inner().await
+    }
+
+    async fn lock_legacy_transition_after_invalidation(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
+        let guard = self.legacy_authority.provider_gate.write().await;
+        // A concurrent reader may have captured the old client after the early
+        // invalidation but before this writer queued. Fence that capture too.
+        self.legacy_authority.invalidate();
+        guard
+    }
+
+    async fn disable_cloud_runtime_inner(&self) -> Result<()> {
         let invalidation = self.scoped_cloud.invalidate().await;
         let shutdown = self.intern_provider.shutdown().await;
         self.intern.disable().await;
@@ -700,22 +745,29 @@ impl CoreRuntime {
     /// Rotate the cloud endpoint and credential without leaving pollers on the
     /// previous identity alive. Missing credentials deliberately fail closed.
     pub async fn reload_intern_config(&self) -> Result<()> {
-        self.disable_cloud_runtime().await?;
-        let backend = crate::synth_config::resolve()
-            .map_err(|_| crate::cloud::intern::InternClientError::CloudUnavailable)?;
-        match backend.api_key {
-            Some(api_key) => {
+        self.replace_intern_configuration(|| {
+            let backend = crate::synth_config::resolve()
+                .map_err(|_| crate::cloud::intern::InternClientError::CloudUnavailable)?;
+            Ok(backend.api_key.map(|key| (backend.backend_url, key)))
+        }).await
+    }
+
+    pub(crate) async fn replace_intern_configuration<F>(&self, resolve: F) -> Result<()>
+    where F: FnOnce() -> Result<Option<(String, String)>> {
+        self.legacy_authority.invalidate();
+        let _provider_guard = self.lock_legacy_transition_after_invalidation().await;
+        self.disable_cloud_runtime_inner().await?;
+        match resolve()? {
+            Some((backend_url, api_key)) => {
                 self.intern
                     .reconfigure(
-                        &backend.backend_url,
+                        &backend_url,
                         api_key,
                         crate::limits::INTERN_HTTP_TIMEOUT,
                     )
                     .await
                     .context("reconfigure Rust Intern runtime")?;
-                self.resume_intern_providers_inner(false)
-                    .await
-                    .context("resume Intern providers after reconfiguration")?;
+                // No historical session is admitted by replacement credentials.
                 Ok(())
             }
             None => {
@@ -873,6 +925,38 @@ impl CoreRuntime {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn transition_write_lock_fences_a_capture_after_early_invalidation() {
+        for replace in [false, true] {
+            let dir = tempdir().unwrap();
+            let core = CoreRuntime::open_with_intern(dir.path(), InternRuntime::configured(
+                "https://old.fixture.invalid", "fixture", Duration::from_secs(1),
+            ).unwrap()).unwrap();
+            // Pause the transition between its early invalidation and writer
+            // acquisition, then deterministically admit a competing reader.
+            core.legacy_authority.invalidate();
+            let (generation, old_client) = core.legacy_creation_client().await.unwrap();
+            let (started, observed) = tokio::sync::oneshot::channel();
+            let worker = core.clone();
+            let request = tokio::spawn(async move {
+                worker.legacy_authority.run(generation, || async move {
+                    let _ = started.send(());
+                    std::future::pending::<()>().await
+                }).await
+            });
+            observed.await.unwrap();
+            let guard = core.lock_legacy_transition_after_invalidation().await;
+            core.disable_cloud_runtime_inner().await.unwrap();
+            if replace {
+                core.intern.reconfigure("https://new.fixture.invalid", "replacement", Duration::from_secs(1)).await.unwrap();
+            }
+            drop(guard);
+            assert!(tokio::time::timeout(Duration::from_secs(5), request).await.unwrap().unwrap().is_err());
+            assert!(core.legacy_authority.admit_created("late", generation, old_client).is_err());
+            assert!(core.legacy_authority.session("late").is_err());
+        }
+    }
 
     #[tokio::test]
     async fn legacy_entrypoints_refuse_scoped_sessions_after_signout() {

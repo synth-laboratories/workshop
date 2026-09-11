@@ -1,5 +1,48 @@
 # Workshop cloud foundations — September 11, 2026
 
+## Approved historical account-transition policy after ce638ee2
+
+The parent relayed explicit user approval to preserve historical legacy history
+but block remote operations after account changes until ownership is verified,
+without silently rebinding. This supersedes the earlier pending policy decision.
+
+Historical rows now have no admission after restart or client replacement. The
+list/history remains available; send, control, provider start/resume, and legacy
+Async reuse require volatile provenance from a successful creation during the
+current uninterrupted client epoch. Exact client identity is checked, and no
+credential hash, metadata label, remote ID, or generic account observation grants
+historical ownership. There is no historical rebind entrypoint.
+
+Replacement invalidates admission and pending operations before persistence or
+configuration resolution, including missing/invalid credentials and persistence
+failure. Provider startup is serialized with replacement. Creation captures its
+client and epoch together and checks the epoch before admitting a response.
+Superseded creation remains unknown; interrupted commands retain accepted,
+reconciling receipts rather than fabricated remote failure. Restart still
+reconciles uncertain local receipts without restarting historical pollers.
+Same-epoch fresh creation/send and repeated Async reuse remain supported.
+
+New regressions cover successful, missing, invalid, resolver-failed and
+persistence-failed replacement; both historical Sync and Async operations;
+interruption during creation/send/control; late-admission refusal; Local journal
+independence; and history/receipt preservation across restart. The prior
+missing-schema historical reuse fixture now correctly expects history-only
+behavior under the newly approved policy. No activation, live migration,
+provider run, Keychain use, or deployment is part of this change.
+
+Integration review WE-01 identified a reader between early invalidation and
+writer acquisition. Both disable and replacement now invalidate again under the
+shared write lock. A deterministic regression pauses at that boundary, captures
+the old client with the intermediate epoch, starts a pending operation, and
+requires cancellation and late-admission refusal once the writer proceeds.
+
+Final native regressions after WE-01: 6 CoreRuntime, 13 Intern API, and 76 cloud
+tests pass. Current logs are `legacy-transition-core-reviewed.log`,
+`legacy-transition-api-reviewed.log`, and `legacy-transition-cloud-reviewed.log`
+under `artifacts/cloud-foundations/`. Earlier transition logs predate WE-01 and
+are retained only as historical build records.
+The non-test library check also passes (`legacy-transition-library-reviewed.log`).
+
 ## Direct Async reuse regression after 3870eff5
 
 The source-reviewed reuse exclusion now has direct coverage. A scoped Async row

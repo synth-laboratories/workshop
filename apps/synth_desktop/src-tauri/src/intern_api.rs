@@ -147,7 +147,7 @@ pub async fn create(
             return Ok(existing.into());
         }
     }
-    let client = core.intern().client().await?;
+    let (generation, client) = core.legacy_creation_client().await?;
     let session_id = format!("ses_{}", Uuid::new_v4().simple());
     let title = request.title.unwrap_or_else(|| {
         if request.target.mode == "sync" {
@@ -177,14 +177,14 @@ pub async fn create(
             codex_thread_id: None,
             status: SessionStatus::Created,
             state_generation: None,
-            metadata: json!({"runtime": "rust-intern", "objective": objective}),
+            metadata: json!({"runtime": "rust-intern", "objective": objective, "creationOutcome":"unknown"}),
             source: EventSource::Intern,
         })
         .await?;
     core.broadcast_committed(created.event);
 
     let idempotency = format!("desktop-create-{session_id}");
-    let remote = if request.target.mode == "sync" {
+    let remote = core.legacy_authority().run(generation, || async { if request.target.mode == "sync" {
         client
             .create_sync(&SyncCreateRequest::desktop(
                 objective.clone(),
@@ -200,10 +200,11 @@ pub async fn create(
                 binding_request.into(),
             ))
             .await
-    };
+    }}).await?;
     let projection = match remote {
         Ok(projection) => projection,
         Err(error) => {
+            if error.is_auth_failure() { let _ = core.disable_cloud_runtime().await; }
             let failed = core
                 .sessions()
                 .transition(
@@ -246,6 +247,7 @@ pub async fn create(
         })
         .await?;
     core.broadcast_committed(ready.event);
+    core.legacy_authority().admit_created(&ready.value.id, generation, client)?;
     if let Err(error) = core
         .start_intern_provider(
             ready.value.id.clone(),
@@ -284,6 +286,7 @@ async fn existing_async_binding(core: &CoreRuntime) -> Result<Option<SessionReco
         });
     for session in candidates {
         if !core.is_scoped_cloud_session(&session.id).await? {
+            core.legacy_session_client(&session.id).await?;
             return Ok(Some(session));
         }
     }
@@ -306,7 +309,7 @@ pub async fn send(
     let (mode, runtime_id) = intern_identity(&session)?;
     // Configuration is checked before accepting durable work. Network/HTTP
     // failures happen after acceptance and therefore receive failure receipts.
-    let client = core.intern().client().await?;
+    let (generation, client) = core.legacy_session_client(&session.id).await?;
     let command_id = format!("cmd_{}", Uuid::new_v4().simple());
     let run_id = format!("run_{}", Uuid::new_v4().simple());
     let run = core
@@ -335,7 +338,7 @@ pub async fn send(
         .await?;
     core.broadcast_committed(accepted.event);
     let expected = u64::try_from(session.state_generation.unwrap_or(0)).unwrap_or(0);
-    let remote = if mode == "sync" {
+    let remote = core.legacy_authority().run(generation, || async { if mode == "sync" {
         client
             .command_sync(
                 &runtime_id,
@@ -357,6 +360,13 @@ pub async fn send(
                 Map::new(),
             ))
             .await
+    }}).await;
+    let remote = match remote {
+        Ok(remote) => remote,
+        Err(error) => {
+            mark_superseded_command(core, &command_id, Some(&run_id)).await?;
+            return Err(error);
+        }
     };
     finish_command(core, command_id, run_id.clone(), remote).await?;
     Ok(InternSendResult { run_id })
@@ -373,7 +383,7 @@ pub async fn control(
         .await?
         .context("Intern session not found")?;
     let (mode, runtime_id) = intern_identity(&session)?;
-    let client = core.intern().client().await?;
+    let (generation, client) = core.legacy_session_client(&session.id).await?;
     let supported = if mode == "sync" {
         matches!(
             request.kind.as_str(),
@@ -402,7 +412,7 @@ pub async fn control(
         .await?;
     core.broadcast_committed(accepted.event);
     let expected = u64::try_from(session.state_generation.unwrap_or(0)).unwrap_or(0);
-    let remote = if mode == "sync" {
+    let remote = core.legacy_authority().run(generation, || async { if mode == "sync" {
         let kind = match request.kind.as_str() {
             "pause" => SyncCommandKind::Pause,
             "resume" => SyncCommandKind::Resume,
@@ -459,10 +469,18 @@ pub async fn control(
                 payload,
             })
             .await
+    }}).await;
+    let remote = match remote {
+        Ok(remote) => remote,
+        Err(error) => {
+            mark_superseded_command(core, &command_id, None).await?;
+            return Err(error);
+        }
     };
     let receipt = match remote {
         Ok(receipt) => receipt,
         Err(error) => {
+            if error.is_auth_failure() { let _ = core.disable_cloud_runtime().await; }
             let resolved = core
                 .runs()
                 .resolve_command(
@@ -488,6 +506,18 @@ pub async fn control(
     core.broadcast_committed(resolved.event);
     let accepted = resolved.value.status == "completed";
     Ok(InternControlResult { accepted, receipt })
+}
+
+async fn mark_superseded_command(core: &CoreRuntime, command_id: &str, run_id: Option<&str>) -> Result<()> {
+    let receipt = core.runs().mark_remote_command_reconciling(command_id.to_owned()).await?;
+    core.broadcast_committed(receipt.event);
+    if let Some(run_id) = run_id {
+        let run = core.runs().transition(run_id.to_owned(), RunStatus::Interrupted,
+            Some(json!({"reason":"intern_authority_changed", "remoteExecutionState":"reconciling"})),
+            EventSource::Intern).await?;
+        core.broadcast_committed(run.event);
+    }
+    Ok(())
 }
 
 async fn fail_session(core: &CoreRuntime, session_id: String, error: String) -> Result<()> {
@@ -548,6 +578,7 @@ async fn finish_command(
             }
         }
         Err(error) => {
+            if error.is_auth_failure() { let _ = core.disable_cloud_runtime().await; }
             let resolved = core
                 .runs()
                 .resolve_command(
@@ -633,6 +664,15 @@ mod tests {
         fail_commands: Arc<AtomicBool>,
         command_outcome: Arc<AtomicU8>,
         task: JoinHandle<()>,
+        requests: Arc<MockRequests>,
+    }
+
+    #[derive(Default)]
+    struct MockRequests {
+        posts: std::sync::atomic::AtomicUsize,
+        stall: AtomicBool,
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
     }
 
     impl MockIntern {
@@ -643,15 +683,19 @@ mod tests {
             let failure = fail_commands.clone();
             let command_outcome = Arc::new(AtomicU8::new(0));
             let outcome = command_outcome.clone();
+            let requests = Arc::new(MockRequests::default());
+            let observed_requests = requests.clone();
             let task = tokio::spawn(async move {
                 while let Ok((stream, _)) = listener.accept().await {
                     let failure = failure.clone();
                     let outcome = outcome.clone();
+                    let requests = observed_requests.clone();
                     tokio::spawn(async move {
                         let _ = respond(
                             stream,
                             failure.load(Ordering::SeqCst),
                             outcome.load(Ordering::SeqCst),
+                            requests,
                         )
                         .await;
                     });
@@ -662,6 +706,7 @@ mod tests {
                 fail_commands,
                 command_outcome,
                 task,
+                requests,
             }
         }
 
@@ -680,6 +725,7 @@ mod tests {
         mut stream: TcpStream,
         fail_commands: bool,
         command_outcome: u8,
+        requests: Arc<MockRequests>,
     ) -> std::io::Result<()> {
         let mut bytes = Vec::new();
         let mut chunk = [0_u8; 4096];
@@ -717,6 +763,13 @@ mod tests {
         let mut parts = request_line.split_whitespace();
         let method = parts.next().unwrap_or_default();
         let path = parts.next().unwrap_or_default();
+        if method == "POST" {
+            requests.posts.fetch_add(1, Ordering::SeqCst);
+            if requests.stall.load(Ordering::SeqCst) {
+                requests.started.notify_one();
+                requests.release.notified().await;
+            }
+        }
         let request_body =
             serde_json::from_slice::<Value>(&bytes[header_end..]).unwrap_or_else(|_| json!({}));
 
@@ -876,6 +929,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn account_replacement_and_failures_preserve_history_without_adopting_it() {
+        use crate::cloud::storage::{CloudStore, MIGRATION_CANDIDATE};
+        for failure in ["none", "missing", "invalid", "resolve", "persistence"] {
+            let old = MockIntern::start().await;
+            let replacement = MockIntern::start().await;
+            let dir = tempdir().unwrap();
+            let core = CoreRuntime::open_with_intern(dir.path(), old.runtime()).unwrap();
+            let sync = create(&core, sync_create()).await.unwrap();
+            let asynchronous = create(&core, async_create()).await.unwrap();
+            let old_posts = old.requests.posts.load(Ordering::SeqCst);
+            if failure == "persistence" {
+                let db = core.storage().database().clone();
+                db.transaction(|conn| { conn.execute_batch(MIGRATION_CANDIDATE)?; Ok(()) }).unwrap();
+                core.scoped_cloud().install_fixture(CloudStore::open(db.clone()).unwrap()).await.unwrap();
+                db.transaction(|conn| { conn.execute_batch("CREATE TRIGGER fail_reset BEFORE UPDATE ON cloud_auth_state BEGIN SELECT RAISE(ABORT, 'fixture'); END")?; Ok(()) }).unwrap();
+            }
+            let result = core.replace_intern_configuration(|| match failure {
+                "missing" => Ok(None),
+                "invalid" => Ok(Some(("not a URL".into(), "fixture-new".into()))),
+                "resolve" => anyhow::bail!("fixture resolver failure"),
+                _ => Ok(Some((replacement.url.clone(), "fixture-new".into()))),
+            }).await;
+            assert_eq!(result.is_err(), matches!(failure, "invalid" | "resolve" | "persistence"));
+            for id in [&sync.id, &asynchronous.id] {
+                assert!(send(&core, InternSessionSendRequest { session_id: id.clone(), body: "blocked".into() })
+                    .await.unwrap_err().to_string().contains("ownership verification"));
+                assert!(control(&core, InternSessionControlRequest { session_id: id.clone(), kind: "close".into(), payload: Map::new() })
+                    .await.unwrap_err().to_string().contains("ownership verification"));
+            }
+            assert!(create(&core, async_create()).await.unwrap_err().to_string().contains("ownership verification"));
+            assert_eq!(core.resume_intern_providers().await.unwrap(), 0);
+            assert_eq!(list(&core).await.unwrap().len(), 2);
+            assert_eq!(old.requests.posts.load(Ordering::SeqCst), old_posts);
+            assert_eq!(replacement.requests.posts.load(Ordering::SeqCst), 0);
+            core.append_and_broadcast(crate::storage::EventAppend::system("local.after_replacement", json!({"ok":true}))).await.unwrap();
+            if failure == "none" {
+                let fresh = create(&core, sync_create()).await.unwrap();
+                send(&core, InternSessionSendRequest { session_id: fresh.id, body: "newly created".into() }).await.unwrap();
+                core.stop_intern_providers_for_test().await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn replacement_during_creation_never_admits_late_response() {
+        let mock = MockIntern::start().await;
+        let dir = tempdir().unwrap();
+        let core = CoreRuntime::open_with_intern(dir.path(), mock.runtime()).unwrap();
+        mock.requests.stall.store(true, Ordering::SeqCst);
+        let worker = core.clone();
+        let creation = tokio::spawn(async move { create(&worker, sync_create()).await });
+        tokio::time::timeout(Duration::from_secs(5), mock.requests.started.notified()).await.unwrap();
+        core.replace_intern_configuration(|| Ok(None)).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(5), creation).await.unwrap().unwrap().is_err());
+        mock.requests.release.notify_waiters();
+        let rows = core.sessions().list(2_000).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].remote_id.is_none());
+        assert_eq!(rows[0].metadata["creationOutcome"], "unknown");
+        assert!(core.legacy_authority().session(&rows[0].id).is_err());
+        assert_eq!(core.resume_intern_providers().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn replacement_during_send_or_control_retains_unknown_receipt() {
+        for controlling in [false, true] {
+            let mock = MockIntern::start().await;
+            let dir = tempdir().unwrap();
+            let core = CoreRuntime::open_with_intern(dir.path(), mock.runtime()).unwrap();
+            let session = create(&core, async_create()).await.unwrap();
+            core.stop_intern_providers_for_test().await.unwrap();
+            mock.requests.stall.store(true, Ordering::SeqCst);
+            let worker = core.clone();
+            let id = session.id.clone();
+            let operation = tokio::spawn(async move {
+                if controlling {
+                    control(&worker, InternSessionControlRequest { session_id: id, kind: "close".into(), payload: Map::new() }).await.map(|_| ())
+                } else {
+                    send(&worker, InternSessionSendRequest { session_id: id, body: "pending".into() }).await.map(|_| ())
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(5), mock.requests.started.notified()).await.unwrap();
+            core.replace_intern_configuration(|| Ok(None)).await.unwrap();
+            assert!(tokio::time::timeout(Duration::from_secs(5), operation).await.unwrap().unwrap().is_err());
+            mock.requests.release.notify_waiters();
+            let command: String = core.storage().database().with_conn(|conn| Ok(conn.query_row(
+                "SELECT command_id FROM command_receipts WHERE session_id=?1", [&session.id], |row| row.get(0),
+            )?)).unwrap();
+            let receipt = core.runs().command_receipt(command).await.unwrap().unwrap();
+            assert_eq!(receipt.status, "accepted");
+            assert_eq!(receipt.response.unwrap()["remoteExecutionState"], "reconciling");
+            assert!(core.legacy_authority().session(&session.id).is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn scoped_async_binding_is_not_reused_before_or_after_signout() {
         use crate::cloud::storage::{Adapter, CloudScopeIdentity, CloudStore, Stream, MIGRATION_CANDIDATE};
         let dir = tempdir().unwrap();
@@ -916,7 +1065,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_reuse_without_scoped_schema_needs_no_transport() {
+    async fn historical_async_without_scoped_schema_is_preserved_but_not_reused() {
         let dir = tempdir().unwrap();
         let runtime = InternRuntime::lazy(|| panic!("legacy reuse must not construct transport"));
         let core = CoreRuntime::open_with_intern(dir.path(), runtime).unwrap();
@@ -927,8 +1076,9 @@ mod tests {
             status: SessionStatus::Ready, state_generation: None,
             metadata: json!({"runtime":"rust-intern"}), source: EventSource::Intern,
         }).await.unwrap();
-        assert_eq!(existing_async_binding(&core).await.unwrap().unwrap().id, "legacy-async");
-        assert_eq!(create(&core, async_create()).await.unwrap().id, "legacy-async");
+        assert!(existing_async_binding(&core).await.unwrap_err().to_string().contains("ownership verification"));
+        assert!(create(&core, async_create()).await.unwrap_err().to_string().contains("ownership verification"));
+        assert_eq!(list(&core).await.unwrap()[0].id, "legacy-async");
         let installed: bool = core.storage().database().with_conn(|conn| Ok(conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='cloud_owned_sessions')",
             [], |row| row.get(0),
@@ -1097,7 +1247,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restart_lists_and_reattaches_durable_session() {
+    async fn restart_preserves_history_and_unknown_receipt_without_reattachment() {
         let mock = MockIntern::start().await;
         let dir = tempdir().unwrap();
         let first = CoreRuntime::open_with_intern(dir.path(), mock.runtime()).unwrap();
@@ -1139,7 +1289,10 @@ mod tests {
         let restored = list(&restarted).await.unwrap();
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].id, created.id);
-        assert_eq!(restarted.resume_intern_providers().await.unwrap(), 1);
+        assert_eq!(restarted.resume_intern_providers().await.unwrap(), 0);
+        assert!(send(&restarted, InternSessionSendRequest {
+            session_id: created.id.clone(), body: "blocked after restart".into(),
+        }).await.unwrap_err().to_string().contains("ownership verification"));
         assert_eq!(
             restarted.runs().get(run_id).await.unwrap().unwrap().status,
             "interrupted"
