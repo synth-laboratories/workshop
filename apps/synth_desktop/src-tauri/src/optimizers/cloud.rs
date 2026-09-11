@@ -15,9 +15,9 @@ use std::path::Path;
 
 #[derive(Clone)]
 pub struct CloudOptimizerClient {
-    client: Client,
-    base_url: String,
-    api_key: String,
+    pub(super) client: Client,
+    pub(super) base_url: String,
+    pub(super) api_key: String,
 }
 
 impl CloudOptimizerClient {

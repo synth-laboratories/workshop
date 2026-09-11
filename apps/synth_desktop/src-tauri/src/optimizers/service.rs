@@ -321,6 +321,7 @@ pub struct OptimizerService {
     journal: EventJournal,
     visuals: VisualRegistry,
     local_recipes: Arc<Mutex<HashMap<String, super::CancelSignal>>>,
+    rhodes_mirrors: Arc<Mutex<std::collections::HashSet<String>>>,
     events_tx: broadcast::Sender<AppEvent>,
     manager: Arc<super::OptimizerManager>,
     /// Attached once by the composition root. Optimizer lifecycle failures are
@@ -539,6 +540,7 @@ impl OptimizerService {
             journal,
             visuals,
             local_recipes: Arc::new(Mutex::new(HashMap::new())),
+            rhodes_mirrors: Arc::new(Mutex::new(std::collections::HashSet::new())),
             events_tx,
             manager,
             diagnostics: Arc::new(std::sync::OnceLock::new()),
@@ -1141,6 +1143,7 @@ impl OptimizerService {
 
     pub async fn restore_hosted_sft_mirrors(&self) {
         super::hosted_sft::restore_hosted_mirrors(self).await;
+        self.restore_rhodes_mirrors().await;
         super::mlx_sft::restore_mirrors(self).await;
         super::cispo::restore_mirrors(self).await;
     }
@@ -1965,6 +1968,31 @@ impl OptimizerService {
 
     pub async fn refresh(&self, optimizer_run_id: String) -> Result<OptimizerRunRecord> {
         if let Ok(run) = self.get(optimizer_run_id.clone()).await {
+            if run.source == "rhodes" {
+                let client = super::cloud::CloudOptimizerClient::from_config()?;
+                let pool = run
+                    .summary
+                    .pointer("/rhodes/poolId")
+                    .and_then(Value::as_str)
+                    .context("Rhodes pool binding missing")?;
+                let rollout = run
+                    .summary
+                    .pointer("/rhodes/rolloutId")
+                    .and_then(Value::as_str)
+                    .context("Rhodes rollout binding missing")?;
+                if super::rhodes_eval::mirror_id(client.rhodes_endpoint(), pool, rollout) != run.id
+                {
+                    bail!("Rhodes backend changed; explicitly attach to the intended backend");
+                }
+                return Ok(self
+                    .reconcile_rhodes(super::rhodes_eval::RhodesEvalAttachRequest {
+                        pool_id: pool.into(),
+                        rollout_id: rollout.into(),
+                        open_visual: false,
+                    })
+                    .await?
+                    .0);
+            }
             if run.source == "cloud" {
                 let (run, _) = self
                     .reconcile_cloud(super::models::OptimizerReconcileRequest {
@@ -3235,6 +3263,290 @@ impl OptimizerService {
             return Ok((run, event.or(visual_event)));
         }
         Ok((run, event))
+    }
+
+    /// Attach to an already accepted evaluation. No compute admission or submit.
+    pub async fn reconcile_rhodes(
+        &self,
+        request: super::rhodes_eval::RhodesEvalAttachRequest,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let client = super::cloud::CloudOptimizerClient::from_config()?;
+        let id = super::rhodes_eval::mirror_id(
+            client.rhodes_endpoint(),
+            &request.pool_id,
+            &request.rollout_id,
+        );
+        let result = self.reconcile_rhodes_page(&client, &request, &id).await?;
+        if request.open_visual {
+            self.open_visual(id.clone()).await?;
+        }
+        self.start_rhodes_observer(request, id.clone()).await;
+        Ok((self.get(id).await?, result.1))
+    }
+
+    pub(super) async fn reconcile_rhodes_page(
+        &self,
+        client: &super::cloud::CloudOptimizerClient,
+        request: &super::rhodes_eval::RhodesEvalAttachRequest,
+        id: &str,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let remote = client.rhodes_run(request).await?;
+        if remote.get("pool_id").and_then(Value::as_str) != Some(request.pool_id.as_str())
+            || remote
+                .get("rollout_id")
+                .or_else(|| remote.get("id"))
+                .and_then(Value::as_str)
+                != Some(request.rollout_id.as_str())
+        {
+            bail!("Rhodes rollout identity mismatch");
+        }
+        let now = Utc::now().to_rfc3339();
+        let seed = OptimizerRunRecord {
+            schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
+            id: id.into(),
+            algorithm_id: "eval".into(),
+            algorithm_version: None,
+            status: "queued".into(),
+            source: "rhodes".into(),
+            objective: Some(format!("Rhodes evaluation {}", request.rollout_id)),
+            project_ref: None,
+            session_ref: None,
+            created_at: now,
+            started_at: None,
+            finished_at: None,
+            cursor_seq: 0,
+            capabilities: OptimizerCapabilities {
+                stream_events: true,
+                state_slices: true,
+                ..Default::default()
+            },
+            execution_bindings: vec![],
+            input_refs: vec![],
+            output_refs: vec![],
+            visual_refs: vec![],
+            summary: json!({"rhodes":{"backendUrl":client.rhodes_endpoint(),"poolId":request.pool_id,"rolloutId":request.rollout_id,"sourceSequence":0,"cleanupPending":null,"drained":false}}),
+            usage: OptimizerUsageSummary::default(),
+            error: None,
+        };
+        let run = self
+            .db
+            .clone()
+            .run_transaction(move |conn| {
+                let exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM optimizer_runs WHERE id=?1)",
+                    params![seed.id],
+                    |row| row.get(0),
+                )?;
+                if exists {
+                    load_run(conn, &seed.id)
+                } else {
+                    persist_admission_not_required_run(conn, &seed, "rhodes-attach")?;
+                    upsert_cursor(conn, &seed.id, 0, &Utc::now().to_rfc3339())?;
+                    Ok(seed)
+                }
+            })
+            .await?;
+        let after = run
+            .summary
+            .pointer("/rhodes/sourceSequence")
+            .and_then(Value::as_u64)
+            .context("Rhodes mirror source cursor missing")?;
+        let page = client.rhodes_page(request, after).await?;
+        // Refresh the result after a terminal page so a completion between the
+        // first read and replay cannot leave a drained mirror with stale results.
+        let remote = if matches!(page.status.as_str(), "completed" | "failed" | "cancelled") {
+            client.rhodes_run(request).await?
+        } else {
+            remote
+        };
+        let drained = page.drained();
+        let drafts = page
+            .events
+            .into_iter()
+            .map(super::rhodes_eval::draft)
+            .collect::<Result<Vec<_>>>()?;
+        let id = id.to_string();
+        let delivery_id = id.clone();
+        let frame_store = self.frame_store.clone();
+        let result=self.db.clone().run_transaction(move |conn| {
+            let mut run=load_run(conn,&id)?;
+            if run.summary.pointer("/rhodes/sourceSequence").and_then(Value::as_u64)!=Some(after) {
+                bail!("Rhodes mirror advanced concurrently; resume from durable cursor");
+            }
+            let sealed_at=Utc::now().to_rfc3339();
+            let mut summary=run.summary.clone();
+            let rhodes=summary.get_mut("rhodes").and_then(Value::as_object_mut).context("Rhodes mirror binding missing")?;
+            rhodes.insert("sourceSequence".into(),json!(page.next_sequence));
+            rhodes.insert("cleanupPending".into(),json!(page.cleanup_pending));
+            rhodes.insert("publicationPending".into(),json!(page.publication_pending));
+            rhodes.insert("drained".into(),json!(drained));
+            rhodes.insert("hasMore".into(),json!(page.has_more));
+            rhodes.insert("observerError".into(),Value::Null);
+            // A named run-read snapshot is not the replay cursor authority.
+            rhodes.insert("resultSnapshot".into(),json!({"score":remote.get("score"),"summary":remote.get("summary"),"limits":remote.get("limits"),"usage":remote.get("usage"),"artifacts":remote.get("artifacts"),"traceCorrelationId":remote.get("trace_correlation_id"),"resultPublication":remote.pointer("/metadata/result_publication")}));
+            let terminal = super::kernel::persist::load_state(conn, &id)?
+                .and_then(|state| state.terminal.map(|terminal| terminal.final_sequence));
+            if terminal.is_some() && page.status != run.status {
+                bail!("Rhodes changed a sealed terminal status");
+            }
+            let mut drafts=drafts;
+            if let Some(sequence) = terminal {
+                for draft in &mut drafts {
+                    draft.event_type = "optimizer.evidence.amended".into();
+                    draft.delta.insert("terminalSequence".into(), json!(sequence));
+                }
+            }
+            if summary!=run.summary || page.status!=run.status {
+                let kind=if terminal.is_some() { "optimizer.evidence.amended" } else if page.status!=run.status { match page.status.as_str() {
+                    "running"=>"optimizer.run.started", "completed"=>"optimizer.run.completed",
+                    "failed"=>"optimizer.run.failed", "cancelled"=>"optimizer.run.cancelled",
+                    _=>"eval.rhodes.observation",
+                }} else {"eval.rhodes.observation"};
+                drafts.push(OptimizerEventDraft::new(kind,"eval")
+                    .delta(terminal.map(|sequence| Map::from_iter([("terminalSequence".into(), json!(sequence))])).unwrap_or_default())
+                    .snapshot(Map::from_iter([("summary".into(),summary.clone())]))
+                    .raw(json!({"source":"rhodes.replay-page","source_sequence":page.next_sequence,"status":page.status,"cleanup_pending":page.cleanup_pending})));
+            }
+            let mut next=run.cursor_seq.max(max_event_sequence(conn,&id)?);
+            let mut events=Vec::new();
+            for draft in drafts { next+=1; events.push(draft.seal(&id,next,&sealed_at)); }
+            let event=if events.is_empty() { None } else {
+                let committed=commit_validated_events(conn,&frame_store,run,events,SequenceContract::ServiceAllocated)?;
+                run=committed.0; committed.1
+            };
+            run.status=page.status.clone();
+            run.summary=summary;
+            if matches!(page.status.as_str(),"completed"|"failed"|"cancelled") && run.finished_at.is_none() {
+                run.finished_at=Some(sealed_at);
+            }
+            upsert_run(conn,&run)?;
+            Ok((run,event))
+        }).await?;
+        self.sweep_projection_outbox(Some(delivery_id), result.1.as_ref())
+            .await?;
+        Ok(result)
+    }
+
+    async fn start_rhodes_observer(
+        &self,
+        request: super::rhodes_eval::RhodesEvalAttachRequest,
+        id: String,
+    ) {
+        let mut active = self.rhodes_mirrors.lock().await;
+        if active.contains(&id) {
+            return;
+        }
+        if active.len() >= 64 {
+            drop(active);
+            if let Err(error) = self
+                .patch_run(id, |run| {
+                    run.summary["rhodes"]["observerError"] =
+                        json!("64 active mirrors reached; reconcile later to resume observation");
+                    Ok(())
+                })
+                .await {
+                crate::platform::logging::report("optimizers", "rhodes-observer-capacity", error.to_string());
+            }
+            return;
+        }
+        active.insert(id.clone());
+        drop(active);
+        let service = self.clone();
+        tokio::spawn(async move {
+            let result:Result<()>=async {
+                let client=super::cloud::CloudOptimizerClient::from_config()?;
+                let bound=super::rhodes_eval::mirror_id(client.rhodes_endpoint(),&request.pool_id,&request.rollout_id);
+                if bound!=id { bail!("Rhodes backend changed; attach explicitly to the new backend"); }
+                let mut failures=0;
+                loop {
+                    let run=service.get(id.clone()).await?;
+                    if run.summary.pointer("/rhodes/drained").and_then(Value::as_bool)==Some(true) { return Ok(()); }
+                    match service.reconcile_rhodes_page(&client,&request,&id).await {
+                        Ok(_) => failures=0,
+                        Err(error) => {
+                            failures+=1;
+                            service.patch_run(id.clone(),move |run| {
+                                run.summary["rhodes"]["observerError"]=json!(error.to_string()); Ok(())
+                            }).await?;
+                            if failures>=10 { bail!("Rhodes observer paused after ten failed reads; reconcile to resume"); }
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(if failures>0 {5} else {1})).await;
+                }
+            }.await;
+            if let Err(error) = result {
+                let message = error.to_string();
+                crate::platform::logging::report(
+                    "optimizers",
+                    "rhodes-observer",
+                    message.clone(),
+                );
+                if let Err(persist_error) = service.patch_run(id.clone(), move |run| {
+                    run.summary["rhodes"]["observerError"] = json!(message);
+                    Ok(())
+                }).await {
+                    crate::platform::logging::report("optimizers", "rhodes-observer-error-persist", persist_error.to_string());
+                }
+            }
+            service.rhodes_mirrors.lock().await.remove(&id);
+        });
+    }
+
+    pub async fn restore_rhodes_mirrors(&self) {
+        let mut after = String::new();
+        loop {
+            let cursor = after.clone();
+            let rows = self.db.clone().run(move |conn| {
+                let mut statement = conn.prepare("SELECT payload_json FROM optimizer_runs WHERE source='rhodes' AND id > ?1 ORDER BY id LIMIT 200")?;
+                let values = statement.query_map(params![cursor], |row| row.get::<_, String>(0))?;
+                let mut runs = Vec::new();
+                for value in values { runs.push(serde_json::from_str::<OptimizerRunRecord>(&value?)?); }
+                Ok(runs)
+            }).await;
+            let rows = match rows {
+                Ok(rows) => rows,
+                Err(error) => {
+                    crate::platform::logging::report(
+                        "optimizers",
+                        "rhodes-restore",
+                        error.to_string(),
+                    );
+                    return;
+                }
+            };
+            if rows.is_empty() {
+                return;
+            }
+            for run in rows {
+                after = run.id.clone();
+                if run
+                    .summary
+                    .pointer("/rhodes/drained")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                {
+                    continue;
+                }
+                if let (Some(pool), Some(rollout)) = (
+                    run.summary
+                        .pointer("/rhodes/poolId")
+                        .and_then(Value::as_str),
+                    run.summary
+                        .pointer("/rhodes/rolloutId")
+                        .and_then(Value::as_str),
+                ) {
+                    self.start_rhodes_observer(
+                        super::rhodes_eval::RhodesEvalAttachRequest {
+                            pool_id: pool.into(),
+                            rollout_id: rollout.into(),
+                            open_visual: false,
+                        },
+                        run.id,
+                    )
+                    .await;
+                }
+            }
+        }
     }
 
     /// Mirror + backfill a hosted Synth Cloud run (GEPA or optimizers-beta GELO).

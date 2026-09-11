@@ -36,6 +36,8 @@ pub mod models;
 mod normalize;
 mod recipes;
 mod results;
+mod rhodes_eval;
+pub use rhodes_eval::RhodesEvalAttachRequest;
 mod service;
 mod sft_client;
 mod sft_recipes;

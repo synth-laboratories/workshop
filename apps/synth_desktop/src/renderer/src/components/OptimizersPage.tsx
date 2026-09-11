@@ -840,7 +840,9 @@ export function OptimizersPage({
 			? (selected.executionBindings ?? []).map((binding) => binding.label ?? binding.kind).join(" · ")
 			: selected.source === "hosted"
 				? "Hosted service"
-				: selected.source === "cloud"
+				: selected.source === "rhodes"
+					? "Rhodes managed"
+					: selected.source === "cloud"
 					? "Cloud managed"
 					: "Local process"
 		: null;

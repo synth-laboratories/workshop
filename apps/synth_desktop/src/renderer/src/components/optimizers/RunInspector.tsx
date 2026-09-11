@@ -128,7 +128,15 @@ function trialRowsFromSlice(slice: unknown): TrialRow[] {
 			|| left.id.localeCompare(right.id));
 }
 
+function record(value: unknown): Record<string, unknown> {
+	return value != null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
 export function RunInspector({ run, executionLabel, children }: Props) {
+	const rhodes = run.source === "rhodes" ? record(record(run.summary).rhodes) : null;
+	const rhodesResult = record(rhodes?.resultSnapshot);
+	const rhodesPublication = record(record(rhodesResult.summary).trace_publication);
+
 	const [view, setView] = useState<OptimizerRunViewV2 | null>(null);
 	const [viewError, setViewError] = useState<string | null>(null);
 	const [trials, setTrials] = useState<TrialRow[] | null>(null);
@@ -245,6 +253,21 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 				<dt>Finished</dt><dd>{formatWhen(run.finishedAt)}</dd>
 				{header ? <><dt>Spec digest</dt><dd><code className="optimizer-inspector-digest">{header.specDigest}</code></dd></> : null}
 			</dl>
+			{rhodes ? (
+				<section className="optimizer-evidence-note" data-testid="rhodes-evaluation-status">
+					<h3>Rhodes evaluation</h3>
+					<dl>
+						<dt>Rollout</dt><dd>{stringOrNull(rhodes.rolloutId) ?? "—"}</dd>
+						<dt>Score</dt><dd>{numberOrNull(rhodesResult.score) ?? "—"}</dd>
+						<dt>Cleanup</dt><dd>{rhodes.cleanupPending === true ? "Pending confirmation" : rhodes.cleanupPending === false ? "Confirmed" : "Unknown"}</dd>
+						<dt>Trace publication</dt><dd>{stringOrNull(rhodesPublication.status) ?? "Unknown"}</dd>
+						<dt>Result publication</dt><dd>{stringOrNull(record(rhodesResult.resultPublication).status) ?? "Unknown"}</dd>
+						<dt>Source cursor</dt><dd>{numberOrNull(rhodes.sourceSequence) ?? "—"}</dd>
+						<dt>Limits</dt><dd>{Object.entries(record(rhodesResult.limits)).map(([key, value]) => `${key}: ${String(value)}`).join(" · ") || "—"}</dd>
+					</dl>
+					{stringOrNull(rhodes.observerError) ? <p role="status">{stringOrNull(rhodes.observerError)}</p> : null}
+				</section>
+			) : null}
 			{viewError ? (
 				<p className="optimizer-inspector-view-error" data-testid="optimizer-view-error">
 					Kernel view unavailable · {viewError}

@@ -4351,6 +4351,11 @@ pub(crate) async fn dispatch_optimizer(
             let (run, event) = optimizers.import_local(request).await?;
             Ok(json!({ "run": run, "event": event }))
         }
+        ("POST", "/v1/optimizers/reconcile_rhodes") => {
+            let request: crate::optimizers::RhodesEvalAttachRequest = serde_json::from_value(body)?;
+            let (run, event) = optimizers.reconcile_rhodes(request).await?;
+            Ok(json!({ "run": run, "event": event }))
+        }
         ("POST", "/v1/optimizers/reconcile_cloud") => {
             let request: crate::optimizers::OptimizerReconcileRequest =
                 serde_json::from_value(body)?;

@@ -19,6 +19,7 @@ use serde_json::{json, Map, Value};
 use std::{
     ffi::{OsStr, OsString},
     fs,
+    io::{BufRead, BufReader as JournalReader, Read},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Mutex,
@@ -1296,33 +1297,90 @@ fn envelope_for(
 /// Reconcile path: re-read the durable log for a run whose worker process is
 /// gone (a Desktop restart), deduplicating against what already mirrored.
 async fn ingest_stdout(service: &OptimizerService, run_id: &str, path: &Path) -> Result<()> {
-    if !path.is_file() {
+    let journal_exists = path
+        .parent()
+        .is_some_and(|parent| parent.join("events.jsonl").is_file());
+    if !path.is_file() && !journal_exists {
         return Ok(());
     }
-    let existing = service
-        .events_after(run_id.to_string(), 0, Some(2_000))
-        .await?;
-    let seen = existing
-        .iter()
-        .filter_map(|event| event.event_id.as_deref())
-        .collect::<std::collections::HashSet<_>>();
+    let authoritative = path.parent().unwrap_or(Path::new(".")).join("events.jsonl");
+    let source = if authoritative.is_file() {
+        authoritative.as_path()
+    } else {
+        path
+    };
+    let mut seen = std::collections::HashSet::<String>::new();
+    let mut cursor = 0;
+    loop {
+        let page = service
+            .events_after(run_id.to_string(), cursor, Some(2_000))
+            .await?;
+        if page.is_empty() {
+            break;
+        }
+        let next = page.last().unwrap().sequence_number;
+        if next <= cursor {
+            bail!("eval replay cursor did not advance");
+        }
+        cursor = next;
+        for event in page {
+            if let Some(id) = event.event_id {
+                seen.insert(id);
+            }
+        }
+        if seen.len() > 1_000_000 {
+            bail!("eval reconciliation history exceeds bound");
+        }
+    }
     let mut sequence = service.get(run_id.to_string()).await?.cursor_seq;
     let mut events = Vec::new();
-    for line in fs::read_to_string(path)?.lines() {
-        let Ok(raw) = serde_json::from_str::<Value>(line) else {
-            continue;
+    let mut reader = JournalReader::new(fs::File::open(source)?);
+    let mut line = Vec::new();
+    for _ in 0..1_000_000 {
+        line.clear();
+        let count = (&mut reader).take(1_048_577).read_until(b'\n', &mut line)?;
+        if count == 0 {
+            break;
+        }
+        if count > 1_048_576 {
+            bail!("eval worker event exceeds record bound");
+        }
+        // A running worker may still be appending its final record.
+        if line.last() != Some(&b'\n') {
+            break;
+        }
+        let raw = match serde_json::from_slice::<Value>(&line) {
+            Ok(raw) => raw,
+            Err(error) if source == authoritative => {
+                return Err(error).context("corrupt eval worker journal")
+            }
+            Err(_) => continue, // Legacy stdout also contains diagnostics.
         };
         if raw.get("schema_version").and_then(Value::as_str) != Some("eval.worker-event.v1") {
             continue;
         }
-        let worker_seq = raw.get("seq").and_then(Value::as_u64).unwrap_or(0);
-        if seen.contains(format!("{run_id}:eval:{worker_seq}").as_str()) {
+        let worker_seq = raw
+            .get("seq")
+            .and_then(Value::as_u64)
+            .filter(|seq| *seq > 0)
+            .ok_or_else(|| anyhow!("eval worker event has invalid sequence"))?;
+        let event_id = format!("{run_id}:eval:{worker_seq}");
+        if seen.contains(&event_id) {
             continue;
         }
         if let Some(envelope) = envelope_for(run_id, sequence + 1, worker_seq, raw) {
             sequence += 1;
+            seen.insert(event_id);
             events.push(envelope);
         }
+        if events.len() >= 200 {
+            service
+                .append_events(run_id.to_string(), std::mem::take(&mut events))
+                .await?;
+        }
+    }
+    if !reader.fill_buf()?.is_empty() {
+        bail!("eval worker history exceeds replay bound");
     }
     if !events.is_empty() {
         service.append_events(run_id.to_string(), events).await?;
@@ -1331,7 +1389,7 @@ async fn ingest_stdout(service: &OptimizerService, run_id: &str, path: &Path) ->
 }
 
 /// Reopen a locally-owned eval after the Desktop process disappeared.  The
-/// worker's stdout log is durable authority: a terminal line in that log must
+/// worker journal is authoritative (legacy stdout is a compatibility source): a terminal line must
 /// win over the stale `running` projection that happened to be persisted just
 /// before restart.  This intentionally does not launch a worker or infer a
 /// result from an exit code; it only mirrors already-durable worker evidence.
@@ -1471,7 +1529,34 @@ fn canonicalize(raw: &Value) -> Option<Canonical> {
                 "container_event".into(),
                 raw.get("container_event").cloned().unwrap_or(json!({})),
             );
-            level = "debug";
+            level = if raw
+                .pointer("/container_event/event")
+                .and_then(Value::as_str)
+                == Some("eval.limit.stop")
+            {
+                "warn"
+            } else {
+                "debug"
+            };
+        }
+        "eval.trial.stop_unconfirmed" => {
+            level = "warn";
+            delta.insert(
+                "message".into(),
+                json!("Container stop unconfirmed; reconciliation required"),
+            );
+            for key in [
+                "trial_id",
+                "container_id",
+                "runtime",
+                "stop_status",
+                "reason",
+                "reconciliation_required",
+            ] {
+                if let Some(value) = raw.get(key) {
+                    delta.insert(key.into(), value.clone());
+                }
+            }
         }
         "eval.trial.terminal" => {
             let trial = raw.get("trial")?;
@@ -1641,6 +1726,7 @@ fn canonicalize(raw: &Value) -> Option<Canonical> {
             "eval.trial.queued" => "eval.trial.queued",
             "eval.trial.started" => "eval.trial.started",
             "eval.trial.event" => "eval.trial.event",
+            "eval.trial.stop_unconfirmed" => "eval.trial.stop_unconfirmed",
             "eval.trial.terminal" => "eval.trial.terminal",
             "eval.trial.evidence_incomplete" => "eval.trial.evidence_incomplete",
             "eval.candidate.scored" => "eval.candidate.scored",
@@ -2041,6 +2127,24 @@ mod tests {
     }
 
     #[test]
+    fn enforcement_failures_are_visible_warnings() {
+        let mapped = canonicalize(&json!({
+            "event": "eval.trial.stop_unconfirmed", "trial_id": "t1",
+            "container_id": "c1", "runtime": "docker", "stop_status": "unconfirmed",
+            "reason": "timeout", "reconciliation_required": true
+        }))
+        .unwrap();
+        assert_eq!(mapped.0, "eval.trial.stop_unconfirmed");
+        assert_eq!(mapped.5, "warn");
+        assert_eq!(mapped.2["container_id"], json!("c1"));
+        assert_eq!(mapped.2["reconciliation_required"], json!(true));
+        let limit = canonicalize(&json!({"event": "eval.trial.event", "trial_id": "t1",
+            "container_event": {"event": "eval.limit.stop", "limit_kind": "output_bytes"}}))
+        .unwrap();
+        assert_eq!(limit.5, "warn");
+    }
+
+    #[test]
     fn declared_trial_artifacts_reach_the_run_artifact_slice() {
         let refs = artifact_refs(&json!({
             "trial_id": "trial_1",
@@ -2051,6 +2155,52 @@ mod tests {
         }));
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0]["kind"], json!("trace"));
+    }
+
+    #[tokio::test]
+    async fn reconciliation_drains_history_beyond_the_first_page_and_prefers_journal() {
+        let (svc, dir, _) = super::super::service::tests::service().await;
+        let run_id = "opt_eval_long_replay".to_string();
+        let (_run, _) = svc
+            .create(OptimizerCreateRequest {
+                algorithm_id: EVAL_ALGORITHM_ID.into(),
+                algorithm_version: Some("1".into()),
+                objective: Some("replay".into()),
+                source: Some("local".into()),
+                project_ref: None,
+                session_ref: Some("session_replay".into()),
+                id: Some(run_id.clone()),
+                execution_bindings: None,
+                input_refs: None,
+                capabilities: Some(OptimizerCapabilities::for_algorithm(EVAL_ALGORITHM_ID)),
+                summary: None,
+                open_visual: Some(false),
+                seed_fixture: None,
+                cloud_config: None,
+                local_path: None,
+            })
+            .await
+            .unwrap();
+
+        let lines = (1..=2_105)
+            .map(|seq| {
+                json!({
+                    "schema_version": "eval.worker-event.v1", "run_id": run_id,
+                    "seq": seq, "event": "eval.trial.event", "trial_id": "trial_1",
+                    "container_event": {"event": "progress", "step": seq}
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(dir.path().join("events.jsonl"), lines).unwrap();
+        let missing_mirror = dir.path().join("worker.stdout.log");
+        ingest_stdout(&svc, &run_id, &missing_mirror).await.unwrap();
+        let first = svc.get(run_id.clone()).await.unwrap().cursor_seq;
+        assert_eq!(first, 2_105);
+        ingest_stdout(&svc, &run_id, &missing_mirror).await.unwrap();
+        assert_eq!(svc.get(run_id).await.unwrap().cursor_seq, first);
     }
 
     /// Replay of a real worker stream, captured verbatim from the Craftax
