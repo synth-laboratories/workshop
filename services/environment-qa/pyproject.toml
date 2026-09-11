@@ -7,7 +7,7 @@ name = "workshop-environment-qa"
 version = "0.3.0"
 description = "Durable Harbor environment-QA DAG with automated and human review"
 requires-python = ">=3.11"
-dependencies = ["synth-containers==0.4.3.dev2026091123", "PyYAML>=6.0.2,<7", "python-dotenv>=1,<2"]
+dependencies = ["synth-containers==0.4.3.dev2026091126", "PyYAML>=6.0.2,<7", "python-dotenv>=1,<2"]
 
 [project.scripts]
 workshop-environment-qa = "environment_qa.__main__:main"

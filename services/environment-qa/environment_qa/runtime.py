@@ -96,7 +96,11 @@ def _trial(store, run, gate, path):
             if file.name=='oracle.txt': excerpt=diagnostic_preview(data).encode()
             evidence_text[relative] = excerpt.decode(errors="replace")
     result.update(artifacts=artifacts, observations=evidence_text)
-    result["cleanup"] = reconcile_cleanup([p.name for p in job.iterdir() if p.is_dir() and p.name.startswith("task__")]) if job.is_dir() else []
+    if run['policy']['pipeline'].get('native_image'):
+        result['cleanup'] = [dict(t['resource_cleanup'], clean=t['resource_cleanup'].get('cleanup_status') == 'confirmed')
+                             for t in result.get('trials', []) if 'resource_cleanup' in t]
+    else:
+        result["cleanup"] = reconcile_cleanup([p.name for p in job.iterdir() if p.is_dir() and p.name.startswith("task__")]) if job.is_dir() else []
     if not result["cleanup"] or not all(r["clean"] for r in result["cleanup"]):
         result["gate_status"] = "inconclusive"
         result["limitations"].append("Trial cleanup was not independently established")

@@ -113,13 +113,30 @@ printf '%s\\n%s\\n' "$first" "$second" > /logs/verifier/qa-repeat.txt
                 component=plan['experiments'][selected_gate['slot']].get('execution_kind')=='component'
                 if component: command.append('--disable-verification')
             log_path = work / ((gate_id or agent) + ".log")
-            from .shared_process import run_probe_process
-            returncode, interrupted, execution_error = run_probe_process(
-                command, output=log_path, environment=env, cwd=home,
-                timeout_seconds=timeout_seconds,
-                max_output_bytes=run['policy'].get('pipeline', {}).get('process_output_max_bytes', 16 * 1024 * 1024),
-                cancelled=lambda: store.get(run["id"])["status"] in {"cancelling", "cancelled"},
-            )
+            pipeline = run['policy'].get('pipeline', {})
+            native_outcome = None
+            if pipeline.get('native_image'):
+                if component:
+                    raise ValueError('Native component probes require a separate observation adapter; full verification cannot be substituted')
+                if version != '0.22.0':
+                    raise ValueError('Native QA requires Harbor 0.22.0')
+                from .native_runtime import run_native_probe
+                native_outcome, log_path = run_native_probe(
+                    task=task, work=work, job=job, agent=selected_agent, environment=env,
+                    pipeline=pipeline, timeout_seconds=timeout_seconds, executable=executable,
+                    cancelled=lambda: store.get(run["id"])["status"] in {"cancelling", "cancelled"},
+                )
+                returncode = native_outcome['execution_returncode']
+                execution_error = native_outcome['execution_error']
+                interrupted = execution_error is not None
+            else:
+                from .shared_process import run_probe_process
+                returncode, interrupted, execution_error = run_probe_process(
+                    command, output=log_path, environment=env, cwd=home,
+                    timeout_seconds=timeout_seconds,
+                    max_output_bytes=pipeline.get('process_output_max_bytes', 16 * 1024 * 1024),
+                    cancelled=lambda: store.get(run["id"])["status"] in {"cancelling", "cancelled"},
+                )
             results = []
             for candidate in (work / job).glob("*/result.json"):
                 data = json.loads(candidate.read_text())
@@ -129,6 +146,11 @@ printf '%s\\n%s\\n' "$first" "$second" > /logs/verifier/qa-repeat.txt
             entry = {"agent": agent, "harbor_version": version, "exit_code": returncode,
                      "interrupted": interrupted, "execution_error": execution_error, "results": results, "log": str(log_path.relative_to(store.root)),
                      "transformation": transformation}
+            if native_outcome is not None:
+                entry['resource_cleanup'] = native_outcome['cleanup']
+                entry['qualification_status'] = 'development_candidate_unqualified'
+                if native_outcome['cleanup'].get('cleanup_status') != 'confirmed':
+                    limits.append('Native provider absence remains unconfirmed')
             evidence.append(entry)
             entry['execution_kind']='component' if component else 'full_verifier'
             if component:

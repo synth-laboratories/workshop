@@ -265,3 +265,24 @@ observed runtime reproduction is reported separately, so a Docker-only run is no
 misrepresented as a Modal reproduction. Compound-clause coverage and original
 candidate decisions remain visible. Provisional labels do not yield qualified
 precision or recall without independent adjudication.
+
+### Native provider lifecycle development route
+
+Install `requirements-native.txt` into the same environment as Harbor 0.22.0. A
+policy with `pipeline.backend: "docker"` and `pipeline.native_image` set to an
+immutable `image@sha256:...` selects shared staged native execution for full
+verifier trials. The image must correspond to the sealed task; registration and
+phase staging retain and verify its digest. Optional
+`pipeline.native_resource_ttl_minutes` defaults to 60; isolated Docker egress
+requires `pipeline.native_docker_egress_image` as required by task admission.
+No image is built or resolved from a mutable tag by this route.
+
+The existing oracle, no-op, repeat-verifier transformation and QA agent
+assessment remain authoritative. Lifecycle evidence lives beside Harbor jobs
+in `*-native/`; cleanup is established by the shared exact-provider custody
+receipt, never by process exit or Compose label inference. Cancellation stops
+the child and attempts bounded independent cleanup; pending absence makes the
+QA gate inconclusive. Native component-only probes currently fail admission
+rather than silently replacing observations with a full grader run. Policies
+without `native_image` retain the existing Dockerfile/component path. This is a
+development candidate, with no provider qualification performed.
