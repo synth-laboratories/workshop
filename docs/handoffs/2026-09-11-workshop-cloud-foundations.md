@@ -1,5 +1,19 @@
 # Workshop cloud foundations — September 11, 2026
 
+## Direct Async reuse regression after 3870eff5
+
+The source-reviewed reuse exclusion now has direct coverage. A scoped Async row
+is made to satisfy every legacy selector predicate; both the selector and public
+create path refuse to adopt it before and after durable sign-out. The unavailable
+injected client prevents any network request. A second fixture verifies that an
+ordinary legacy row is reused without constructing transport when the candidate
+schema is absent, and asserts that no schema was installed. No production code or
+account-transition policy changed.
+
+All five `async_` native tests pass, including both new regressions and existing
+Async reuse/ingestion coverage. Log: `artifacts/cloud-foundations/async-reuse-reviewed.log`.
+An initial fixture constructor type mismatch was corrected before this passing run.
+
 ## Legacy route separation continuation after fe9499c7
 
 Integration independently verified the dispatch fixes in `fe9499c7`: 13 scoped-runtime,
