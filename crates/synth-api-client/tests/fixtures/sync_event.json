@@ -1,0 +1,13 @@
+{
+  "schema_version": "smr.intern-runtime-event.v1",
+  "event_id": "evt-sync-1",
+  "runtime_kind": "sync",
+  "runtime_id": "sync-1",
+  "sequence": 1,
+  "previous_state_generation": 0,
+  "state_generation": 1,
+  "event_kind": "agent_message",
+  "command_id": "cmd-sync-1",
+  "payload": { "body": "A durable reply" },
+  "created_at": "2026-08-08T00:00:00Z"
+}

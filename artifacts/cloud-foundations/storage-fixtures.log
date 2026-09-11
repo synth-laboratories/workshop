@@ -1,0 +1,9 @@
+test_commit_before_checkpoint_and_replay_dedupe (test_scoped_storage.ScopedStorage.test_commit_before_checkpoint_and_replay_dedupe) ... ok
+test_epoch_fences_late_writeback (test_scoped_storage.ScopedStorage.test_epoch_fences_late_writeback) ... ok
+test_legacy_rows_remain_unbound_and_accounts_do_not_alias (test_scoped_storage.ScopedStorage.test_legacy_rows_remain_unbound_and_accounts_do_not_alias) ... ok
+test_outcome_unknown_keeps_original_identity_and_remote_reconciling (test_scoped_storage.ScopedStorage.test_outcome_unknown_keeps_original_identity_and_remote_reconciling) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.001s
+
+OK

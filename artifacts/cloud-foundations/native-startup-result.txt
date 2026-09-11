@@ -1,0 +1,7 @@
+Command: TMPDIR="$PWD/.test-tmp" SYNTH_DESKTOP_CONFIG="$PWD/.test-tmp/config.toml" cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml --lib core_runtime::tests::local_journal_opens_with_unavailable_cloud_configuration --offline -j 2
+
+running 1 test
+test core_runtime::tests::local_journal_opens_with_unavailable_cloud_configuration ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1694 filtered out; finished in 0.46s
+

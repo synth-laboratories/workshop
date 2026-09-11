@@ -1,0 +1,54 @@
+{
+  "schema_version": "workshop-foundations-evidence.v1",
+  "base_commit": "1e17bf7006a1260df1ae5d1dcd0ec6d4c233b9ad",
+  "branch": "codex/workshop-cloud-foundations-20260911",
+  "tier": "offline-component",
+  "provider_runs": 0,
+  "slots_used": [],
+  "qualified_product_gates": [],
+  "source_sha256": {
+    "crates/synth-api-client/src/checkpoints.rs": "ab429928371a64395eb6c0dbfdfa2fd87d21a772062d766d752f6c86298f7151",
+    "crates/synth-api-client/src/sse.rs": "f78c6df703618dc5e38956d0b47faad7b3e672a2de495e81fd9fa0687df4f3a2",
+    "crates/synth-api-client/src/client.rs": "c40c0b4b3a73406ac5def1a67e490217ae4131f3a1894388052269db139f65fd",
+    "crates/synth-api-client/src/lib.rs": "38ec56161e60a543230e75e3f38f69420472593e1b51d198a6c0933048fa0a54",
+    "crates/synth-api-client/src/models.rs": "5a4194f8c0d45cf19d226f25f6c20a6f90b20e5bedd1466db04c51f9e56cb6d9",
+    "crates/synth-api-client/src/availability.rs": "01d969dd227297b45baadc9ba2ab5181839dd1711650302eaa561be3a973da5a",
+    "apps/synth_desktop/src-tauri/src/core_runtime.rs": "899d66c9bda16ca2f0266ba3bee822fdf972226af20216339c39bc7373a2036a",
+    "apps/synth_desktop/src-tauri/src/cloud/intern/mod.rs": "fa4775b64bc204b319fe48bd15f0ed6f52186a752030c173ed31170e5d96bff6",
+    "apps/synth_desktop/src-tauri/src/intern_api.rs": "1c5c39c083193767eba382cb7796d0fdf10a0a0bd56b365f08dd6d7b94776b85",
+    "tests/cloud-foundations/scoped_storage.sql": "78a6e862fab3cb57766b74622e3e4ac9b11cf861a4b8b286b4db5776f0493c98",
+    "tests/cloud-foundations/test_scoped_storage.py": "c5d2e01466f75fd604a494f26a440b9780e0120498d6cd0b296485b135d406df"
+  },
+  "results": {
+    "sdk_tests": {
+      "status": "PASS",
+      "passed": 14,
+      "ignored": 0,
+      "artifact": "sdk-tests.log"
+    },
+    "storage_design_fixtures": {
+      "status": "PASS",
+      "passed": 4,
+      "artifact": "storage-fixtures.log"
+    },
+    "native_library_check": {
+      "status": "PASS"
+    },
+    "native_startup_test": {
+      "status": "PASS",
+      "passed": 1,
+      "ignored": 0,
+      "filtered_out": 1694,
+      "artifact": "native-startup-result.txt",
+      "full_log": "native-startup-test.log"
+    },
+    "E06": {
+      "status": "NOT RUN",
+      "reason": "No packaged Local session execution journey"
+    },
+    "cloud_storage_integration": {
+      "status": "BLOCKED",
+      "reason": "Qualified identity and protocol manifest required; design fixture not registered"
+    }
+  }
+}

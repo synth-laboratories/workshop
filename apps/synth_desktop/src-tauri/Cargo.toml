@@ -15,6 +15,7 @@ crate-type = ["rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+synth-api-client = { path = "../../../crates/synth-api-client" }
 anyhow = "1"
 base64 = "0.22"
 bytes = "1"

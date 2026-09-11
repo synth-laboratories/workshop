@@ -27,14 +27,8 @@ pub struct InternBindingRequest {
     pub run_id: Option<String>,
 }
 
-impl From<Option<InternBindingRequest>> for RuntimeBinding {
-    fn from(value: Option<InternBindingRequest>) -> Self {
-        let value = value.unwrap_or(InternBindingRequest {
-            factory_id: None,
-            project_id: None,
-            effort_id: None,
-            run_id: None,
-        });
+impl From<InternBindingRequest> for RuntimeBinding {
+    fn from(value: InternBindingRequest) -> Self {
         Self {
             factory_id: value.factory_id,
             project_id: value.project_id,
@@ -111,6 +105,7 @@ pub struct InternSendResult {
 #[serde(rename_all = "camelCase")]
 pub struct InternControlResult {
     pub accepted: bool,
+    #[specta(type = receipt_schema::CommandReceipt)]
     pub receipt: CommandReceipt,
 }
 
@@ -194,7 +189,7 @@ pub async fn create(
             .create_sync(&SyncCreateRequest::desktop(
                 objective.clone(),
                 idempotency,
-                Some(binding_request).into(),
+                binding_request.into(),
             ))
             .await
     } else {
@@ -202,7 +197,7 @@ pub async fn create(
             .ensure_async(&AsyncEnsureRequest::desktop(
                 objective,
                 idempotency,
-                Some(binding_request).into(),
+                binding_request.into(),
             ))
             .await
     };
@@ -1120,5 +1115,38 @@ mod tests {
         request.objective = "   ".into();
         assert!(create(&core, request).await.is_err());
         assert!(list(&core).await.unwrap().is_empty());
+    }
+}
+
+// Desktop-only schema mirrors. SDK transport types have no UI dependency.
+#[allow(dead_code)]
+mod receipt_schema {
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+    #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+    #[serde(rename_all = "snake_case")]
+    pub enum RuntimeKind {
+        Sync,
+        Async,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+    pub struct CommandReceipt {
+        pub schema_version: String,
+        pub command_id: String,
+        pub runtime_kind: RuntimeKind,
+        pub runtime_id: String,
+        pub status: String,
+        #[specta(type = specta_typescript::Number)]
+        pub previous_generation: u64,
+        #[specta(type = specta_typescript::Number)]
+        pub state_generation: u64,
+        pub decision_code: String,
+        pub created_at: String,
+        #[serde(default)]
+        #[specta(type = specta_typescript::Unknown)]
+        pub actuation: Option<Value>,
+        #[serde(default)]
+        pub duplicate: bool,
     }
 }

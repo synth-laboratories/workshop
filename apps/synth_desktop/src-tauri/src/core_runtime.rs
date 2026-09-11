@@ -47,6 +47,29 @@ pub struct CoreRuntime {
 
 impl CoreRuntime {
     pub fn open(root: impl Into<std::path::PathBuf>) -> Result<Self> {
+        // Cloud configuration and transport are resolved only on cloud use.
+        // Invalid TOML, absent credentials and malformed URLs cannot abort Local.
+        let intern = Arc::new(InternRuntime::lazy(|| {
+            let backend = crate::synth_config::resolve()
+                .map_err(|_| crate::cloud::intern::InternClientError::CloudUnavailable)?;
+            backend
+                .api_key
+                .map(|key| {
+                    crate::cloud::intern::InternClient::connect(
+                        &backend.backend_url,
+                        key,
+                        crate::limits::INTERN_HTTP_TIMEOUT,
+                    )
+                })
+                .transpose()
+        }));
+        Self::open_with_cloud(root, intern)
+    }
+
+    fn open_with_cloud(
+        root: impl Into<std::path::PathBuf>,
+        intern: Arc<InternRuntime>,
+    ) -> Result<Self> {
         let storage = Storage::open(root)?;
         let data_root = storage
             .content_root()
@@ -148,16 +171,6 @@ impl CoreRuntime {
                 ),
             );
         }
-        let backend = crate::synth_config::resolve().context("resolve Synth backend")?;
-        let intern = Arc::new(match backend.api_key {
-            Some(api_key) => InternRuntime::configured(
-                &backend.backend_url,
-                api_key,
-                crate::limits::INTERN_HTTP_TIMEOUT,
-            )
-            .context("configure Rust Intern runtime")?,
-            None => InternRuntime::unconfigured(),
-        });
         Ok(Self::from_parts(storage, intern, observability))
     }
 
@@ -230,6 +243,8 @@ impl CoreRuntime {
         let secrets = Arc::new(crate::secrets::SecretsService::new(
             storage.database().clone(),
         ));
+        // Unit fixtures must not inspect the developer's config or .env.
+        #[cfg(not(test))]
         let _ = secrets.load_configured_env_sources();
         Self {
             storage,
@@ -622,8 +637,10 @@ impl CoreRuntime {
     /// Rotate the cloud endpoint and credential without leaving pollers on the
     /// previous identity alive. Missing credentials deliberately fail closed.
     pub async fn reload_intern_config(&self) -> Result<()> {
-        let backend = crate::synth_config::resolve().context("resolve Synth backend")?;
         self.intern_provider.shutdown().await?;
+        self.intern.disable().await;
+        let backend = crate::synth_config::resolve()
+            .map_err(|_| crate::cloud::intern::InternClientError::CloudUnavailable)?;
         match backend.api_key {
             Some(api_key) => {
                 self.intern
@@ -786,6 +803,39 @@ impl CoreRuntime {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn local_journal_opens_with_unavailable_cloud_configuration() {
+        for url in ["not a URL", "file:///invalid", "http://127.0.0.1:1"] {
+            let dir = tempdir().unwrap();
+            // Inject config; no global environment, personal config or credentials.
+            let intern = Arc::new(InternRuntime::lazy(move || {
+                crate::cloud::intern::InternClient::connect(
+                    url,
+                    "fixture",
+                    Duration::from_millis(20),
+                )
+                .map(Some)
+            }));
+            let core = CoreRuntime::open_with_cloud(dir.path(), intern).unwrap();
+            // Even explicit cloud initialization failure leaves Local usable.
+            let cloud = core.intern.client().await;
+            if url != "http://127.0.0.1:1" {
+                assert!(matches!(
+                    cloud,
+                    Err(crate::cloud::intern::InternClientError::CloudUnavailable)
+                ));
+            }
+            let event = core
+                .append_and_broadcast(EventAppend::system("local.fixture", json!({"ok":true})))
+                .await
+                .unwrap();
+            assert_eq!(
+                core.journal().events_after(0, 10).await.unwrap(),
+                vec![event]
+            );
+        }
+    }
 
     #[tokio::test]
     async fn broadcasts_only_after_event_is_committed() {

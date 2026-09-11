@@ -1,0 +1,34 @@
+   Compiling synth-api-client v0.1.0 (/Users/joshuapurtell/GitHub/worktrees/workshop-cloud-foundations-20260911/crates/synth-api-client)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.11s
+     Running unittests src/lib.rs (crates/synth-api-client/target/debug/deps/synth_api_client-44924bceba3a3172)
+
+running 7 tests
+test checkpoints::tests::adapters_preserve_distinct_cursor_semantics ... ok
+test sse::tests::bounded_and_never_dispatches_partial_event ... ok
+test sse::tests::lone_cr_and_split_crlf_dispatch_once ... ok
+test sse::tests::fragmented_utf8_crlf_multiline_and_comments ... ok
+test sse::tests::null_id_is_ignored_and_empty_id_resets ... ok
+test availability::tests::bad_configuration_is_lazy_cached_and_redacted ... ok
+test availability::tests::malformed_missing_and_offline_config_do_not_require_network ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/intern_protocol.rs (crates/synth-api-client/target/debug/deps/intern_protocol-85d2e982e4e54615)
+
+running 7 tests
+test desktop_command_constructors_match_wire_contract ... ok
+test command_receipt_semantics_distinguish_success_from_rejection ... ok
+test staging_create_contract_requires_nonempty_objectives ... ok
+test generation_zero_is_valid_but_regression_and_zero_sequence_are_not ... ok
+test client_rejects_empty_credentials_and_unsafe_runtime_ids ... ok
+test structured_denial_preserves_code_and_correlation_without_secret_detail ... ok
+test bearer_client_posts_typed_sync_command_and_checks_identity ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests synth_api_client
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

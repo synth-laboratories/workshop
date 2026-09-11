@@ -1,0 +1,12 @@
+{
+  "schema_version": "smr.intern-runtime-command-receipt.v1",
+  "command_id": "cmd-async-1",
+  "runtime_kind": "async",
+  "runtime_id": "async-org-1",
+  "status": "applied",
+  "previous_generation": 4,
+  "state_generation": 5,
+  "decision_code": "instruction_applied",
+  "created_at": "2026-08-08T00:00:00Z",
+  "duplicate": false
+}

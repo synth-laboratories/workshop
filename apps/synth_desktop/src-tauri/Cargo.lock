@@ -3882,6 +3882,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "synth-api-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "synth-desktop"
 version = "0.9.7"
 dependencies = [
@@ -3913,6 +3924,7 @@ dependencies = [
  "sha2",
  "specta",
  "specta-typescript",
+ "synth-api-client",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
