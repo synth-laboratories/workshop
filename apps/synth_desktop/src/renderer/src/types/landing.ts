@@ -391,6 +391,7 @@ export type AsyncInternPin = {
 };
 
 export type LandingState = {
+	executionLocation?: import("../runtime/executionLocation").ExecutionLocationPresentation;
 	id: LandingScenarioId;
 	label: string;
 	chats: LocalChat[];

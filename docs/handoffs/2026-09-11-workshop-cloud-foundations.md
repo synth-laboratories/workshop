@@ -69,6 +69,40 @@ The main checkout was not modified. All changes are local, unmerged candidates.
 
 ## Verified evidence
 
+### Dispatch and presentation continuation after c6338f46
+
+The host now composes durable creation, atomic first-command staging and first
+send with two fresh identity observations. Every persistence phase checks the
+volatile host generation as well as the database epoch. Sign-out cancels pending
+transport and verification futures; failed or cancelled sends retain uncertainty.
+Verification has the existing 30-second Intern timeout. Remote authentication
+denial clears the preflight observation. Transport callbacks are deferred until
+the host checks the current scope; they must return lazy cancellation-owned
+futures, not detached tasks. The CoreRuntime regression proves a closed gate
+does not initialize the legacy Intern client or install the candidate schema.
+
+The existing composer now displays a read-only execution-location detail. Native
+sessions remain Local when their model uses a hosted provider. Unknown ownership
+does not become Local by inference. New Cloud creation remains transport-gated;
+legacy routes are neither redirected nor globally disabled. CUA inspected the
+actual location component and popup at normal and 360px widths. This widget
+fixture is not a current packaged-app or full composer acceptance claim.
+
+Integration review `be8e8b8` identified eager-callback and stalled-verification
+cancellation gaps; both have deterministic regressions. Strict settlement proof
+changes from `5edd41a3` are adopted: unknown counts must be known zero, and root
+settlement additionally requires positive root confirmation. Backend producer
+`5536b3efd32a4b224232a5357bb05910c132f6dc` supplies those fields; the copied fixture
+SHA-256 is `58072d72a9d49074b410ec8d663755a3228f0951e29359b4d979ca3ed6dc6fd9`.
+
+Current checks: **75 cloud, 4 CoreRuntime, 18 contract, 21 SDK and 29 renderer
+tests pass**, plus typecheck, frontend build and the non-test library check.
+The same pre-existing optimizer pin test remains explicitly excluded from the
+contract subset. Existing aggregate CSS debt exceeds its old baseline; the new
+location styles add no font-size/radius/color literals relative to c6338f46.
+Exact source/log hashes are in `dispatch-composition-evidence.json` under the
+cloud-foundations artifact directory. The evidence below describes earlier pins.
+
 - Native combined cloud suite: **68 passed**, zero failed or ignored.
 - Independent SDK suite: **19 passed**, zero failed or ignored.
 - Native Local actor completion/reopen with cloud disabled: **1 passed** (earlier evidence).

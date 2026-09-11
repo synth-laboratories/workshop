@@ -1,4 +1,4 @@
-//! Fresh read DTO from backend source f67bc0fb204cb4f93c680e8a702657e9c8d99bbb.
+//! Fresh read DTO with producer proof fields from backend source 5536b3efd.
 //! This is not a stop receipt, identity lease, or qualified live profile.
 use serde::{Deserialize, Serialize};
 

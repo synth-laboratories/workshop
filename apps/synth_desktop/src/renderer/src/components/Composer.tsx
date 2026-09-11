@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ExecutionLocationSummary } from "./ExecutionLocationSummary";
 import {
 	LAUNCH_PICKER_TARGETS,
 	MODEL_ACCESS_LABEL,
@@ -1458,6 +1459,7 @@ export function Composer({
 				) : null}
 				<div className="composer-toolbar">
 					<div className="composer-left">
+						{state.executionLocation ? <ExecutionLocationSummary value={state.executionLocation} /> : null}
 						<WorkspaceScopeChip hideTrigger openSignal={workspaceMenuSignal} sessionId={workspaceSessionId ?? null} ensureSession={onEnsureWorkspaceSession} fallbackWorkspace={workspaceFallback ?? null} scope={workspaceScope ?? null} onScopeChange={(next) => onWorkspaceScopeChange?.(next)} onError={(message) => onWorkspaceError?.(message)} />
 						<div className="composer-add-wrap">
 							<button
