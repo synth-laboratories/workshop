@@ -137,6 +137,10 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 	const rhodesResult = record(rhodes?.resultSnapshot);
 	const rhodesPublication = record(record(rhodesResult.summary).trace_publication);
 	const nativeEvidence = record(rhodesResult.nativeEvidence);
+	const backendNativeEvidence = record(rhodesResult.backendNativeEvidence);
+	const importedTracePublication = record(rhodesResult.importedTracePublication);
+	const budgetSettlement = record(rhodesResult.budgetSettlement);
+	const sealedTraceAttachments = Array.isArray(rhodesResult.sealedTraceAttachments) ? rhodesResult.sealedTraceAttachments : [];
 	const acceptedWorkSeconds = numberOrNull(record(rhodesResult.acceptedExecutionLimits).timeout_s);
 	const executionDeadline = stringOrNull(rhodesResult.executionDeadlineAt);
 	const requiredLimitCapabilities = Array.isArray(rhodesResult.requiredLimitCapabilities)
@@ -271,12 +275,18 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 						<dt>Result publication</dt><dd>{stringOrNull(record(rhodesResult.resultPublication).status) ?? "Unknown"}</dd>
 						{rhodes.lastLimitRefusal ? <><dt>Last limit refusal</dt><dd>{stringOrNull(record(rhodes.lastLimitRefusal).error_code) ?? "Refused"} · {stringOrNull(record(record(rhodes.lastLimitRefusal).scope).kind) ?? "Execution"}</dd></> : null}
 						{rhodes.lastInferenceAccounting ? <><dt>Latest inference accounting</dt><dd>{stringOrNull(record(rhodes.lastInferenceAccounting).accounting_status) ?? "Unknown"}</dd></> : null}
+						<dt>Budget settlement</dt><dd>{stringOrNull(budgetSettlement.status) ?? "Not reported"}{budgetSettlement.admission_closed === true ? " · admission closed" : ""}</dd>
+						{numberOrNull(budgetSettlement.used_spend_usd) != null ? <><dt>Settled inference spend</dt><dd>${numberOrNull(budgetSettlement.used_spend_usd)}</dd></> : null}
 						<dt>Unfinished inference</dt><dd>{rhodes.inferencePending === true ? "Awaiting reconciliation" : rhodes.inferencePending === false ? "None reported" : "Unknown"}</dd>
-						<dt>Native journal custody</dt><dd>{stringOrNull(nativeEvidence.status) ?? "Not reported"}</dd>
+						<dt>Uploaded native journal custody</dt><dd>{stringOrNull(nativeEvidence.status) ?? "Not reported"}</dd>
 						{numberOrNull(nativeEvidence.event_count) != null ? <><dt>Committed native events</dt><dd>{numberOrNull(nativeEvidence.event_count)}</dd></> : null}
+						<dt>Backend execution evidence</dt><dd>{stringOrNull(backendNativeEvidence.status) ?? "Not reported"} · derived operator facts</dd>
+						<dt>Attached sealed traces</dt><dd>{sealedTraceAttachments.length} · operator attached</dd>
+						<dt>Imported agent trace</dt><dd>{stringOrNull(importedTracePublication.status) ?? "Not reported"} · imported agent events</dd>
+						{importedTracePublication.full_native_capture === false ? <><dt>Provider capture</dt><dd>Not captured by this import</dd></> : null}
 						<dt>Last native ingest</dt><dd>{stringOrNull(nativeEvidence.last_ingested_at) ?? "Unknown"}</dd>
 						<dt>Last observer contact</dt><dd>{stringOrNull(rhodes.lastObservedAt) ?? "Unknown"}</dd>
-						<dt>Replay backlog</dt><dd>{rhodes.hasMore === true ? "Catching up" : "Drained through source cursor"}</dd>
+						<dt>Replay backlog</dt><dd>{rhodes.hasMore === true ? "Catching up" : rhodes.hasMore === false ? "Drained through source cursor" : "Unknown"}</dd>
 						<dt>Source cursor</dt><dd>{numberOrNull(rhodes.sourceSequence) ?? "—"}</dd>
 						<dt>Requested limits</dt><dd>{Object.entries(record(rhodesResult.limits)).map(([key, value]) => `${key}: ${String(value)}`).join(" · ") || "—"}</dd>
 						<dt>Accepted work limit</dt><dd>{acceptedWorkSeconds == null ? "Unknown" : `${acceptedWorkSeconds} s`}</dd>
