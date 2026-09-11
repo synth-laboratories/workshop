@@ -98,6 +98,7 @@ pub(super) fn result_snapshot(remote: &Value) -> Value {
         "artifacts": remote.get("artifacts"),
         "traceCorrelationId": remote.get("trace_correlation_id"),
         "resultPublication": remote.pointer("/metadata/result_publication"),
+        "nativeEvidence": remote.pointer("/metadata/native_evidence"),
     })
 }
 

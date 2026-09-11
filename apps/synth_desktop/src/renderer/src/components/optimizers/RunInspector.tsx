@@ -136,6 +136,7 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 	const rhodes = run.source === "rhodes" ? record(record(run.summary).rhodes) : null;
 	const rhodesResult = record(rhodes?.resultSnapshot);
 	const rhodesPublication = record(record(rhodesResult.summary).trace_publication);
+	const nativeEvidence = record(rhodesResult.nativeEvidence);
 	const acceptedWorkSeconds = numberOrNull(record(rhodesResult.acceptedExecutionLimits).timeout_s);
 	const executionDeadline = stringOrNull(rhodesResult.executionDeadlineAt);
 	const requiredLimitCapabilities = Array.isArray(rhodesResult.requiredLimitCapabilities)
@@ -271,6 +272,11 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 						{rhodes.lastLimitRefusal ? <><dt>Last limit refusal</dt><dd>{stringOrNull(record(rhodes.lastLimitRefusal).error_code) ?? "Refused"} · {stringOrNull(record(record(rhodes.lastLimitRefusal).scope).kind) ?? "Execution"}</dd></> : null}
 						{rhodes.lastInferenceAccounting ? <><dt>Latest inference accounting</dt><dd>{stringOrNull(record(rhodes.lastInferenceAccounting).accounting_status) ?? "Unknown"}</dd></> : null}
 						<dt>Unfinished inference</dt><dd>{rhodes.inferencePending === true ? "Awaiting reconciliation" : rhodes.inferencePending === false ? "None reported" : "Unknown"}</dd>
+						<dt>Native journal custody</dt><dd>{stringOrNull(nativeEvidence.status) ?? "Not reported"}</dd>
+						{numberOrNull(nativeEvidence.event_count) != null ? <><dt>Committed native events</dt><dd>{numberOrNull(nativeEvidence.event_count)}</dd></> : null}
+						<dt>Last native ingest</dt><dd>{stringOrNull(nativeEvidence.last_ingested_at) ?? "Unknown"}</dd>
+						<dt>Last observer contact</dt><dd>{stringOrNull(rhodes.lastObservedAt) ?? "Unknown"}</dd>
+						<dt>Replay backlog</dt><dd>{rhodes.hasMore === true ? "Catching up" : "Drained through source cursor"}</dd>
 						<dt>Source cursor</dt><dd>{numberOrNull(rhodes.sourceSequence) ?? "—"}</dd>
 						<dt>Requested limits</dt><dd>{Object.entries(record(rhodesResult.limits)).map(([key, value]) => `${key}: ${String(value)}`).join(" · ") || "—"}</dd>
 						<dt>Accepted work limit</dt><dd>{acceptedWorkSeconds == null ? "Unknown" : `${acceptedWorkSeconds} s`}</dd>

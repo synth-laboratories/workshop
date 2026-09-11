@@ -9,6 +9,7 @@ pub(crate) fn critical_observations(events: &[Value]) -> serde_json::Map<String,
         let field = match event.get("event_type").and_then(Value::as_str) {
             Some("rollout.phase") => "lastExecutionPhase",
             Some("rollout.resource_intent") => "lastResourceIntent",
+            Some("rollout.native_journal") => "lastNativeJournal",
             Some("rollout.limit_refused") => "lastLimitRefusal",
             Some("rollout.inference_budget_reserved") => "lastBudgetReservation",
             Some("rollout.inference_accounting") => "lastInferenceAccounting",

@@ -3384,6 +3384,7 @@ impl OptimizerService {
             rhodes.insert("drained".into(),json!(drained));
             rhodes.insert("hasMore".into(),json!(page.has_more));
             rhodes.insert("observerError".into(),Value::Null);
+            rhodes.insert("lastObservedAt".into(),json!(sealed_at));
             rhodes.extend(critical_observations);
             // A named run-read snapshot is not the replay cursor authority.
             rhodes.insert("resultSnapshot".into(), super::rhodes_eval::result_snapshot(&remote));
