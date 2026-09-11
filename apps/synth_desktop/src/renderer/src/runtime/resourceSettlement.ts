@@ -43,7 +43,7 @@ export function resourceSettlementPresentation(
   const subtree = observation.scope_kind === "owned_subtree" && !!observation.root_run_id && !!observation.edge_id;
   if (!root && !subtree) return unavailable;
   if (observation.settled) {
-    if (!observation.coverage_complete || !observation.registered_tree_settled || pending !== 0 || (unknown !== null && unknown !== 0)) return unavailable;
+    if (!observation.coverage_complete || !observation.registered_tree_settled || pending !== 0 || unknown !== 0 || (root && observation.root_confirmed !== true)) return unavailable;
     return root ? result("settled_root","Run resource cleanup confirmed") : result("settled_subtree","Owned subtree cleanup confirmed");
   }
   if (unknown !== null && unknown > 0) return result("unknown","Cleanup outcome unknown");

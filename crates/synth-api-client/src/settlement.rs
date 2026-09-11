@@ -47,7 +47,9 @@ impl ResourceSettlement {
                 || !self.coverage_complete
                 || !self.registered_tree_settled
                 || self.pending != Some(0)
-                || self.unknown.is_some_and(|n| n != 0))
+                || self.unknown != Some(0)
+                || (self.scope_kind == Some(ScopeKind::RootTree)
+                    && self.root_confirmed != Some(true)))
         {
             return Err("settlement observation contradicts ownership coverage");
         }

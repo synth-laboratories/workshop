@@ -24,6 +24,7 @@ fn supplied_fixtures_preserve_incomplete_coverage_and_nullable_counts() {
     let document: ResourceSettlement = serde_json::from_value(value.clone()).unwrap();
     assert!(document.validate_for_run("root-run").is_err());
     value["coverage_complete"] = true.into();
+    value["root_confirmed"] = true.into();
     let document: ResourceSettlement = serde_json::from_value(value.clone()).unwrap();
     assert!(document.reports_settled_root());
     value["scope_kind"] = "owned_subtree".into();
@@ -104,4 +105,39 @@ async fn evidence_unavailable_and_wrong_run_never_become_untracked_success() {
         }
         server.await.unwrap();
     }
+}
+
+#[test]
+fn settled_root_requires_known_zero_unknowns_and_positive_root_confirmation() {
+    for (field, value) in [
+        ("unknown", serde_json::Value::Null),
+        ("root_confirmed", serde_json::Value::Null),
+        ("root_confirmed", serde_json::Value::Bool(false)),
+    ] {
+        let mut value_json = examples()[1].clone();
+        value_json["settled"] = true.into();
+        value_json["coverage_complete"] = true.into();
+        value_json["root_confirmed"] = true.into();
+        value_json[field] = value;
+        let document: ResourceSettlement = serde_json::from_value(value_json).unwrap();
+        assert!(
+            document.validate_for_run("root-run").is_err(),
+            "accepted missing {field} proof"
+        );
+        assert!(!document.reports_settled_root());
+    }
+}
+
+#[test]
+fn settled_subtree_does_not_require_ancestor_root_termination() {
+    let mut value = examples()[1].clone();
+    value["settled"] = true.into();
+    value["coverage_complete"] = true.into();
+    value["scope_kind"] = "owned_subtree".into();
+    value["edge_id"] = "child-edge".into();
+    value["run_id"] = "child-run".into();
+    value["root_confirmed"] = false.into();
+    let document: ResourceSettlement = serde_json::from_value(value).unwrap();
+    document.validate_for_run("child-run").unwrap();
+    assert!(!document.reports_settled_root());
 }
