@@ -12,7 +12,7 @@ test("Rhodes inspector separates reward and operational receipts", async ({ page
       summary: { rhodes: {
         rolloutId: "rollout_budget_fixture", sourceSequence: 6, cleanupPending: false,
         publicationPending: false, inferencePending: true, drained: false,
-        resultSnapshot: { score: null, limits: { max_calls: 0 }, resultPublication: { status: "committed" },
+        resultSnapshot: { score: null, limits: { max_calls: 0, timeout_s: 300 }, acceptedExecutionLimits: { timeout_s: 0 }, requiredLimitCapabilities: [], executionDeadlineAt: "2026-09-11T05:00:30Z", resultPublication: { status: "committed" },
           summary: { trace_publication: { status: "failed" } } },
         lastLimitRefusal: { event_type: "rollout.limit_refused", error_code: "spend_cap_exhausted",
           scope: { kind: "project", id: "fixture", revision: 2 }, sequence: 5 },
@@ -35,8 +35,10 @@ test("Rhodes inspector separates reward and operational receipts", async ({ page
   await expect(inspector).toContainText("spend_cap_exhausted · project");
   await expect(inspector).toContainText("uncertain_post_dispatch");
   await expect(inspector).toContainText("Awaiting reconciliation");
-  for (const [label, value] of [["Score", "—"], ["Cleanup", "Confirmed"], ["Result publication", "committed"], ["Trace publication", "failed"]]) {
+  for (const [label, value] of [["Score", "—"], ["Cleanup", "Confirmed"], ["Result publication", "committed"], ["Trace publication", "failed"], ["Accepted work limit", "0 s"], ["Required guarantees", "None declared"]]) {
     await expect(inspector.locator("dt", { hasText: new RegExp(`^${label}$`) }).locator("+ dd")).toHaveText(value);
   }
+  await inspector.locator("dt", { hasText: /^Required guarantees$/ }).scrollIntoViewIfNeeded();
+  await expect(inspector.locator("dt", { hasText: /^Required guarantees$/ }).locator("+ dd")).toBeVisible();
   await inspector.screenshot({ path: testInfo.outputPath("rhodes-budget-inspector.png") });
 });

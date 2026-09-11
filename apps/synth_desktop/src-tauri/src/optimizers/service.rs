@@ -3386,7 +3386,7 @@ impl OptimizerService {
             rhodes.insert("observerError".into(),Value::Null);
             rhodes.extend(critical_observations);
             // A named run-read snapshot is not the replay cursor authority.
-            rhodes.insert("resultSnapshot".into(),json!({"score":remote.get("score"),"summary":remote.get("summary"),"limits":remote.get("limits"),"usage":remote.get("usage"),"artifacts":remote.get("artifacts"),"traceCorrelationId":remote.get("trace_correlation_id"),"resultPublication":remote.pointer("/metadata/result_publication")}));
+            rhodes.insert("resultSnapshot".into(), super::rhodes_eval::result_snapshot(&remote));
             let terminal = super::kernel::persist::load_state(conn, &id)?
                 .and_then(|state| state.terminal.map(|terminal| terminal.final_sequence));
             if terminal.is_some() && page.status != run.status {

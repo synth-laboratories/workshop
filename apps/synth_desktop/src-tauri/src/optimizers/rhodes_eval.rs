@@ -83,6 +83,24 @@ impl RhodesEventPage {
     }
 }
 
+/// Preserve requested and server-admitted limits as separate observations.
+/// Missing legacy evidence is null; zero is a real accepted ceiling.
+pub(super) fn result_snapshot(remote: &Value) -> Value {
+    json!({
+        "score": remote.get("score"),
+        "summary": remote.get("summary"),
+        "limits": remote.get("limits"),
+        "acceptedExecutionLimits": remote.pointer("/metadata/accepted_execution_limits"),
+        "requiredLimitCapabilities": remote.pointer("/metadata/required_limit_capabilities"),
+        "executionLimitCapabilities": remote.pointer("/metadata/execution_limit_capabilities"),
+        "executionDeadlineAt": remote.get("execution_deadline_at"),
+        "usage": remote.get("usage"),
+        "artifacts": remote.get("artifacts"),
+        "traceCorrelationId": remote.get("trace_correlation_id"),
+        "resultPublication": remote.pointer("/metadata/result_publication"),
+    })
+}
+
 /// Project only named operational facts; replay remains the evidence authority.
 /// The caller commits these amendments with the source cursor, including after
 /// terminal scientific status. Absent events never clear an earlier refusal.
@@ -184,6 +202,24 @@ impl CloudOptimizerClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn admitted_limits_preserve_zero_and_server_authority() {
+        let snapshot = super::result_snapshot(&serde_json::json!({
+            "limits": {"timeout_s": 300},
+            "accepted_execution_limits": {"timeout_s": 999},
+            "metadata": {"accepted_execution_limits": {"timeout_s": 0},
+                         "required_limit_capabilities": []},
+            "execution_deadline_at": "2026-09-11T07:00:00Z"
+        }));
+        assert_eq!(snapshot["limits"]["timeout_s"], 300);
+        assert_eq!(snapshot["acceptedExecutionLimits"]["timeout_s"], 0);
+        assert_eq!(snapshot["requiredLimitCapabilities"], serde_json::json!([]));
+        assert_eq!(snapshot["executionDeadlineAt"], "2026-09-11T07:00:00Z");
+        let legacy = super::result_snapshot(&serde_json::json!({"limits": {"timeout_s": 30}}));
+        assert!(legacy["acceptedExecutionLimits"].is_null());
+        assert!(legacy["requiredLimitCapabilities"].is_null());
+    }
+
     #[test]
     fn critical_observations_preserve_independent_facts() {
         let events = vec![

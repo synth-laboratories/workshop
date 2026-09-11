@@ -136,6 +136,10 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 	const rhodes = run.source === "rhodes" ? record(record(run.summary).rhodes) : null;
 	const rhodesResult = record(rhodes?.resultSnapshot);
 	const rhodesPublication = record(record(rhodesResult.summary).trace_publication);
+	const acceptedWorkSeconds = numberOrNull(record(rhodesResult.acceptedExecutionLimits).timeout_s);
+	const executionDeadline = stringOrNull(rhodesResult.executionDeadlineAt);
+	const requiredLimitCapabilities = Array.isArray(rhodesResult.requiredLimitCapabilities)
+		? rhodesResult.requiredLimitCapabilities : null;
 
 	const [view, setView] = useState<OptimizerRunViewV2 | null>(null);
 	const [viewError, setViewError] = useState<string | null>(null);
@@ -266,7 +270,13 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 						{rhodes.lastInferenceAccounting ? <><dt>Latest inference accounting</dt><dd>{stringOrNull(record(rhodes.lastInferenceAccounting).accounting_status) ?? "Unknown"}</dd></> : null}
 						<dt>Unfinished inference</dt><dd>{rhodes.inferencePending === true ? "Awaiting reconciliation" : rhodes.inferencePending === false ? "None reported" : "Unknown"}</dd>
 						<dt>Source cursor</dt><dd>{numberOrNull(rhodes.sourceSequence) ?? "—"}</dd>
-						<dt>Limits</dt><dd>{Object.entries(record(rhodesResult.limits)).map(([key, value]) => `${key}: ${String(value)}`).join(" · ") || "—"}</dd>
+						<dt>Requested limits</dt><dd>{Object.entries(record(rhodesResult.limits)).map(([key, value]) => `${key}: ${String(value)}`).join(" · ") || "—"}</dd>
+						<dt>Accepted work limit</dt><dd>{acceptedWorkSeconds == null ? "Unknown" : `${acceptedWorkSeconds} s`}</dd>
+						<dt>Execution deadline</dt><dd title={executionDeadline ?? undefined}>{formatWhen(executionDeadline)}</dd>
+						<dt>Required guarantees</dt><dd>{requiredLimitCapabilities == null ? "Unknown" : requiredLimitCapabilities.length === 0 ? "None declared" : requiredLimitCapabilities.map((value) => {
+							const capability = record(value);
+							return `${statusText(stringOrNull(capability.dimension) ?? "unknown")}: ${statusText(stringOrNull(capability.enforcement) ?? "unknown")}${capability.survives_supervisor_loss === true ? " (survives supervisor loss)" : ""}`;
+						}).join(" · ")}</dd>
 					</dl>
 					{stringOrNull(rhodes.observerError) ? <p role="status">{stringOrNull(rhodes.observerError)}</p> : null}
 				</section>
