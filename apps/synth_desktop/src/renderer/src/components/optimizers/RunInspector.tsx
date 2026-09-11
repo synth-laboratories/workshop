@@ -262,6 +262,8 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 						<dt>Cleanup</dt><dd>{rhodes.cleanupPending === true ? "Pending confirmation" : rhodes.cleanupPending === false ? "Confirmed" : "Unknown"}</dd>
 						<dt>Trace publication</dt><dd>{stringOrNull(rhodesPublication.status) ?? "Unknown"}</dd>
 						<dt>Result publication</dt><dd>{stringOrNull(record(rhodesResult.resultPublication).status) ?? "Unknown"}</dd>
+						{rhodes.lastLimitRefusal ? <><dt>Last limit refusal</dt><dd>{stringOrNull(record(record(rhodes.lastLimitRefusal).payload).error_code) ?? "Refused"} · {stringOrNull(record(record(record(rhodes.lastLimitRefusal).payload).scope).kind) ?? "Execution"}</dd></> : null}
+						{rhodes.lastInferenceAccounting ? <><dt>Inference accounting</dt><dd>{stringOrNull(record(record(rhodes.lastInferenceAccounting).payload).accounting_status) ?? "Unknown"}</dd></> : null}
 						<dt>Source cursor</dt><dd>{numberOrNull(rhodes.sourceSequence) ?? "—"}</dd>
 						<dt>Limits</dt><dd>{Object.entries(record(rhodesResult.limits)).map(([key, value]) => `${key}: ${String(value)}`).join(" · ") || "—"}</dd>
 					</dl>

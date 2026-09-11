@@ -42,3 +42,11 @@ Result publication has its own inspector field and pending replay signal. The
 observer rereads the rollout after a terminal event page so completion between
 reads cannot seal a mirror with a stale score or publication snapshot. This
 continues to preserve the source cursor as the sole replay authority.
+
+Critical inference events also update the inspector's operational projection.
+The latest limit refusal and accounting transition remain independent facts;
+a later accounting event does not erase a refusal. Projection updates commit
+with replay ingestion and its cursor, including amendments after a scientific
+terminal event. The inspector shows the refusal code and affected scope, while
+the journal retains the full policy revision, reservation and usage payloads.
+An empty replay page leaves these observations intact.

@@ -3360,6 +3360,7 @@ impl OptimizerService {
             remote
         };
         let drained = page.drained();
+        let critical_observations = super::rhodes_eval::critical_observations(&page.events);
         let drafts = page
             .events
             .into_iter()
@@ -3382,6 +3383,7 @@ impl OptimizerService {
             rhodes.insert("drained".into(),json!(drained));
             rhodes.insert("hasMore".into(),json!(page.has_more));
             rhodes.insert("observerError".into(),Value::Null);
+            rhodes.extend(critical_observations);
             // A named run-read snapshot is not the replay cursor authority.
             rhodes.insert("resultSnapshot".into(),json!({"score":remote.get("score"),"summary":remote.get("summary"),"limits":remote.get("limits"),"usage":remote.get("usage"),"artifacts":remote.get("artifacts"),"traceCorrelationId":remote.get("trace_correlation_id"),"resultPublication":remote.pointer("/metadata/result_publication")}));
             let terminal = super::kernel::persist::load_state(conn, &id)?
