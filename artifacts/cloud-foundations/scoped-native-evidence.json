@@ -24,7 +24,7 @@
     "apps/synth_desktop/src-tauri/src/cloud/storage/mod.rs": "55e76e48b873b13615ed2c0f2e42b89d72998d4e0c48bafce12fca331d9c6988",
     "apps/synth_desktop/src-tauri/src/cloud/storage/tests.rs": "a3d4ab3194b3dd2442e1d9bd32fb096275c5da4f68fcfc726ac011d0f647cf4f",
     "apps/synth_desktop/src-tauri/src/cloud/identity.rs": "54e8cc671debd3058cfdd82667bfebdd66dad70ebc87dcda53d56278fe39da17",
-    "scripts/desktop-instance.sh": "fdbeae5f18c0b09940d8e9fe865212fad1ddf4a63ee90329f6f22003b77c052c",
-    "scripts/test-desktop-instance.sh": "106ca662ae7eb531a5d6e59cc51b1bf4040816c713cdc6236a1a0ecc2c7a9b59"
+    "scripts/desktop-instance.sh": "567625b25d1bf24e39ee61ae118c9d16a77553ed29a06850ae97fe7b6bce456c",
+    "scripts/test-desktop-instance.sh": "9cd6c41cec20ae307e630fa21a41331a20f09a31812840fd4fcad160565f8aea"
   }
 }

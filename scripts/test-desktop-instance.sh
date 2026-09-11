@@ -94,6 +94,9 @@ rg -q '^OPENAI_API_KEY=.openai-fixture.$' "$alpha_env"
 SYNTH_DESKTOP_SEED_CREDENTIALS=0 SYNTH_DESKTOP_SEED_GLOBAL_CONFIG=1 \
   "$ROOT/scripts/desktop-instance.sh" print local-only >/dev/null
 [[ ! -s "$TEST_ROOT/instances/v09/local-only/data/.env" ]]
+SYNTH_DESKTOP_SEED_CREDENTIALS=0 SYNTH_GEPA_SECRET_ENV_SOURCE="$TEST_ROOT/test-credentials.env" \
+  "$ROOT/scripts/desktop-instance.sh" stage local-only >/dev/null
+[[ ! -s "$TEST_ROOT/instances/v09/local-only/data/gepa-secret.env" ]]
 # Exercise the actual OAuth selection branch without invoking a build/launch.
 # With seeding disabled it must clear inherited seed/state paths and must not
 # create a shared cache or require an existing account.

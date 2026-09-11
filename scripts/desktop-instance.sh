@@ -932,7 +932,7 @@ stage_gepa_runtime() {
   # Finder-launched apps do not inherit shell secrets. Stage only the one
   # allowlisted key inside the mode-0700 instance data root so the app never
   # probes protected source folders at runtime.
-  if [[ ! -s "$secret_target" && -f "$secret_source" ]]; then
+  if [[ "${SYNTH_DESKTOP_SEED_CREDENTIALS:-1}" == "1" && ! -s "$secret_target" && -f "$secret_source" ]]; then
     local secret_tmp="$secret_target.tmp"
     umask 077
     awk '/^[[:space:]]*(export[[:space:]]+)?OPENAI_API_KEY=/{print; exit}' "$secret_source" >"$secret_tmp"
