@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { BenchmarkStatus } from "../../../chrome/BenchmarkStatus.tsx";
+import { projectLiveEval } from "../../../runtime/liveEvalReducer.ts";
 import { Identifier } from "../../../chrome/Identifier.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { counted, formatMissingNumber, formatMissingUsd } from "../../../runtime/liveStream.ts";
@@ -838,6 +840,7 @@ export function Shell(props: ShellProps) {
 		data-active-surface={surface}
 		data-journal-hydrating={journalHydrating ? "true" : "false"}
 	>
+      <BenchmarkStatus rows={projectLiveEval(events).benchmarkObservations} />
       <header className="cv-topbar">
         <div><p className="cv-eyebrow">Live eval · Craftax{scope?.campaign_id ? <> · <Identifier value={scope.campaign_id} label="campaign" max={18} copy={false} /></> : null}</p><h2>{props.title ?? "Policy through time"}</h2>{props.lede ? <p className="cv-lede">{props.lede}</p> : null}</div>
         <div className="cv-connection" role="status"><span className={visualLive ? "live" : !lifecycleFailed && ready ? "ready" : lifecycleFailed ? "failed" : ""} />{connectionState}</div>
