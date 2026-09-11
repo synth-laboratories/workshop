@@ -144,7 +144,7 @@ VITE_PORT=$((14200 + CHECKSUM % 1000))
 # share one models directory of read-only weights and nothing else.
 LAGUNA_PORT=$((17300 + CHECKSUM % 600))
 SOURCE_REVISION="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
-if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
   SOURCE_REVISION="$SOURCE_REVISION-dirty"
 fi
 
@@ -669,7 +669,7 @@ revalidate_provenance() {
   local phase="${1:-post-build}" expected="${2:-$SOURCE_REVISION}"
   local current digest manifest_tmp="$MANIFEST.provenance.tmp"
   current="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
-  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
     current="$current-dirty"
   fi
   if [[ "$current" != "$expected" ]]; then

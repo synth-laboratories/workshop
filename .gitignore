@@ -26,3 +26,8 @@ work/bombadil-src/
 work/
 apps/synth_desktop/src-tauri/generated-resources/
 apps/synth_desktop/browser/runtime
+
+# Isolated native/packaged test state and generated evidence logs.
+.test-tmp/
+artifacts/cloud-foundations/*.log
+services/*/build/

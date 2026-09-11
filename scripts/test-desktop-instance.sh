@@ -89,6 +89,14 @@ rg -q '^SYNTH_API_KEY=.synth-fixture.$' "$alpha_env"
 rg -q '^OPENROUTER_API_KEY=.openrouter-fixture.$' "$alpha_env"
 rg -q '^OPENAI_API_KEY=.openai-fixture.$' "$alpha_env"
 
+# The launcher must use the native build's untracked-source dirty policy.
+# Generated test outputs are ignored, but a newly authored source file is not.
+provenance_fixture="$(mktemp "$ROOT/.provenance-source.XXXXXX")"
+printf 'untracked source fixture\n' >"$provenance_fixture"
+source_probe="$($ROOT/scripts/desktop-instance.sh print provenance-probe)"
+rm -f "$provenance_fixture"
+[[ "$(printf '%s' "$source_probe" | jq -r .sourceRevision)" == *-dirty ]]
+
 # Credential-free preparation ignores both explicit fixture credentials and
 # opt-in global config seeding; no secret is copied into the fresh instance.
 SYNTH_DESKTOP_SEED_CREDENTIALS=0 SYNTH_DESKTOP_SEED_GLOBAL_CONFIG=1 \
