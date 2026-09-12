@@ -160,6 +160,20 @@ impl InternClient {
         Ok(observation)
     }
 
+    /// Read the recorded runtime, never substitute the current Async singleton.
+    pub async fn runtime_resources(&self, kind: RuntimeKind, id: &str) -> Result<crate::inventory::RuntimeInventory, InternClientError> {
+        if id.trim().is_empty() || matches!(id, "." | "..") || id.len() > 512 {
+            return Err(protocol("invalid inventory runtime ID"));
+        }
+        let segment = match kind { RuntimeKind::Sync => "sync-sessions", RuntimeKind::Async => "async-assignments" };
+        let mut url = self.base_url.join(&format!("smr/research-intern/{segment}/")).map_err(protocol)?;
+        url.path_segments_mut().map_err(|_| protocol("invalid inventory URL"))?
+            .pop_if_empty().push(id).push("resources");
+        let inventory: crate::inventory::RuntimeInventory = self.fresh_json(url).await?;
+        inventory.validate_identity(kind, id).map_err(protocol)?;
+        Ok(inventory)
+    }
+
     async fn fresh_json<R: DeserializeOwned>(&self, url: Url) -> Result<R, InternClientError> {
         let mut response = self
             .http
