@@ -15,6 +15,7 @@ pub use home::{
     apply_openrouter_provider, apply_synth_cloud_provider, codex_root, oauth_auth_path,
     provider_class, scrub_oauth_auth_files, stage_brokered_credential, ProviderClass,
 };
+pub(crate) use home::safe_endpoint_label;
 pub use manager::CodexManager;
 pub(crate) use proto::is_detached_failure;
 pub use proto::{

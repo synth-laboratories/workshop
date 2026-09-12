@@ -179,12 +179,14 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
     let stdout = child.stdout.take().context("capture app-server stdout")?;
     let stderr = child.stderr.take().context("capture app-server stderr")?;
     let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+    let stderr_tail = StderrTail::buffer();
     let server = Arc::new(AppServer {
         child: Mutex::new(Some(child)),
         stdin: stdin.clone(),
         pending: pending.clone(),
         next_id: AtomicU64::new(1),
         persistent: false,
+        stderr_tail: stderr_tail.clone(),
     });
     let sid = session_id.to_owned();
     let approval_policy = request
@@ -205,6 +207,7 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             let line = crate::secrets::redact_live(&crate::codex_oauth::redact_text(&line));
+            stderr_tail.push_line(&line);
             stderr_persistence
                 .notify_codex_event(&app, sid.clone(), "app-server/stderr", json!({"line":line}))
                 .await;
@@ -238,6 +241,12 @@ async fn spawn_persistent_server<R: tauri::Runtime>(
         &suffix[..20]
     ));
 
+    // The listener outlives Workshop, so its stderr cannot be a pipe we drain
+    // (a write after Workshop exits would hit a closed pipe). It goes to a
+    // per-session file in this Codex home, truncated at each spawn, and only a
+    // bounded, redacted tail of it is ever read back.
+    let stderr_log = home.join(APP_SERVER_STDERR_LOG);
+    let stderr_tail = StderrTail::File(stderr_log.clone());
     let ws = match connect_websocket(&socket).await {
         Ok(socket) => socket,
         Err(_) => {
@@ -258,7 +267,7 @@ async fn spawn_persistent_server<R: tauri::Runtime>(
                 .env("CODEX_HOME", home)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::from(open_stderr_log(&stderr_log)?))
                 .kill_on_drop(false);
             if let Some(path) = codex_child_path(binary, std::env::var_os("PATH").as_deref())? {
                 command.env("PATH", path);
@@ -280,10 +289,10 @@ async fn spawn_persistent_server<R: tauri::Runtime>(
                 }
             }
             let connected = connected.ok_or_else(|| {
-                anyhow!(
+                stderr_tail.attach(anyhow!(
                     "persistent codex app-server did not open {}",
                     socket.display()
-                )
+                ))
             })?;
             drop(listener);
             connected
@@ -337,6 +346,7 @@ async fn spawn_persistent_server<R: tauri::Runtime>(
         pending: pending.clone(),
         next_id: AtomicU64::new(1),
         persistent: true,
+        stderr_tail,
     });
     let approval_policy = request
         .approval_policy
@@ -362,6 +372,209 @@ fn isolate_process_group(command: &mut Command) {
 
 #[cfg(not(unix))]
 fn isolate_process_group(_command: &mut Command) {}
+
+/// Per-session stderr log of the persistent app-server, inside its Codex home.
+pub(crate) const APP_SERVER_STDERR_LOG: &str = "app-server.stderr.log";
+
+/// Bytes of app-server stderr retained and reported with a startup failure.
+pub(crate) const STDERR_TAIL_BYTES: usize = 4 * 1024;
+
+/// Bounded, redacted tail of the Codex app-server's stderr.
+///
+/// A child that dies during `initialize` or `thread/start` otherwise surfaces
+/// only as a closed stdout; its own explanation lives on stderr. The stdio
+/// child's lines are kept in memory; the persistent listener writes a file
+/// whose tail is read back on demand.
+#[derive(Clone)]
+pub(crate) enum StderrTail {
+    Buffer(Arc<std::sync::Mutex<String>>),
+    File(PathBuf),
+}
+
+impl StderrTail {
+    pub(crate) fn buffer() -> Self {
+        Self::Buffer(Arc::default())
+    }
+
+    pub(crate) fn push_line(&self, line: &str) {
+        let Self::Buffer(buffer) = self else { return };
+        let Ok(mut buffer) = buffer.lock() else {
+            return;
+        };
+        buffer.push_str(&redact_stderr_line(line));
+        buffer.push('\n');
+        if buffer.len() > STDERR_TAIL_BYTES {
+            let mut cut = buffer.len() - STDERR_TAIL_BYTES;
+            while !buffer.is_char_boundary(cut) {
+                cut += 1;
+            }
+            // Start on a whole line so the tail never opens mid-token.
+            let cut = buffer[cut..]
+                .find('\n')
+                .map_or(buffer.len(), |offset| cut + offset + 1);
+            buffer.drain(..cut);
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> String {
+        match self {
+            Self::Buffer(buffer) => buffer.lock().map(|text| text.clone()).unwrap_or_default(),
+            Self::File(path) => read_log_tail(path, STDERR_TAIL_BYTES)
+                .map(|text| {
+                    text.lines()
+                        .map(redact_stderr_line)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Adds the stderr tail to `error` as context, keeping the original
+    /// headline first and the typed cause downcastable.
+    pub(crate) fn attach(&self, error: anyhow::Error) -> anyhow::Error {
+        let tail = self.snapshot();
+        let tail = tail.trim();
+        if tail.is_empty() {
+            return error;
+        }
+        let headline = error.to_string();
+        error.context(format!(
+            "{headline}\ncodex app-server stderr (last {STDERR_TAIL_BYTES} bytes, redacted):\n{tail}"
+        ))
+    }
+}
+
+fn redact_stderr_line(line: &str) -> String {
+    crate::diagnostics::redact::redact_text(&crate::codex_oauth::redact_text(line))
+}
+
+fn open_stderr_log(path: &Path) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .with_context(|| format!("open app-server stderr log {}", path.display()))
+}
+
+/// Last `max_bytes` of `path`, starting at a whole line.
+fn read_log_tail(path: &Path, max_bytes: usize) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let start = file.metadata()?.len().saturating_sub(max_bytes as u64);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::with_capacity(max_bytes);
+    file.take(max_bytes as u64).read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes);
+    if start == 0 {
+        return Ok(text.into_owned());
+    }
+    // A partial first line could hold the unrecognisable half of a secret.
+    Ok(text
+        .split_once('\n')
+        .map(|(_, rest)| rest.to_owned())
+        .unwrap_or_default())
+}
+
+#[cfg(test)]
+mod stderr_tail_tests {
+    use super::*;
+    use std::io::Write as _;
+
+    #[derive(Debug)]
+    struct Marker;
+    impl std::fmt::Display for Marker {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("codex app-server exited before initialize")
+        }
+    }
+    impl std::error::Error for Marker {}
+
+    #[test]
+    fn the_buffer_keeps_only_the_most_recent_whole_lines() {
+        let tail = StderrTail::buffer();
+        for index in 0..2_000 {
+            tail.push_line(&format!("line {index}"));
+        }
+        let snapshot = tail.snapshot();
+        assert!(snapshot.len() <= STDERR_TAIL_BYTES, "{}", snapshot.len());
+        assert!(snapshot.ends_with("line 1999\n"));
+        assert!(snapshot.starts_with("line "), "{snapshot:.40}");
+        assert!(!snapshot.contains("line 0\n"));
+    }
+
+    #[test]
+    fn the_buffer_redacts_secret_shaped_stderr() {
+        let tail = StderrTail::buffer();
+        tail.push_line("ERROR upstream refused Authorization: Bearer sk-proj-abcdef0123456789");
+        let snapshot = tail.snapshot();
+        assert!(!snapshot.contains("sk-proj-abcdef0123456789"), "{snapshot}");
+        assert!(snapshot.contains("upstream refused"));
+    }
+
+    #[test]
+    fn the_log_file_tail_is_bounded_whole_line_and_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(APP_SERVER_STDERR_LOG);
+        let mut file = open_stderr_log(&path).unwrap();
+        for index in 0..1_000 {
+            writeln!(file, "noise {index}").unwrap();
+        }
+        writeln!(
+            file,
+            "fatal: https://user:hunter2@api.example/v1 key sk-live-abcdefghijklmnop"
+        )
+        .unwrap();
+        drop(file);
+        let snapshot = StderrTail::File(path.clone()).snapshot();
+        assert!(snapshot.len() <= STDERR_TAIL_BYTES, "{}", snapshot.len());
+        assert!(snapshot.contains("fatal: https://user:"), "{snapshot}");
+        assert!(!snapshot.contains("hunter2"), "{snapshot}");
+        assert!(!snapshot.contains("sk-live-abcdefghijklmnop"), "{snapshot}");
+        assert!(snapshot.starts_with("noise "), "{snapshot:.40}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // A respawn truncates: the previous listener's output is not reported.
+        drop(open_stderr_log(&path).unwrap());
+        assert_eq!(StderrTail::File(path).snapshot(), "");
+    }
+
+    #[test]
+    fn attach_keeps_the_headline_and_the_typed_cause() {
+        let tail = StderrTail::buffer();
+        tail.push_line("Error: failed to load config.toml: unknown field `approval`");
+        let error = tail.attach(anyhow!(Marker));
+        let message = error.to_string();
+        assert!(message.starts_with("codex app-server exited before initialize\n"));
+        assert!(message.contains("unknown field `approval`"), "{message}");
+        assert!(error.downcast_ref::<Marker>().is_some());
+    }
+
+    #[test]
+    fn an_empty_or_missing_tail_leaves_the_error_untouched() {
+        let missing = StderrTail::File(PathBuf::from("/nonexistent/app-server.stderr.log"));
+        assert_eq!(missing.snapshot(), "");
+        let error = missing.attach(anyhow!(Marker));
+        assert_eq!(
+            format!("{error:#}"),
+            "codex app-server exited before initialize"
+        );
+        let error = StderrTail::buffer().attach(anyhow!(Marker));
+        assert_eq!(
+            format!("{error:#}"),
+            "codex app-server exited before initialize"
+        );
+    }
+}
 
 #[cfg(test)]
 mod persistent_transport_tests {

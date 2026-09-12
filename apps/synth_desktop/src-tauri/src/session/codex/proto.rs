@@ -359,6 +359,9 @@ pub(crate) struct AppServer {
     pub(crate) pending: Pending,
     pub(crate) next_id: AtomicU64,
     pub(crate) persistent: bool,
+    /// Bounded, redacted tail of the child's stderr, attached to startup
+    /// failures so a dead app-server is never reported without its reason.
+    pub(crate) stderr_tail: super::event_pump::StderrTail,
 }
 
 pub(crate) struct CodexResolver {

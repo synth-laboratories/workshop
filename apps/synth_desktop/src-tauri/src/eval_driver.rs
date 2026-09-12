@@ -221,12 +221,33 @@ async fn route_request(
         Err(error) if crate::error::error_is::<crate::error::ProtocolMismatch>(&error) => {
             JsonHttpResponse::error(StatusCode::UPGRADE_REQUIRED, error.to_string())
         }
-        Err(error) => JsonHttpResponse::error(StatusCode::BAD_REQUEST, error.to_string()),
+        Err(error) => JsonHttpResponse::error(StatusCode::BAD_REQUEST, error_body_message(&error)),
     };
     response
         .extra_headers
         .push(("x-synth-eval-driver", PROTOCOL_VERSION.to_owned()));
     response
+}
+
+/// The `error` string a harness sees on a failed request.
+///
+/// It carries the whole anyhow cause chain: the outermost context alone
+/// (`codex session start`) once hid an approval-policy refusal behind a bare
+/// 400. The chain can name endpoints, so every URL is reduced to its safe
+/// label (no userinfo, no query string) and secret-shaped tokens are scrubbed.
+fn error_body_message(error: &anyhow::Error) -> String {
+    let chain = format!("{error:#}");
+    let mut labelled = String::with_capacity(chain.len());
+    for piece in chain.split_inclusive(char::is_whitespace) {
+        let word = piece.trim_end();
+        if word.contains("://") {
+            labelled.push_str(&crate::codex::safe_endpoint_label(word));
+            labelled.push_str(&piece[word.len()..]);
+        } else {
+            labelled.push_str(piece);
+        }
+    }
+    crate::diagnostics::redact::redact_text(&labelled)
 }
 
 async fn dispatch_request(
@@ -2507,6 +2528,36 @@ mod tests {
     #[test]
     fn protocol_version_is_stable() {
         assert_eq!(PROTOCOL_VERSION, "synth.eval-driver.v1");
+    }
+
+    #[test]
+    fn error_bodies_carry_the_whole_cause_chain() {
+        let error = anyhow!(
+            "session approval policy `never` disagrees with machine policy `untrusted` \
+             from /tmp/instance/config.toml"
+        )
+        .context("codex session start");
+        let body = error_body_message(&error);
+        assert!(body.starts_with("codex session start: "), "{body}");
+        assert!(
+            body.contains("approval policy `never` disagrees with machine policy `untrusted`"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn error_bodies_never_carry_credentials() {
+        let error = anyhow!(
+            "upstream https://user:hunter2@openrouter.ai/api/v1?api_key=qs-secret-value \
+             refused Authorization: Bearer sk-or-v1-abcdef0123456789"
+        )
+        .context("codex session start");
+        let body = error_body_message(&error);
+        for secret in ["hunter2", "qs-secret-value", "sk-or-v1-abcdef0123456789"] {
+            assert!(!body.contains(secret), "{secret} survived: {body}");
+        }
+        assert!(body.contains("openrouter.ai/api/v1 refused"), "{body}");
+        assert!(body.starts_with("codex session start: upstream "), "{body}");
     }
 
     #[test]

@@ -346,10 +346,13 @@ impl CodexManager {
                     tokio::time::sleep(std::time::Duration::from_millis(200 * initialize_attempts))
                         .await;
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(server.stderr_tail.attach(error)),
             }
         }
-        server.notify("initialized").await?;
+        server
+            .notify("initialized")
+            .await
+            .map_err(|error| server.stderr_tail.attach(error))?;
         let remembered = self.records.read().await.get(&request.session_id).cloned();
         let requested_thread = request
             .thread_id
@@ -395,7 +398,7 @@ impl CodexManager {
                     }
                     attempts = 0;
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(server.stderr_tail.attach(error)),
             }
         };
         let thread_id = nested_id(&result, "threadId")
