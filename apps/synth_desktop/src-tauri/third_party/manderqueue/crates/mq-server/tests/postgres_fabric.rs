@@ -45,6 +45,7 @@ async fn postgres_revocation_cancels_queued_and_leased_jobs() {
     let claimed = mq.claim_delivery_jobs(1).await.unwrap();
     assert_eq!(claimed.len(), 1);
     mq.validate_grant_generation(&target, thread, 0).await.unwrap();
+    assert_eq!(mq.read_scoped(&target, thread, 0, 0, 10).await.unwrap().1.len(), 2);
     mq.set_participant_role(&owner, thread, &target, Role::Revoked).await.unwrap();
     mq.set_participant_role(&owner, thread, &target, Role::Revoked).await.unwrap();
     assert!(mq.claim_delivery_jobs(10).await.unwrap().is_empty());
@@ -62,6 +63,10 @@ async fn postgres_revocation_cancels_queued_and_leased_jobs() {
     // also fail inside the append transaction, before messages or jobs exist.
     recovered.validate_grant_generation(&target, thread, 1).await.unwrap();
     assert!(recovered.validate_grant_generation(&target, thread, 0).await.is_err());
+    assert!(matches!(recovered.read_scoped(&target, thread, 0, 0, 10).await,
+        Err(Error::Forbidden("stale_grant_generation"))));
+    assert_eq!(recovered.read_scoped(&target, thread, 1, 0, 10).await.unwrap().1.len(), 2);
+    assert!(recovered.read_scoped(&target, thread, 1, 0, 0).await.unwrap().1.is_empty());
     let request = PublishMessage {
         body: "generation fenced".into(),
         recipients: vec![owner.clone()],

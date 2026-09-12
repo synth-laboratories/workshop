@@ -257,6 +257,14 @@ impl Fabric {
         self.store.read_messages(thread_id, after_seq, limit).await
     }
 
+    /// Scoped reads linearize authority and returned data in the store.
+    pub async fn read_scoped(
+        &self, actor: &Principal, thread_id: ThreadId, generation: u64,
+        after_seq: u64, limit: usize,
+    ) -> Result<(Thread, Vec<Message>)> {
+        self.store.read_scoped(actor, thread_id, generation, after_seq, limit.min(200)).await
+    }
+
     /// Compare persisted revocation generation; a signed token cannot set it.
     pub async fn validate_grant_generation(&self, actor: &Principal, thread: ThreadId, generation: u64) -> Result<()> {
         self.load_workspace_thread(actor, thread).await?;

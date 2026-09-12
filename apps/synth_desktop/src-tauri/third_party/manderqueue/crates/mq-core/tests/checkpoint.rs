@@ -17,6 +17,7 @@ async fn revocation_generation_survives_restoration_and_checkpoint() {
     let generation = |members: Vec<Participant>| members.into_iter().find(|p|p.principal==recipient).unwrap().grant_generation;
     assert_eq!(generation(store.list_participants(thread).await.unwrap()),0);
     fabric.validate_grant_generation(&recipient,thread,0).await.unwrap();
+    assert!(fabric.read_scoped(&recipient,thread,0,0,10).await.unwrap().1.is_empty());
     fabric.set_participant_role(&owner,thread,&recipient,Role::Revoked).await.unwrap();
     fabric.set_participant_role(&owner,thread,&recipient,Role::Revoked).await.unwrap();
     assert_eq!(generation(store.list_participants(thread).await.unwrap()),1);
@@ -28,6 +29,14 @@ async fn revocation_generation_survives_restoration_and_checkpoint() {
     assert!(store.read_messages(thread,0,10).await.unwrap().is_empty());
     let current = PublishMessage { expected_grant_generation: Some(1), ..stale };
     store.append_with_delivery(thread,&recipient,current,&[]).await.unwrap();
+    // A token validated before revocation cannot read after restoration.
+    assert!(matches!(fabric.read_scoped(&recipient,thread,0,0,10).await,
+        Err(Error::Forbidden("stale_grant_generation"))));
+    assert_eq!(fabric.read_scoped(&recipient,thread,1,0,10).await.unwrap().1.len(),1);
+    assert!(fabric.read_scoped(&recipient,thread,1,0,0).await.unwrap().1.is_empty());
+    let foreign = Principal { org_id: "foreign".into(), ..recipient.clone() };
+    assert!(matches!(fabric.read_scoped(&foreign,thread,1,0,10).await,
+        Err(Error::NotFound("thread"))));
     let wire: PublishMessage = serde_json::from_value(serde_json::json!({"kind":"notice","body":"wire","expected_grant_generation":99})).unwrap();
     assert_eq!(wire.expected_grant_generation,None);
     assert_eq!(generation(restored.list_participants(thread).await.unwrap()),1);

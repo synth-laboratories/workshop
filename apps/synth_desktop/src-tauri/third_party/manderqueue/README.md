@@ -88,6 +88,16 @@ MAPO's combined container and cold-restore contract are documented in
 
 ## Rust client recovery
 
+Scoped HTTP thread/message reads validate persisted membership, read permission
+and grant generation in the same store critical section as their returned
+snapshot. Memory uses one mutex; Postgres holds thread and participant share
+locks until the bounded read commits. SSE uses this path for its authorization
+rechecks. A read that linearized before revocation may still finish sending its
+response; data already read cannot be recalled. Token expiry is checked at HTTP
+authorization and stream rechecks, not a new database-stored expiry contract.
+The legacy volatile buffer is not merged into scoped reads. Device issuance,
+history grants and native execution fencing remain separate integration work.
+
 `mq_sdk::CatchUpSupervisor` restores an account/thread-scoped durable message
 cursor and reads pages of at most 200 messages. Call `catch_up` on connection,
 `thread_wake`, `resync`, and periodic polling. SSE notifications are hints; never

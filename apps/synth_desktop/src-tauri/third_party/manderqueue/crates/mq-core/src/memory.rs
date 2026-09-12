@@ -198,6 +198,27 @@ impl Store for MemoryStore {
             .cloned())
     }
 
+    async fn read_scoped(
+        &self, actor: &Principal, thread_id: ThreadId, generation: u64,
+        after_seq: u64, limit: usize,
+    ) -> Result<(Thread, Vec<Message>)> {
+        let g = self.inner.lock().expect("lock");
+        let thread = g.threads.get(&thread_id).ok_or(Error::NotFound("thread"))?;
+        if thread.org_id != actor.org_id {
+            return Err(Error::NotFound("thread"));
+        }
+        let authorized = g.participants.get(&thread_id).into_iter().flatten().any(|p| {
+            p.principal == *actor && p.grant_generation == generation
+                && p.role != Role::Revoked && p.caps.contains(&Cap::Read)
+        });
+        if !authorized {
+            return Err(Error::Forbidden("stale_grant_generation"));
+        }
+        let messages = g.messages.get(&thread_id).into_iter().flatten()
+            .filter(|m| m.seq > after_seq).take(limit.min(200)).cloned().collect();
+        Ok((thread.clone(), messages))
+    }
+
     async fn list_threads(
         &self,
         org_id: &str,

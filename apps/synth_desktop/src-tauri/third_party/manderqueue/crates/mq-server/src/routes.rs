@@ -80,10 +80,6 @@ fn actor(state: &AppState, headers: &HeaderMap) -> Result<Principal, ApiError> {
     })
 }
 
-async fn thread_actor(state: &AppState, headers: &HeaderMap, thread_id: Uuid, operation: ThreadOperation) -> Result<Principal, ApiError> {
-    thread_authority(state, headers, thread_id, operation).await.map(|(principal, _)| principal)
-}
-
 async fn thread_authority(state: &AppState, headers: &HeaderMap, thread_id: Uuid, operation: ThreadOperation) -> Result<(Principal, Option<u64>), ApiError> {
     let value = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
     let (principal, generation) = principal_for_thread(&state.auth, value, thread_id, operation).map_err(|_| ApiError {
@@ -94,6 +90,20 @@ async fn thread_authority(state: &AppState, headers: &HeaderMap, thread_id: Uuid
         state.fabric.validate_grant_generation(&principal, ThreadId(thread_id), generation).await?;
     }
     Ok((principal, generation))
+}
+
+async fn read_authorized(
+    state: &AppState, headers: &HeaderMap, thread_id: Uuid, after_seq: u64, limit: usize,
+) -> Result<(Thread, Vec<Message>), ApiError> {
+    let (principal, generation) = thread_authority(state, headers, thread_id, ThreadOperation::Read).await?;
+    if let Some(generation) = generation {
+        return Ok(state.fabric.read_scoped(&principal, ThreadId(thread_id), generation, after_seq, limit).await?);
+    }
+    let thread = state.fabric.get_thread(&principal, ThreadId(thread_id)).await?;
+    let messages = if limit == 0 { Vec::new() } else {
+        state.fabric.read_messages(&principal, ThreadId(thread_id), after_seq, limit).await?
+    };
+    Ok((thread, messages))
 }
 
 async fn create_thread(
@@ -162,11 +172,7 @@ async fn get_thread(
     headers: HeaderMap,
     Path(thread_id): Path<Uuid>,
 ) -> Result<Json<Thread>, ApiError> {
-    let principal = thread_actor(&state, &headers, thread_id, ThreadOperation::Read).await?;
-    let thread = state
-        .fabric
-        .get_thread(&principal, ThreadId(thread_id))
-        .await?;
+    let (thread, _) = read_authorized(&state, &headers, thread_id, 0, 0).await?;
     Ok(Json(thread))
 }
 
@@ -254,11 +260,7 @@ async fn read_messages(
     Path(thread_id): Path<Uuid>,
     Query(q): Query<ReadQuery>,
 ) -> Result<Json<Vec<Message>>, ApiError> {
-    let principal = thread_actor(&state, &headers, thread_id, ThreadOperation::Read).await?;
-    let messages = state
-        .fabric
-        .read_messages(&principal, ThreadId(thread_id), q.after_seq, q.limit)
-        .await?;
+    let (_, messages) = read_authorized(&state, &headers, thread_id, q.after_seq, q.limit.clamp(1, 200)).await?;
     Ok(Json(messages))
 }
 
@@ -267,11 +269,7 @@ async fn thread_events(
     headers: HeaderMap,
     Path(thread_id): Path<Uuid>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let principal = thread_actor(&state, &headers, thread_id, ThreadOperation::Read).await?;
-    let _ = state
-        .fabric
-        .get_thread(&principal, ThreadId(thread_id))
-        .await?;
+    let _ = read_authorized(&state, &headers, thread_id, 0, 0).await?;
 
     let rx = state.local_wake.subscribe();
     let checks = tokio::time::interval(Duration::from_secs(5));
@@ -288,11 +286,7 @@ async fn thread_events(
                 };
                 // Revalidate the token as well as persisted membership. Quiet
                 // streams must not retain authority after credential expiry.
-                let authorized = match thread_actor(&state, &headers, thread_id, ThreadOperation::Read).await {
-                    Ok(current) => state.fabric
-                        .get_thread(&current, ThreadId(thread_id)).await.is_ok(),
-                    _ => false,
-                };
+                let authorized = read_authorized(&state, &headers, thread_id, 0, 0).await.is_ok();
                 if !authorized {
                     return Some((Ok(Event::default().event("revoked").data("authorization_unavailable")),
                         (rx, checks, state, headers, true)));

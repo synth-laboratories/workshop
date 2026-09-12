@@ -94,6 +94,13 @@ impl Store for MeteredStore {
         self.inner.get_thread(thread_id).await
     }
 
+    async fn read_scoped(
+        &self, actor: &Principal, thread_id: ThreadId, generation: u64,
+        after_seq: u64, limit: usize,
+    ) -> Result<(Thread, Vec<Message>)> {
+        self.inner.read_scoped(actor, thread_id, generation, after_seq, limit).await
+    }
+
     async fn list_threads(
         &self,
         org_id: &str,
@@ -306,6 +313,15 @@ impl Store for BatchingStore {
 
     async fn get_thread(&self, thread_id: ThreadId) -> Result<Option<Thread>> {
         self.durable.get_thread(thread_id).await
+    }
+
+    async fn read_scoped(
+        &self, actor: &Principal, thread_id: ThreadId, generation: u64,
+        after_seq: u64, limit: usize,
+    ) -> Result<(Thread, Vec<Message>)> {
+        // Scoped writes already bypass the volatile buffer. Never merge an
+        // independently authorized buffer snapshot into a scoped read.
+        self.durable.read_scoped(actor, thread_id, generation, after_seq, limit).await
     }
 
     async fn list_threads(

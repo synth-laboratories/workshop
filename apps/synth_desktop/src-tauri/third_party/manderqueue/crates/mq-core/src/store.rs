@@ -14,6 +14,15 @@ pub trait Store: Send + Sync {
         idempotency_key: &str,
     ) -> Result<Option<Thread>>;
     async fn get_thread(&self, thread_id: ThreadId) -> Result<Option<Thread>>;
+    /// Read a bounded snapshot and validate scoped membership under the same lock.
+    /// Implementations must not emulate this with separate authorization/read calls.
+    async fn read_scoped(
+        &self, actor: &Principal, thread_id: ThreadId, generation: u64,
+        after_seq: u64, limit: usize,
+    ) -> Result<(Thread, Vec<Message>)> {
+        let _ = (actor, thread_id, generation, after_seq, limit);
+        Err(crate::Error::Invalid("atomic_scoped_read_unsupported"))
+    }
     async fn list_threads(&self, org_id: &str, scope: Option<&ScopeBinding>)
         -> Result<Vec<Thread>>;
     async fn has_cap(&self, thread_id: ThreadId, principal: &Principal, cap: Cap) -> Result<bool>;

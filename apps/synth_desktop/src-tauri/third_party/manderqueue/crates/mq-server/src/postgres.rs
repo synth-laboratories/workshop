@@ -462,6 +462,39 @@ impl Store for PostgresStore {
         row.map(|r| r.into_thread()).transpose()
     }
 
+    async fn read_scoped(
+        &self, actor: &Principal, thread_id: ThreadId, generation: u64,
+        after_seq: u64, limit: usize,
+    ) -> Result<(Thread, Vec<Message>)> {
+        let after_seq = i64::try_from(after_seq).map_err(|_| Error::Invalid("sequence_out_of_range"))?;
+        let generation = i64::try_from(generation).map_err(|_| Error::Forbidden("stale_grant_generation"))?;
+        let mut tx = self.pool.begin().await.map_err(map_db)?;
+        // Same lock order as membership mutation/publish. Revocation cannot
+        // commit between the authority check and this bounded snapshot read.
+        let row = sqlx::query_as::<_, ThreadRow>(
+            "SELECT thread_id, org_id, scope_kind, scope_id, title, idempotency_key, created_at FROM mq_threads WHERE thread_id=$1 FOR SHARE")
+            .bind(thread_id.0).fetch_optional(&mut *tx).await.map_err(map_db)?
+            .ok_or(Error::NotFound("thread"))?;
+        let thread = row.into_thread()?;
+        if thread.org_id != actor.org_id {
+            return Err(Error::NotFound("thread"));
+        }
+        let authorized: Option<bool> = sqlx::query_scalar(
+            "SELECT grant_generation=$5 AND 'read'=ANY(caps) AND role<>'revoked' FROM mq_participants WHERE thread_id=$1 AND principal_kind=$2 AND principal_id=$3 AND org_id=$4 FOR SHARE")
+            .bind(thread_id.0).bind(kind_str(actor.kind)).bind(&actor.id).bind(&actor.org_id)
+            .bind(generation).fetch_optional(&mut *tx).await.map_err(map_db)?;
+        if authorized != Some(true) {
+            return Err(Error::Forbidden("stale_grant_generation"));
+        }
+        let rows = sqlx::query_as::<_, MessageRow>(
+            "SELECT message_id, thread_id, seq, kind, body, payload, sender_kind, sender_id, sender_org_id, idempotency_key, correlation_id, parent_message_id, causation_id, created_at FROM mq_messages WHERE thread_id=$1 AND seq>$2 ORDER BY seq ASC LIMIT $3")
+            .bind(thread_id.0).bind(after_seq).bind(limit.min(200) as i64)
+            .fetch_all(&mut *tx).await.map_err(map_db)?;
+        let messages = rows.into_iter().map(|row| row.into_message()).collect::<Result<Vec<_>>>()?;
+        tx.commit().await.map_err(map_db)?;
+        Ok((thread, messages))
+    }
+
     async fn list_threads(
         &self,
         org_id: &str,
