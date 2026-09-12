@@ -542,7 +542,18 @@ async fn cloud_mailbox(core: &Arc<CoreRuntime>, action: &str, body: Value) -> Re
             host::activate_store(core).await?;
             return Ok(json!({"view": runtime.view().await?}));
         }
-        "signout" => return Ok(json!({"view": runtime.invalidate().await?})),
+        "signout" => {
+            // Device sign-out revokes the enrollments first when the backend
+            // is reachable; the local sign-out happens in every case.
+            let revocation = match host::configured_deps(core) {
+                Ok(deps) => match runtime.sign_out_device_with(&deps).await {
+                    Ok(outcome) => json!(outcome),
+                    Err(error) => json!({"error": format!("{error:#}")}),
+                },
+                Err(error) => json!({"error": format!("{error:#}")}),
+            };
+            return Ok(json!({"deviceSignOut": revocation, "view": runtime.invalidate().await?}));
+        }
         "sleep" => {
             runtime.fence_mailbox_for_sleep().await;
             return Ok(json!({"credentialsDropped": true}));

@@ -1,5 +1,7 @@
 //! Workshop grant contract client (manderqueue
-//! `docs/WORKSHOP_GRANT_CONTRACT.md`, sha256 8fc1669a…, 2026-09-12).
+//! `docs/WORKSHOP_GRANT_CONTRACT.md` **contract version 2**, committed at
+//! 02db5d4, sha256 9a442993…; v2 adds device sign-out via enrollment
+//! revocation and the local-only loopback identity origin).
 //!
 //! The credential source is the [`GrantAuthority`] trait; [`HttpGrantAuthority`]
 //! is a thin adapter over the backend endpoints in contract §3. Everything
@@ -13,7 +15,8 @@ use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub const CONTRACT_SHA256: &str = "8fc1669a50de2c924df01a7861372bd35f3b8a086b70b47f1c545169f1154f1f";
+pub const CONTRACT_VERSION: u32 = 2;
+pub const CONTRACT_SHA256: &str = "9a4429931ce762c4a41c98e88ba204120f0abcc396c70b0b8b8bf423df180563";
 /// Credential lifetime bound from contract §3 (`ttl_seconds` on credential).
 pub const MAX_CREDENTIAL_SECS: i64 = 300;
 const MAX_BODY: usize = 1024 * 1024;
@@ -54,6 +57,9 @@ pub struct EnrollmentDoc {
     pub label: Option<String>,
     pub principal: PrincipalDoc,
     pub incarnation: u64,
+    /// Device sign-out (contract v2 §5.1). Once set the enrollment is dead.
+    #[serde(default)]
+    pub revoked_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -178,22 +184,51 @@ pub trait GrantAuthority: Send + Sync {
     fn get_grant(&self, grant_id: String) -> BoxFuture<'_, Result<GrantDoc, AuthorityError>>;
     fn revoke_grant(&self, grant_id: String) -> BoxFuture<'_, Result<GrantDoc, AuthorityError>>;
     fn credential(&self, request: CredentialRequest) -> BoxFuture<'_, Result<CredentialDoc, AuthorityError>>;
+    /// Device sign-out (v2 §5.1): idempotent, permanent for this enrollment.
+    fn revoke_enrollment(&self, enrollment_id: String) -> BoxFuture<'_, Result<EnrollmentDoc, AuthorityError>>;
+    fn get_enrollment(&self, enrollment_id: String) -> BoxFuture<'_, Result<EnrollmentDoc, AuthorityError>>;
 }
 
 /// Which MQ/backend origins are acceptable. Production requires https;
-/// loopback http exists only for in-process fixtures and local profiles.
+/// loopback http is accepted only when the verified backend is itself a
+/// local slot (see [`local_loopback_origin`]) or in in-process fixtures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EndpointPolicy {
     pub allow_loopback_http: bool,
 }
 impl EndpointPolicy {
     pub const PRODUCTION: Self = Self { allow_loopback_http: false };
+    pub const LOCAL_SLOT: Self = Self { allow_loopback_http: true };
+}
+
+/// The backend's local-only origin form (contract v2 §9, backend
+/// `services/desktop_cloud_identity._canonical_origin`): `http` with host
+/// exactly `127.0.0.1`, `localhost` or `[::1]`, an explicit port and no
+/// path, query or userinfo. The backend emits it only when
+/// `APP_ENVIRONMENT` is exactly `local`; the identity document has no other
+/// environment field, so this origin form is the local signal. Returns the
+/// canonical origin, or `None` for anything else.
+pub fn local_loopback_origin(value: &str) -> Option<String> {
+    let url = reqwest::Url::parse(value).ok()?;
+    let host = url.host_str()?;
+    let port = url.port()?;
+    if url.scheme() != "http"
+        || !matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return None;
+    }
+    let canonical = format!("http://{host}:{port}");
+    (canonical == value.trim_end_matches('/')).then_some(canonical)
 }
 
 pub fn validate_origin(value: &str, policy: EndpointPolicy) -> Result<String> {
     let url = reqwest::Url::parse(value).context("invalid origin")?;
-    let loopback = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
-    let scheme_ok = url.scheme() == "https" || (policy.allow_loopback_http && loopback && url.scheme() == "http");
+    let scheme_ok = url.scheme() == "https" || (policy.allow_loopback_http && local_loopback_origin(value).is_some());
     if !scheme_ok
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -241,6 +276,9 @@ impl EnrollResponse {
             || enrollment.incarnation == 0
         {
             bail!("enrollment is not the server-derived principal for this device/session");
+        }
+        if enrollment.revoked_at.is_some() {
+            bail!("enrollment was signed out; enroll a new session");
         }
         Ok(EnrollmentBinding {
             enrollment_id: enrollment.enrollment_id.clone(),
@@ -390,6 +428,10 @@ struct GrantEnvelope {
 struct GrantList {
     grants: Vec<GrantDoc>,
 }
+#[derive(Deserialize)]
+struct EnrollmentEnvelope {
+    enrollment: EnrollmentDoc,
+}
 
 fn segment(id: &str) -> Result<&str, AuthorityError> {
     canonical_uuid(id).map_err(|error| AuthorityError::Invalid(error.to_string()))?;
@@ -429,6 +471,18 @@ impl GrantAuthority for HttpGrantAuthority {
             self.call(reqwest::Method::POST, &path, Some(json!(request)), false).await
         })
     }
+    fn revoke_enrollment(&self, enrollment_id: String) -> BoxFuture<'_, Result<EnrollmentDoc, AuthorityError>> {
+        Box::pin(async move {
+            let path = format!("/api/v1/mq/enrollments/{}/revoke", segment(&enrollment_id)?);
+            Ok(self.call::<EnrollmentEnvelope>(reqwest::Method::POST, &path, Some(json!({})), true).await?.enrollment)
+        })
+    }
+    fn get_enrollment(&self, enrollment_id: String) -> BoxFuture<'_, Result<EnrollmentDoc, AuthorityError>> {
+        Box::pin(async move {
+            let path = format!("/api/v1/mq/enrollments/{}", segment(&enrollment_id)?);
+            Ok(self.call::<EnrollmentEnvelope>(reqwest::Method::GET, &path, None, false).await?.enrollment)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -454,5 +508,28 @@ mod tests {
         }
         assert!(validate_origin("http://127.0.0.1:9", EndpointPolicy { allow_loopback_http: true }).is_ok());
         assert!(validate_origin("http://10.0.0.1:9", EndpointPolicy { allow_loopback_http: true }).is_err());
+    }
+
+    /// Mirrors the backend's `_canonical_origin(local=True)` cases.
+    #[test]
+    fn local_loopback_origin_matches_the_backend_local_rule_exactly() {
+        for ok in ["http://127.0.0.1:8000", "http://localhost:8000", "http://[::1]:8000"] {
+            assert_eq!(local_loopback_origin(ok).as_deref(), Some(ok), "{ok}");
+        }
+        for refused in [
+            "http://127.0.0.2:8000",   // other loopback addresses
+            "http://127.0.0.1",        // implicit port
+            "http://localhost",        // implicit port
+            "http://127.0.0.1:8000/x", // path
+            "http://127.0.0.1:8000/?q=1",
+            "http://u@127.0.0.1:8000",
+            "http://example.test:8000", // non-loopback http
+            "https://127.0.0.1:8000",   // not the http local form
+            "http://LOCALHOST:8000",    // noncanonical spelling
+        ] {
+            assert_eq!(local_loopback_origin(refused), None, "{refused}");
+        }
+        assert!(validate_origin("http://127.0.0.1", EndpointPolicy::LOCAL_SLOT).is_err());
+        assert!(validate_origin("http://127.0.0.1:8000", EndpointPolicy::PRODUCTION).is_err());
     }
 }

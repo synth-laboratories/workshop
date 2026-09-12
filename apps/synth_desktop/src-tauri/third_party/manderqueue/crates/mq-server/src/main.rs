@@ -1,10 +1,8 @@
 use std::env;
 use std::time::Duration;
 
-use mq_core::DeliveryStatus;
-use mq_server::delivery::{matching_bridge_outcome, delivery_token, DELIVERY_PATH};
+use mq_server::worker::{http_client, run_once, WorkerConfig};
 use mq_server::{boot_from_env, router, AppState};
-use serde_json::json;
 
 #[tokio::main]
 async fn main() {
@@ -42,10 +40,7 @@ async fn run_serve() {
     } else {
         "off"
     };
-    let auth = match &boot.auth {
-        mq_server::AuthMode::Dev => "dev",
-        mq_server::AuthMode::Jwt { .. } => "jwt",
-    };
+    let auth = boot.auth.label();
     let bind = env::var("MQ_BIND").unwrap_or_else(|_| {
         env::var("PORT")
             .map(|p| format!("0.0.0.0:{p}"))
@@ -73,146 +68,33 @@ async fn run_serve() {
 async fn run_worker() {
     // Refuse missing delivery wiring before opening stores or claiming work.
     let bridge = env::var("MQ_BRIDGE_BASE_URL").expect("worker requires MQ_BRIDGE_BASE_URL");
-    let bridge_url = reqwest::Url::parse(&bridge).expect("valid bridge URL");
-    assert!(
-        matches!(bridge_url.scheme(), "http" | "https"),
-        "HTTP(S) bridge required"
-    );
-    assert!(
-        bridge_url.query().is_none() && bridge_url.fragment().is_none() && bridge_url.path() == "/",
-        "bridge URL must be an origin"
-    );
-    assert!(
-        bridge_url.username().is_empty() && bridge_url.password().is_none(),
-        "bridge URL must not contain credentials"
-    );
     let secret =
         env::var("MQ_DELIVERY_JWT_SECRET").expect("worker requires MQ_DELIVERY_JWT_SECRET");
-    delivery_token(b"{}", &secret, chrono::Utc::now().timestamp())
-        .expect("delivery signing configuration");
-    let boot = boot_from_env().await.expect("boot");
-    let fabric = boot.fabric;
-    let local = boot.local_wake;
     let max_attempts: u32 = env::var("MQ_WORKER_MAX_ATTEMPTS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(8);
+    let config = WorkerConfig::new(&bridge, &secret, max_attempts).expect("delivery configuration");
+    let boot = boot_from_env().await.expect("boot");
+    let fabric = boot.fabric;
+    let local = boot.local_wake;
     let interval_ms: u64 = env::var("MQ_WORKER_POLL_MS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("delivery HTTP client");
+    let http = http_client();
 
     eprintln!(
         "mq-server worker started poll_ms={interval_ms} bridge={}",
-        bridge_url.origin().ascii_serialization()
+        config.bridge_origin()
     );
 
     let mut wake_rx = local.subscribe();
     loop {
         let _ = tokio::time::timeout(Duration::from_millis(interval_ms), wake_rx.recv()).await;
-
-        match fabric.claim_delivery_jobs(1).await {
-            Ok(jobs) if jobs.is_empty() => {}
-            Ok(jobs) => {
-                for job in jobs {
-                    let outcome = {
-                        let url = format!("{}{}", bridge.trim_end_matches('/'), DELIVERY_PATH);
-                        let message = match fabric.get_message(job.message_id).await {
-                            Ok(Some(m)) => Some(m),
-                            Ok(None) => {
-                                eprintln!(
-                                    "bridge missing message {} for job {}",
-                                    job.message_id.0, job.job_id.0
-                                );
-                                None
-                            }
-                            Err(e) => {
-                                eprintln!("bridge load message failed: {e}");
-                                None
-                            }
-                        };
-                        let Some(message) = message else {
-                            // Retry later; do not settle delivered.
-                            let _ = fabric
-                                .settle_delivery_job(
-                                    job.job_id,
-                                    job.attempts,
-                                    DeliveryStatus::Pending,
-                                )
-                                .await;
-                            continue;
-                        };
-                        let body = json!({
-                            "job_id": job.job_id.0,
-                            "message_id": job.message_id.0,
-                            "thread_id": job.thread_id.0,
-                            "recipient": job.recipient,
-                            "attempts": job.attempts,
-                            "message": {
-                                "seq": message.seq,
-                                "kind": message.kind,
-                                "body": message.body,
-                                "payload": message.payload,
-                                "sender": message.sender,
-                                "idempotency_key": message.idempotency_key,
-                                "correlation_id": message.correlation_id,
-                                "parent_message_id": message.parent_message_id.map(|m| m.0),
-                                "causation_id": message.causation_id,
-                                "created_at": message.created_at,
-                            }
-                        });
-                        let bytes = serde_json::to_vec(&body).expect("JSON envelope");
-                        let token = delivery_token(&bytes, &secret, chrono::Utc::now().timestamp())
-                            .expect("delivery signature");
-                        match http
-                            .post(&url)
-                            .bearer_auth(token)
-                            .header("content-type", "application/json")
-                            .body(bytes)
-                            .send()
-                            .await
-                        {
-                            Ok(resp) if resp.status().is_success() => {
-                                match resp.json::<serde_json::Value>().await {
-                                    Ok(receipt) => matching_bridge_outcome(&receipt, &body),
-                                    Err(error) => {
-                                        eprintln!("invalid bridge receipt: {error}");
-                                        None
-                                    }
-                                }
-                            }
-                            Ok(resp) => {
-                                eprintln!("bridge HTTP {} for job {}", resp.status(), job.job_id.0);
-                                None
-                            }
-                            Err(e) => {
-                                eprintln!("bridge error for job {}: {e}", job.job_id.0);
-                                None
-                            }
-                        }
-                    };
-
-                    let status = if let Some(status) = outcome {
-                        status
-                    } else if job.attempts >= max_attempts {
-                        DeliveryStatus::DeadLetter
-                    } else {
-                        DeliveryStatus::Pending
-                    };
-                    if let Err(e) = fabric
-                        .settle_delivery_job(job.job_id, job.attempts, status)
-                        .await
-                    {
-                        eprintln!("settle failed: {e}");
-                    }
-                }
-            }
-            Err(e) => eprintln!("claim failed: {e}"),
+        // Each claimed job is rechecked against live grant authority before dispatch.
+        if let Err(e) = run_once(&fabric, &http, &config, 1).await {
+            eprintln!("claim failed: {e}");
         }
     }
 }

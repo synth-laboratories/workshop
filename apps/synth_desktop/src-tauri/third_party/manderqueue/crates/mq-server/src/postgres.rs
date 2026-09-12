@@ -7,8 +7,16 @@ use mq_core::{
     DeliveryStatus, Error, Message, MessageId, MessageKind, Participant, Principal, PrincipalKind,
     PublishMessage, Result, Role, ScopeBinding, ScopeKind, Store, Thread, ThreadId,
 };
+use mq_core::grants::{
+    check_grant_access, check_grant_create, check_grant_issuance, check_grant_mutation,
+    delivery_allowed, enrollment_principal, is_enrollment_principal, HISTORY_MAX_LIMIT,
+};
+use mq_core::{
+    CreateGrant, DeliveryGrant, EnrollDevice, Enrollment, Grant, GrantFence, GrantFilter,
+    GrantIssuanceRequest, GrantMutation, GrantOperation, GrantState, GrantStatus,
+};
 use serde_json::Value as JsonValue;
-use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
+use sqlx::{postgres::PgPoolOptions, FromRow, PgConnection, PgPool};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -356,6 +364,154 @@ fn map_db(err: sqlx::Error) -> Error {
     })
 }
 
+const THREAD_COLUMNS: &str =
+    "thread_id, org_id, scope_kind, scope_id, title, idempotency_key, created_at";
+const PARTICIPANT_COLUMNS: &str =
+    "principal_kind, principal_id, org_id, role, caps, grant_generation";
+const ENROLLMENT_COLUMNS: &str = "enrollment_id, org_id, owner_kind, owner_id, device_id, session_id, label, incarnation, revoked_at, created_at, updated_at";
+const GRANT_COLUMNS: &str = "grant_id, org_id, thread_id, enrollment_id, principal_kind, principal_id, operations, history_after_seq, expires_at, generation, status, granted_by_kind, granted_by_id, created_at, updated_at";
+
+#[derive(FromRow)]
+struct EnrollmentRow {
+    enrollment_id: Uuid,
+    org_id: String,
+    owner_kind: String,
+    owner_id: String,
+    device_id: String,
+    session_id: String,
+    label: Option<String>,
+    incarnation: i64,
+    revoked_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl EnrollmentRow {
+    fn into_enrollment(self) -> Result<Enrollment> {
+        Ok(Enrollment {
+            principal: enrollment_principal(&self.org_id, self.enrollment_id),
+            owner: Principal {
+                kind: parse_kind(&self.owner_kind)?,
+                id: self.owner_id,
+                org_id: self.org_id.clone(),
+            },
+            enrollment_id: self.enrollment_id,
+            org_id: self.org_id,
+            device_id: self.device_id,
+            session_id: self.session_id,
+            label: self.label,
+            incarnation: u64::try_from(self.incarnation).map_err(|_| Error::Invalid("incarnation"))?,
+            revoked_at: self.revoked_at,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+#[derive(FromRow)]
+struct GrantRow {
+    grant_id: Uuid,
+    org_id: String,
+    thread_id: Uuid,
+    enrollment_id: Uuid,
+    principal_kind: String,
+    principal_id: String,
+    operations: Vec<String>,
+    history_after_seq: i64,
+    expires_at: DateTime<Utc>,
+    generation: i64,
+    status: String,
+    granted_by_kind: String,
+    granted_by_id: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl GrantRow {
+    /// Incarnation and state are filled by [`Grant::view`].
+    fn into_grant(self) -> Result<Grant> {
+        Ok(Grant {
+            grant_id: self.grant_id,
+            thread_id: ThreadId(self.thread_id),
+            enrollment_id: self.enrollment_id,
+            principal: Principal {
+                kind: parse_kind(&self.principal_kind)?,
+                id: self.principal_id,
+                org_id: self.org_id.clone(),
+            },
+            operations: self
+                .operations
+                .iter()
+                .map(|op| GrantOperation::parse(op).ok_or(Error::Invalid("grant_operation")))
+                .collect::<Result<Vec<_>>>()?,
+            history_after_seq: u64::try_from(self.history_after_seq).map_err(|_| Error::Invalid("history_after_seq"))?,
+            expires_at: self.expires_at,
+            incarnation: 0,
+            generation: u64::try_from(self.generation).map_err(|_| Error::Invalid("grant_generation"))?,
+            status: GrantStatus::parse(&self.status).ok_or(Error::Invalid("grant_status"))?,
+            state: GrantState::Active,
+            granted_by: Principal {
+                kind: parse_kind(&self.granted_by_kind)?,
+                id: self.granted_by_id,
+                org_id: self.org_id.clone(),
+            },
+            org_id: self.org_id,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+async fn load_enrollment(conn: &mut PgConnection, enrollment_id: Uuid, lock: &str) -> Result<Option<Enrollment>> {
+    sqlx::query_as::<_, EnrollmentRow>(&format!(
+        "SELECT {ENROLLMENT_COLUMNS} FROM mq_enrollments WHERE enrollment_id=$1 {lock}"
+    ))
+    .bind(enrollment_id)
+    .fetch_optional(conn)
+    .await
+    .map_err(map_db)?
+    .map(EnrollmentRow::into_enrollment)
+    .transpose()
+}
+
+async fn load_grant(conn: &mut PgConnection, grant_id: Uuid, lock: &str) -> Result<Option<Grant>> {
+    sqlx::query_as::<_, GrantRow>(&format!("SELECT {GRANT_COLUMNS} FROM mq_grants WHERE grant_id=$1 {lock}"))
+        .bind(grant_id)
+        .fetch_optional(conn)
+        .await
+        .map_err(map_db)?
+        .map(GrantRow::into_grant)
+        .transpose()
+}
+
+/// Members of a thread, or only `only` when given.
+async fn load_members(
+    conn: &mut PgConnection, thread_id: Uuid, only: Option<&Principal>, lock: &str,
+) -> Result<Vec<Participant>> {
+    let rows = match only {
+        Some(p) => sqlx::query_as::<_, ParticipantRow>(&format!(
+            "SELECT {PARTICIPANT_COLUMNS} FROM mq_participants WHERE thread_id=$1 AND principal_kind=$2 AND principal_id=$3 AND org_id=$4 {lock}"))
+            .bind(thread_id).bind(kind_str(p.kind)).bind(&p.id).bind(&p.org_id)
+            .fetch_all(conn).await,
+        None => sqlx::query_as::<_, ParticipantRow>(&format!(
+            "SELECT {PARTICIPANT_COLUMNS} FROM mq_participants WHERE thread_id=$1 {lock}"))
+            .bind(thread_id).fetch_all(conn).await,
+    }
+    .map_err(map_db)?;
+    rows.into_iter().map(ParticipantRow::into_participant).collect()
+}
+
+/// Grant plus enrollment for an operation check, both share-locked.
+async fn load_grant_parts(conn: &mut PgConnection, grant_id: Uuid) -> Result<(Grant, Enrollment)> {
+    let grant = load_grant(conn, grant_id, "FOR SHARE")
+        .await?
+        .ok_or(Error::Forbidden("grant_operation_denied"))?;
+    let enrollment = load_enrollment(conn, grant.enrollment_id, "FOR SHARE")
+        .await?
+        .ok_or(Error::Forbidden("grant_operation_denied"))?;
+    Ok((grant, enrollment))
+}
+
 fn role_str(r: Role) -> &'static str {
     r.as_str()
 }
@@ -488,11 +644,255 @@ impl Store for PostgresStore {
         }
         let rows = sqlx::query_as::<_, MessageRow>(
             "SELECT message_id, thread_id, seq, kind, body, payload, sender_kind, sender_id, sender_org_id, idempotency_key, correlation_id, parent_message_id, causation_id, created_at FROM mq_messages WHERE thread_id=$1 AND seq>$2 ORDER BY seq ASC LIMIT $3")
-            .bind(thread_id.0).bind(after_seq).bind(limit.min(200) as i64)
+            .bind(thread_id.0).bind(after_seq).bind(limit.min(HISTORY_MAX_LIMIT + 1) as i64)
             .fetch_all(&mut *tx).await.map_err(map_db)?;
         let messages = rows.into_iter().map(|row| row.into_message()).collect::<Result<Vec<_>>>()?;
         tx.commit().await.map_err(map_db)?;
         Ok((thread, messages))
+    }
+
+    async fn enroll(&self, owner: &Principal, req: EnrollDevice, now: DateTime<Utc>) -> Result<Enrollment> {
+        // One statement: a concurrent re-enroll serializes on the unique key.
+        // A revoked (signed-out) enrollment is never advanced or reused.
+        sqlx::query_as::<_, EnrollmentRow>(&format!(
+            "INSERT INTO mq_enrollments (enrollment_id, org_id, owner_kind, owner_id, device_id, session_id, label, incarnation, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$8)
+             ON CONFLICT ON CONSTRAINT uq_mq_enrollments_owner_device_session DO UPDATE SET
+               incarnation = mq_enrollments.incarnation + 1,
+               label = COALESCE(EXCLUDED.label, mq_enrollments.label),
+               updated_at = EXCLUDED.updated_at
+             WHERE mq_enrollments.revoked_at IS NULL
+             RETURNING {ENROLLMENT_COLUMNS}"))
+            .bind(Uuid::new_v4()).bind(&owner.org_id).bind(kind_str(owner.kind)).bind(&owner.id)
+            .bind(&req.device_id).bind(&req.session_id).bind(&req.label).bind(now)
+            .fetch_optional(&self.pool).await.map_err(map_db)?
+            .ok_or(Error::Forbidden("enrollment_revoked"))?
+            .into_enrollment()
+    }
+
+    async fn revoke_enrollment(&self, owner: &Principal, enrollment_id: Uuid, now: DateTime<Utc>) -> Result<Enrollment> {
+        // Lock order matches every other grant path: threads (sorted), then the
+        // enrollment, then grant rows. A grant created concurrently on another
+        // thread waits on the enrollment lock and then sees the revocation.
+        let threads: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT thread_id FROM mq_grants WHERE enrollment_id=$1")
+            .bind(enrollment_id).fetch_all(&self.pool).await.map_err(map_db)?;
+        let mut tx = self.pool.begin().await.map_err(map_db)?;
+        if !threads.is_empty() {
+            sqlx::query("SELECT thread_id FROM mq_threads WHERE thread_id = ANY($1) ORDER BY thread_id FOR UPDATE")
+                .bind(&threads).fetch_all(&mut *tx).await.map_err(map_db)?;
+        }
+        let enrollment = load_enrollment(&mut tx, enrollment_id, "FOR UPDATE").await?
+            .ok_or(Error::NotFound("enrollment"))?;
+        if enrollment.owner != *owner {
+            return Err(Error::NotFound("enrollment"));
+        }
+        if enrollment.is_revoked() {
+            tx.commit().await.map_err(map_db)?;
+            return Ok(enrollment);
+        }
+        sqlx::query("UPDATE mq_grants SET status='revoked', generation=generation+1, updated_at=$2 WHERE enrollment_id=$1 AND status='active'")
+            .bind(enrollment_id).bind(now).execute(&mut *tx).await.map_err(map_db)?;
+        let principal = &enrollment.principal;
+        sqlx::query("UPDATE mq_delivery_jobs SET status='dead_letter',lease_until=NULL,next_attempt_at=NULL,updated_at=now() WHERE recipient_kind=$1 AND recipient_id=$2 AND recipient_org_id=$3 AND status='pending'")
+            .bind(kind_str(principal.kind)).bind(&principal.id).bind(&principal.org_id)
+            .execute(&mut *tx).await.map_err(map_db)?;
+        let revoked = sqlx::query_as::<_, EnrollmentRow>(&format!(
+            "UPDATE mq_enrollments SET revoked_at=$2, updated_at=$2 WHERE enrollment_id=$1 RETURNING {ENROLLMENT_COLUMNS}"))
+            .bind(enrollment_id).bind(now).fetch_one(&mut *tx).await.map_err(map_db)?
+            .into_enrollment()?;
+        tx.commit().await.map_err(map_db)?;
+        Ok(revoked)
+    }
+
+    async fn get_enrollment(&self, enrollment_id: Uuid) -> Result<Option<Enrollment>> {
+        let mut conn = self.pool.acquire().await.map_err(map_db)?;
+        load_enrollment(&mut conn, enrollment_id, "").await
+    }
+
+    async fn list_enrollments(&self, owner: &Principal) -> Result<Vec<Enrollment>> {
+        sqlx::query_as::<_, EnrollmentRow>(&format!(
+            "SELECT {ENROLLMENT_COLUMNS} FROM mq_enrollments WHERE org_id=$1 AND owner_kind=$2 AND owner_id=$3 ORDER BY created_at, enrollment_id"))
+            .bind(&owner.org_id).bind(kind_str(owner.kind)).bind(&owner.id)
+            .fetch_all(&self.pool).await.map_err(map_db)?
+            .into_iter().map(EnrollmentRow::into_enrollment).collect()
+    }
+
+    async fn create_grant(&self, actor: &Principal, req: CreateGrant, now: DateTime<Utc>) -> Result<Grant> {
+        let mut tx = self.pool.begin().await.map_err(map_db)?;
+        // Same lock order as membership mutation and publish: thread first.
+        let thread = sqlx::query_as::<_, ThreadRow>(&format!(
+            "SELECT {THREAD_COLUMNS} FROM mq_threads WHERE thread_id=$1 FOR UPDATE"))
+            .bind(req.thread_id.0).fetch_optional(&mut *tx).await.map_err(map_db)?
+            .ok_or(Error::NotFound("thread"))?.into_thread()?;
+        if thread.org_id != actor.org_id {
+            return Err(Error::NotFound("thread"));
+        }
+        let enrollment = load_enrollment(&mut tx, req.enrollment_id, "FOR SHARE").await?
+            .ok_or(Error::NotFound("enrollment"))?;
+        let members = load_members(&mut tx, req.thread_id.0, None, "FOR UPDATE").await?;
+        let head: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(seq), 0) FROM mq_messages WHERE thread_id=$1")
+            .bind(req.thread_id.0).fetch_one(&mut *tx).await.map_err(map_db)?;
+        let head = u64::try_from(head).map_err(|_| Error::Invalid("sequence_out_of_range"))?;
+        let (floor, add) = check_grant_create(actor, &thread, &members, &enrollment, &req, head)?;
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mq_grants WHERE thread_id=$1 AND enrollment_id=$2)")
+            .bind(req.thread_id.0).bind(req.enrollment_id).fetch_one(&mut *tx).await.map_err(map_db)?;
+        if exists {
+            return Err(Error::Conflict("grant_exists"));
+        }
+        if let Some(p) = add {
+            sqlx::query("INSERT INTO mq_participants(thread_id,principal_kind,principal_id,org_id,role,caps) VALUES($1,$2,$3,$4,$5,$6)")
+                .bind(req.thread_id.0).bind(kind_str(p.principal.kind)).bind(&p.principal.id)
+                .bind(&p.principal.org_id).bind(role_str(p.role)).bind(cap_strs(&p.caps))
+                .execute(&mut *tx).await.map_err(map_db)?;
+        }
+        let operations: Vec<String> = req.operations.iter().map(|op| op.as_str().to_string()).collect();
+        let grant = sqlx::query_as::<_, GrantRow>(&format!(
+            "INSERT INTO mq_grants ({GRANT_COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,'active',$10,$11,$12,$12)
+             RETURNING {GRANT_COLUMNS}"))
+            .bind(Uuid::new_v4()).bind(&thread.org_id).bind(req.thread_id.0).bind(enrollment.enrollment_id)
+            .bind(kind_str(enrollment.principal.kind)).bind(&enrollment.principal.id).bind(&operations)
+            .bind(i64::try_from(floor).map_err(|_| Error::Invalid("invalid_history_bound"))?)
+            .bind(now + chrono::Duration::seconds(req.ttl_seconds))
+            .bind(kind_str(actor.kind)).bind(&actor.id).bind(now)
+            .fetch_one(&mut *tx).await.map_err(map_db)?
+            .into_grant()?;
+        tx.commit().await.map_err(map_db)?;
+        Ok(grant.view(&enrollment, now))
+    }
+
+    async fn get_grant(&self, grant_id: Uuid, now: DateTime<Utc>) -> Result<Option<(Grant, Enrollment)>> {
+        let mut conn = self.pool.acquire().await.map_err(map_db)?;
+        let Some(grant) = load_grant(&mut conn, grant_id, "").await? else { return Ok(None) };
+        let enrollment = load_enrollment(&mut conn, grant.enrollment_id, "").await?
+            .ok_or(Error::NotFound("enrollment"))?;
+        Ok(Some((grant.view(&enrollment, now), enrollment)))
+    }
+
+    async fn list_grants(&self, org_id: &str, filter: &GrantFilter, now: DateTime<Utc>) -> Result<Vec<(Grant, Enrollment)>> {
+        let mut conn = self.pool.acquire().await.map_err(map_db)?;
+        let grants = sqlx::query_as::<_, GrantRow>(&format!(
+            "SELECT {GRANT_COLUMNS} FROM mq_grants WHERE org_id=$1
+               AND ($2::uuid IS NULL OR enrollment_id=$2) AND ($3::uuid IS NULL OR thread_id=$3)
+             ORDER BY created_at, grant_id"))
+            .bind(org_id).bind(filter.enrollment_id).bind(filter.thread_id.map(|t| t.0))
+            .fetch_all(&mut *conn).await.map_err(map_db)?;
+        let mut out = Vec::with_capacity(grants.len());
+        for row in grants {
+            let grant = row.into_grant()?;
+            let enrollment = load_enrollment(&mut conn, grant.enrollment_id, "").await?
+                .ok_or(Error::NotFound("enrollment"))?;
+            out.push((grant.view(&enrollment, now), enrollment));
+        }
+        Ok(out)
+    }
+
+    async fn mutate_grant(&self, actor: &Principal, grant_id: Uuid, mutation: GrantMutation, now: DateTime<Utc>) -> Result<Grant> {
+        // thread_id is immutable; read it first so the thread lock is taken first.
+        let thread_id: Uuid = sqlx::query_scalar("SELECT thread_id FROM mq_grants WHERE grant_id=$1")
+            .bind(grant_id).fetch_optional(&self.pool).await.map_err(map_db)?
+            .ok_or(Error::NotFound("grant"))?;
+        let mut tx = self.pool.begin().await.map_err(map_db)?;
+        sqlx::query("SELECT 1 FROM mq_threads WHERE thread_id=$1 FOR UPDATE")
+            .bind(thread_id).execute(&mut *tx).await.map_err(map_db)?;
+        let grant = load_grant(&mut tx, grant_id, "FOR UPDATE").await?.ok_or(Error::NotFound("grant"))?;
+        if grant.org_id != actor.org_id {
+            return Err(Error::NotFound("grant"));
+        }
+        let enrollment = load_enrollment(&mut tx, grant.enrollment_id, "FOR SHARE").await?
+            .ok_or(Error::NotFound("grant"))?;
+        let members = load_members(&mut tx, thread_id, None, "FOR SHARE").await?;
+        let current = grant.view(&enrollment, now);
+        let Some(next) = check_grant_mutation(actor, &current, &enrollment, &members, mutation, now)? else {
+            tx.commit().await.map_err(map_db)?;
+            return Ok(current);
+        };
+        sqlx::query("UPDATE mq_grants SET status=$2, generation=$3, expires_at=$4, updated_at=$5 WHERE grant_id=$1")
+            .bind(grant_id).bind(next.status.as_str())
+            .bind(i64::try_from(next.generation).map_err(|_| Error::Invalid("grant_generation_exhausted"))?)
+            .bind(next.expires_at).bind(now)
+            .execute(&mut *tx).await.map_err(map_db)?;
+        if matches!(mutation, GrantMutation::Revoke) {
+            sqlx::query("UPDATE mq_delivery_jobs SET status='dead_letter',lease_until=NULL,next_attempt_at=NULL,updated_at=now() WHERE thread_id=$1 AND recipient_kind=$2 AND recipient_id=$3 AND recipient_org_id=$4 AND status='pending'")
+                .bind(thread_id).bind(kind_str(next.principal.kind)).bind(&next.principal.id).bind(&next.principal.org_id)
+                .execute(&mut *tx).await.map_err(map_db)?;
+        }
+        tx.commit().await.map_err(map_db)?;
+        Ok(next.view(&enrollment, now))
+    }
+
+    async fn grant_issuance(&self, actor: &Principal, grant_id: Uuid, req: GrantIssuanceRequest, now: DateTime<Utc>) -> Result<Grant> {
+        let mut tx = self.pool.begin().await.map_err(map_db)?;
+        let grant = load_grant(&mut tx, grant_id, "FOR SHARE").await?.ok_or(Error::NotFound("grant"))?;
+        if grant.org_id != actor.org_id {
+            return Err(Error::NotFound("grant"));
+        }
+        let enrollment = load_enrollment(&mut tx, grant.enrollment_id, "FOR SHARE").await?
+            .ok_or(Error::NotFound("grant"))?;
+        let members = load_members(&mut tx, grant.thread_id.0, Some(&grant.principal), "FOR SHARE").await?;
+        let current = grant.view(&enrollment, now);
+        check_grant_issuance(actor, &current, &enrollment, &members, &req, now)?;
+        tx.commit().await.map_err(map_db)?;
+        Ok(current)
+    }
+
+    async fn read_granted(
+        &self, actor: &Principal, thread_id: ThreadId, fence: &GrantFence,
+        after_seq: u64, limit: usize,
+    ) -> Result<(Thread, Grant, Vec<Message>)> {
+        let mut tx = self.pool.begin().await.map_err(map_db)?;
+        // Same lock order as membership/grant mutation. Revocation cannot
+        // commit between this authority check and the bounded snapshot read.
+        let thread = sqlx::query_as::<_, ThreadRow>(&format!(
+            "SELECT {THREAD_COLUMNS} FROM mq_threads WHERE thread_id=$1 FOR SHARE"))
+            .bind(thread_id.0).fetch_optional(&mut *tx).await.map_err(map_db)?
+            .ok_or(Error::NotFound("thread"))?.into_thread()?;
+        if thread.org_id != actor.org_id {
+            return Err(Error::NotFound("thread"));
+        }
+        let (grant, enrollment) = load_grant_parts(&mut tx, fence.grant_id).await?;
+        let members = load_members(&mut tx, thread_id.0, Some(actor), "FOR SHARE").await?;
+        check_grant_access(actor, thread_id, &grant, &enrollment, &members, fence, GrantOperation::Read)?;
+        let effective = i64::try_from(after_seq.max(grant.history_after_seq))
+            .map_err(|_| Error::Invalid("sequence_out_of_range"))?;
+        let limit = limit.min(HISTORY_MAX_LIMIT + 1);
+        let messages = if limit == 0 {
+            Vec::new()
+        } else {
+            sqlx::query_as::<_, MessageRow>(
+                "SELECT message_id, thread_id, seq, kind, body, payload, sender_kind, sender_id, sender_org_id, idempotency_key, correlation_id, parent_message_id, causation_id, created_at FROM mq_messages WHERE thread_id=$1 AND seq>$2 ORDER BY seq ASC LIMIT $3")
+                .bind(thread_id.0).bind(effective).bind(limit as i64)
+                .fetch_all(&mut *tx).await.map_err(map_db)?
+                .into_iter().map(MessageRow::into_message).collect::<Result<Vec<_>>>()?
+        };
+        tx.commit().await.map_err(map_db)?;
+        Ok((thread, grant.view(&enrollment, fence.at), messages))
+    }
+
+    async fn delivery_grant(
+        &self, thread_id: ThreadId, recipient: &Principal, message_seq: u64, now: DateTime<Utc>,
+    ) -> Result<DeliveryGrant> {
+        if !is_enrollment_principal(recipient) {
+            return Ok(DeliveryGrant::NotGoverned);
+        }
+        let mut conn = self.pool.acquire().await.map_err(map_db)?;
+        let grant = sqlx::query_as::<_, GrantRow>(&format!(
+            "SELECT {GRANT_COLUMNS} FROM mq_grants WHERE thread_id=$1 AND principal_kind=$2 AND principal_id=$3 AND org_id=$4"))
+            .bind(thread_id.0).bind(kind_str(recipient.kind)).bind(&recipient.id).bind(&recipient.org_id)
+            .fetch_optional(&mut *conn).await.map_err(map_db)?
+            .map(GrantRow::into_grant).transpose()?;
+        let members = load_members(&mut conn, thread_id.0, Some(recipient), "").await?;
+        let enrollment = match &grant {
+            Some(grant) => load_enrollment(&mut conn, grant.enrollment_id, "").await?,
+            None => None,
+        };
+        match (grant, enrollment) {
+            (Some(grant), Some(enrollment))
+                if delivery_allowed(Some(&grant), Some(&enrollment), &members, message_seq, now) =>
+            {
+                Ok(DeliveryGrant::Allowed(grant.view(&enrollment, now)))
+            }
+            _ => Ok(DeliveryGrant::Denied),
+        }
     }
 
     async fn list_threads(
@@ -668,6 +1068,12 @@ impl Store for PostgresStore {
 
         if thread_org != sender.org_id {
             return Err(Error::Forbidden("org_workspace_mismatch"));
+        }
+        if let Some(fence) = req.grant_fence.as_ref() {
+            // Under the thread lock, before idempotent replay or insert.
+            let (grant, enrollment) = load_grant_parts(&mut tx, fence.grant_id).await?;
+            let members = load_members(&mut tx, thread_id.0, Some(sender), "FOR SHARE").await?;
+            check_grant_access(sender, thread_id, &grant, &enrollment, &members, fence, GrantOperation::Publish)?;
         }
         let publisher: Option<bool> = sqlx::query_scalar("SELECT 'publish'=ANY(caps) FROM mq_participants WHERE thread_id=$1 AND principal_kind=$2 AND principal_id=$3 AND org_id=$4 FOR SHARE")
             .bind(thread_id.0).bind(kind_str(sender.kind)).bind(&sender.id).bind(&sender.org_id)

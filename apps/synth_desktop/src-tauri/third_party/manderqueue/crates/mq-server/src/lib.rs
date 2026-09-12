@@ -5,6 +5,7 @@ pub mod embedded;
 pub mod postgres;
 pub mod redis_wake;
 mod routes;
+pub mod worker;
 pub mod write_buffer;
 
 use std::sync::Arc;
@@ -13,7 +14,7 @@ use std::time::Duration;
 use axum::Router;
 use mq_core::{BatchingStore, Fabric, LocalWake, Wake};
 
-pub use auth::AuthMode;
+pub use auth::{AuthMode, Verifier, AUDIENCE, LEGACY_ISSUER, SIGNED_ISSUER};
 pub use routes::app;
 
 #[derive(Clone)]
@@ -69,8 +70,39 @@ pub struct Boot {
     pub auth: AuthMode,
 }
 
+/// Poll the configured JWKS file so key rotation needs no restart.
+/// `MQ_JWT_JWKS_RELOAD_SECS` (default 30; 0 disables). Inline keysets never reload.
+fn spawn_jwks_reload(auth: &AuthMode) {
+    let AuthMode::Keyset(verifier) = auth else { return };
+    if !verifier.has_file_source() {
+        return;
+    }
+    let secs: u64 = std::env::var("MQ_JWT_JWKS_RELOAD_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+    if secs == 0 {
+        return;
+    }
+    let verifier = verifier.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(secs));
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            match verifier.reload_if_changed() {
+                Ok(true) => eprintln!("mq jwks reloaded kids={:?}", verifier.kids()),
+                Ok(false) => {}
+                // Errors never include file contents; current keys stay active.
+                Err(error) => eprintln!("mq jwks reload refused, keeping current keys: {error}"),
+            }
+        }
+    });
+}
+
 pub async fn boot_from_env() -> Result<Boot, Box<dyn std::error::Error + Send + Sync>> {
     let auth = AuthMode::from_env()?;
+    spawn_jwks_reload(&auth);
     let profile = std::env::var("MQ_PROFILE").unwrap_or_else(|_| "deployed".into());
     let database_url = std::env::var("DATABASE_URL").ok().filter(|s| !s.trim().is_empty());
     let configured_buffer = std::env::var("MQ_WRITE_BUFFER").unwrap_or_else(|_| "off".into());

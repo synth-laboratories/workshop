@@ -40,14 +40,23 @@ impl TurnBoundary for SessionTurnBoundary {
 }
 
 /// Dependencies from the configured backend profile: an https backend
-/// origin and a configured Synth API key. No restricted executor is
-/// registered, so Respond-preset requests wait for an operator answer.
+/// origin (or a local slot's loopback origin, see below) and a configured
+/// Synth API key. No restricted executor is registered, so Respond-preset
+/// requests wait for an operator answer.
 pub fn configured_deps(core: &crate::core_runtime::CoreRuntime) -> Result<MailboxDeps> {
     let backend = crate::synth_config::resolve().context("cloud backend configuration unavailable")?;
     let key = backend.api_key.context("Synth API key is not configured")?;
     let url = reqwest::Url::parse(&backend.backend_url).context("invalid backend URL")?;
-    let policy = EndpointPolicy::PRODUCTION;
-    let origin = validate_origin(&url.origin().ascii_serialization(), policy)?;
+    let candidate = url.origin().ascii_serialization();
+    // Loopback http is accepted only in the backend's exact local-slot form.
+    // Every identity verification then requires the backend to report that
+    // same origin, which it does only with APP_ENVIRONMENT=local.
+    let policy = if super::grant::local_loopback_origin(&candidate).is_some() {
+        EndpointPolicy::LOCAL_SLOT
+    } else {
+        EndpointPolicy::PRODUCTION
+    };
+    let origin = validate_origin(&candidate, policy)?;
     let client = crate::cloud::intern::InternClient::connect(&backend.backend_url, key.clone(), crate::limits::INTERN_HTTP_TIMEOUT)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     Ok(MailboxDeps {

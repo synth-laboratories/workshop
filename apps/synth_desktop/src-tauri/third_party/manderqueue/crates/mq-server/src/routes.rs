@@ -9,13 +9,17 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use futures_util::stream::Stream;
 use mq_core::{
-    CreateThread, Message, Participant, Principal, PrincipalKind, PublishMessage, Role,
-    ScopeBinding, Thread, ThreadId, WakeEvent,
+    CreateGrant, CreateThread, EnrollDevice, Enrollment, Grant, GrantFilter, GrantIssuance,
+    GrantIssuanceRequest, HistoryAuthority, HistoryPage, Message, Participant, Principal,
+    PrincipalKind, PublishMessage, RenewGrant, Role, ScopeBinding, Thread, ThreadId, WakeEvent,
 };
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::auth::{principal_from_authorization, principal_for_thread, ThreadOperation};
+use crate::auth::{
+    principal_for_thread, principal_from_authorization, signed_principal_from_authorization, ThreadOperation,
+};
+use mq_core::{DeliveryCheck, DeliveryCheckRequest};
 use crate::error::ApiError;
 use crate::AppState;
 
@@ -39,7 +43,18 @@ pub fn router(state: AppState) -> Router {
             "/v1/threads/{thread_id}/messages",
             post(publish_message).get(read_messages),
         )
+        .route("/v1/threads/{thread_id}/history", get(read_history))
         .route("/v1/threads/{thread_id}/events", get(thread_events))
+        .route("/v1/enrollments", post(enroll).get(list_enrollments))
+        .route("/v1/enrollments/{enrollment_id}", get(get_enrollment))
+        .route("/v1/enrollments/{enrollment_id}/revoke", post(revoke_enrollment))
+        .route("/v1/grants", post(create_grant).get(list_grants))
+        .route("/v1/grants/{grant_id}", get(get_grant))
+        .route("/v1/grants/{grant_id}/revoke", post(revoke_grant))
+        .route("/v1/grants/{grant_id}/restore", post(restore_grant))
+        .route("/v1/grants/{grant_id}/renew", post(renew_grant))
+        .route("/v1/grants/{grant_id}/issuance", post(grant_issuance))
+        .route("/v1/grants/{grant_id}/delivery-check", post(delivery_check))
         .with_state(state)
 }
 
@@ -72,38 +87,43 @@ async fn openapi_yaml() -> impl IntoResponse {
     )
 }
 
+fn unauthenticated() -> ApiError {
+    ApiError {
+        status: StatusCode::UNAUTHORIZED,
+        code: "unauthenticated",
+    }
+}
+
+/// Unrestricted principal credential. Scoped and grant credentials refuse here.
 fn actor(state: &AppState, headers: &HeaderMap) -> Result<Principal, ApiError> {
     let value = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
-    principal_from_authorization(&state.auth, value).map_err(|_| ApiError {
-        status: StatusCode::UNAUTHORIZED,
-        code: "unauthenticated",
-    })
+    principal_from_authorization(&state.auth, value).map_err(|_| unauthenticated())
 }
 
-async fn thread_authority(state: &AppState, headers: &HeaderMap, thread_id: Uuid, operation: ThreadOperation) -> Result<(Principal, Option<u64>), ApiError> {
+async fn thread_authority(
+    state: &AppState, headers: &HeaderMap, thread_id: Uuid, operation: ThreadOperation,
+) -> Result<(Principal, HistoryAuthority), ApiError> {
     let value = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
-    let (principal, generation) = principal_for_thread(&state.auth, value, thread_id, operation).map_err(|_| ApiError {
-        status: StatusCode::UNAUTHORIZED,
-        code: "unauthenticated",
-    })?;
-    if let Some(generation) = generation {
-        state.fabric.validate_grant_generation(&principal, ThreadId(thread_id), generation).await?;
+    let (principal, authority) = principal_for_thread(&state.auth, value, thread_id, operation)
+        .map_err(|_| unauthenticated())?;
+    if let HistoryAuthority::Scoped { generation } = &authority {
+        state.fabric.validate_grant_generation(&principal, ThreadId(thread_id), *generation).await?;
     }
-    Ok((principal, generation))
+    // Grant credentials are checked atomically with the data access in the store.
+    Ok((principal, authority))
 }
 
-async fn read_authorized(
-    state: &AppState, headers: &HeaderMap, thread_id: Uuid, after_seq: u64, limit: usize,
-) -> Result<(Thread, Vec<Message>), ApiError> {
-    let (principal, generation) = thread_authority(state, headers, thread_id, ThreadOperation::Read).await?;
-    if let Some(generation) = generation {
-        return Ok(state.fabric.read_scoped(&principal, ThreadId(thread_id), generation, after_seq, limit).await?);
-    }
-    let thread = state.fabric.get_thread(&principal, ThreadId(thread_id)).await?;
-    let messages = if limit == 0 { Vec::new() } else {
-        state.fabric.read_messages(&principal, ThreadId(thread_id), after_seq, limit).await?
-    };
-    Ok((thread, messages))
+/// Read authorization without returning messages (thread metadata, SSE rechecks).
+async fn authorize_read(state: &AppState, headers: &HeaderMap, thread_id: Uuid) -> Result<Thread, ApiError> {
+    let (principal, authority) = thread_authority(state, headers, thread_id, ThreadOperation::Read).await?;
+    let thread = ThreadId(thread_id);
+    Ok(match authority {
+        HistoryAuthority::Membership => state.fabric.get_thread(&principal, thread).await?,
+        HistoryAuthority::Scoped { generation } => {
+            state.fabric.read_scoped(&principal, thread, generation, 0, 0).await?.0
+        }
+        HistoryAuthority::Grant(fence) => state.fabric.authorize_grant_read(&principal, thread, fence).await?,
+    })
 }
 
 async fn create_thread(
@@ -172,8 +192,7 @@ async fn get_thread(
     headers: HeaderMap,
     Path(thread_id): Path<Uuid>,
 ) -> Result<Json<Thread>, ApiError> {
-    let (thread, _) = read_authorized(&state, &headers, thread_id, 0, 0).await?;
-    Ok(Json(thread))
+    Ok(Json(authorize_read(&state, &headers, thread_id).await?))
 }
 
 async fn add_participant(
@@ -233,8 +252,13 @@ async fn publish_message(
     Path(thread_id): Path<Uuid>,
     Json(mut body): Json<PublishMessage>,
 ) -> Result<(StatusCode, Json<Message>), ApiError> {
-    let (principal, generation) = thread_authority(&state, &headers, thread_id, ThreadOperation::Publish).await?;
-    body.expected_grant_generation = generation;
+    let (principal, authority) = thread_authority(&state, &headers, thread_id, ThreadOperation::Publish).await?;
+    // Trusted, non-wire authority carried into the atomic commit.
+    match authority {
+        HistoryAuthority::Membership => {}
+        HistoryAuthority::Scoped { generation } => body.expected_grant_generation = Some(generation),
+        HistoryAuthority::Grant(fence) => body.grant_fence = Some(fence),
+    }
     let message = state
         .fabric
         .publish(&principal, ThreadId(thread_id), body)
@@ -260,8 +284,37 @@ async fn read_messages(
     Path(thread_id): Path<Uuid>,
     Query(q): Query<ReadQuery>,
 ) -> Result<Json<Vec<Message>>, ApiError> {
-    let (_, messages) = read_authorized(&state, &headers, thread_id, q.after_seq, q.limit.clamp(1, 200)).await?;
+    let (principal, authority) = thread_authority(&state, &headers, thread_id, ThreadOperation::Read).await?;
+    let thread = ThreadId(thread_id);
+    let limit = q.limit.clamp(1, 200);
+    let messages = match authority {
+        HistoryAuthority::Membership => {
+            state.fabric.read_messages(&principal, thread, q.after_seq, limit).await?
+        }
+        HistoryAuthority::Scoped { generation } => {
+            state.fabric.read_scoped(&principal, thread, generation, q.after_seq, limit).await?.1
+        }
+        HistoryAuthority::Grant(fence) => {
+            state.fabric.read_granted_messages(&principal, thread, fence, q.after_seq, limit).await?
+        }
+    };
     Ok(Json(messages))
+}
+
+/// Cursor page with explicit history skips. See docs/WORKSHOP_GRANT_CONTRACT.md §8.
+async fn read_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(thread_id): Path<Uuid>,
+    Query(q): Query<ReadQuery>,
+) -> Result<Json<HistoryPage>, ApiError> {
+    let (principal, authority) = thread_authority(&state, &headers, thread_id, ThreadOperation::Read).await?;
+    Ok(Json(
+        state
+            .fabric
+            .read_history(&principal, ThreadId(thread_id), authority, q.after_seq, q.limit)
+            .await?,
+    ))
 }
 
 async fn thread_events(
@@ -269,7 +322,7 @@ async fn thread_events(
     headers: HeaderMap,
     Path(thread_id): Path<Uuid>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let _ = read_authorized(&state, &headers, thread_id, 0, 0).await?;
+    authorize_read(&state, &headers, thread_id).await?;
 
     let rx = state.local_wake.subscribe();
     let checks = tokio::time::interval(Duration::from_secs(5));
@@ -284,9 +337,9 @@ async fn thread_events(
                     event = rx.recv() => Some(event),
                     _ = checks.tick() => None,
                 };
-                // Revalidate the token as well as persisted membership. Quiet
-                // streams must not retain authority after credential expiry.
-                let authorized = read_authorized(&state, &headers, thread_id, 0, 0).await.is_ok();
+                // Revalidate the token as well as persisted membership and grant
+                // state. Quiet streams must not retain authority after expiry.
+                let authorized = authorize_read(&state, &headers, thread_id).await.is_ok();
                 if !authorized {
                     return Some((Ok(Event::default().event("revoked").data("authorization_unavailable")),
                         (rx, checks, state, headers, true)));
@@ -307,4 +360,123 @@ async fn thread_events(
     );
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+}
+
+// ---- Enrollment and grant administration (backend calls as the owner) ----
+
+async fn enroll(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<EnrollDevice>,
+) -> Result<(StatusCode, Json<Enrollment>), ApiError> {
+    let principal = actor(&state, &headers)?;
+    Ok((StatusCode::CREATED, Json(state.fabric.enroll(&principal, body).await?)))
+}
+
+async fn list_enrollments(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<Enrollment>>, ApiError> {
+    let principal = actor(&state, &headers)?;
+    Ok(Json(state.fabric.list_enrollments(&principal).await?))
+}
+
+async fn get_enrollment(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(enrollment_id): Path<Uuid>,
+) -> Result<Json<Enrollment>, ApiError> {
+    let principal = actor(&state, &headers)?;
+    Ok(Json(state.fabric.get_enrollment(&principal, enrollment_id).await?))
+}
+
+/// Device sign-out: revokes every grant and incarnation of the enrollment.
+async fn revoke_enrollment(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(enrollment_id): Path<Uuid>,
+) -> Result<Json<Enrollment>, ApiError> {
+    let principal = actor(&state, &headers)?;
+    Ok(Json(state.fabric.revoke_enrollment(&principal, enrollment_id).await?))
+}
+
+async fn create_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateGrant>,
+) -> Result<(StatusCode, Json<Grant>), ApiError> {
+    let principal = actor(&state, &headers)?;
+    Ok((StatusCode::CREATED, Json(state.fabric.create_grant(&principal, body).await?)))
+}
+
+async fn list_grants(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(filter): Query<GrantFilter>,
+) -> Result<Json<Vec<Grant>>, ApiError> {
+    let principal = actor(&state, &headers)?;
+    Ok(Json(state.fabric.list_grants(&principal, &filter).await?))
+}
+
+async fn get_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(grant_id): Path<Uuid>,
+) -> Result<Json<Grant>, ApiError> {
+    let principal = actor(&state, &headers)?;
+    Ok(Json(state.fabric.get_grant(&principal, grant_id).await?))
+}
+
+async fn revoke_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(grant_id): Path<Uuid>,
+) -> Result<Json<Grant>, ApiError> {
+    let principal = actor(&state, &headers)?;
+    Ok(Json(state.fabric.revoke_grant(&principal, grant_id).await?))
+}
+
+async fn restore_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(grant_id): Path<Uuid>,
+) -> Result<Json<Grant>, ApiError> {
+    let principal = actor(&state, &headers)?;
+    Ok(Json(state.fabric.restore_grant(&principal, grant_id).await?))
+}
+
+async fn renew_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(grant_id): Path<Uuid>,
+    Json(body): Json<RenewGrant>,
+) -> Result<Json<Grant>, ApiError> {
+    let principal = actor(&state, &headers)?;
+    Ok(Json(state.fabric.renew_grant(&principal, grant_id, body.ttl_seconds).await?))
+}
+
+/// Bridge-side verification of an envelope grant before acceptance (§6.1).
+/// Asymmetric backend signature required; legacy HS256 and dev tokens refuse.
+async fn delivery_check(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(grant_id): Path<Uuid>,
+    Json(body): Json<DeliveryCheckRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let value = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
+    let principal = signed_principal_from_authorization(&state.auth, value).map_err(|_| unauthenticated())?;
+    let verified: DeliveryCheck = state.fabric.delivery_check(&principal, grant_id, body).await?;
+    Ok(([(axum::http::header::CACHE_CONTROL, "no-store")], Json(verified)))
+}
+
+/// Live authority for the backend issuer. Not a credential.
+async fn grant_issuance(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(grant_id): Path<Uuid>,
+    Json(body): Json<GrantIssuanceRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let principal = actor(&state, &headers)?;
+    let issuance: GrantIssuance = state.fabric.grant_issuance(&principal, grant_id, body).await?;
+    Ok(([(axum::http::header::CACHE_CONTROL, "no-store")], Json(issuance)))
 }

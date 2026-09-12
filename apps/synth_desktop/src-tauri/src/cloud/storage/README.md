@@ -19,7 +19,9 @@ until a qualified deployment/profile opts in.
 
 ## Native MQ mailbox (WP6)
 
-Contract: manderqueue `docs/WORKSHOP_GRANT_CONTRACT.md` (sha256 `8fc1669a…`).
+Contract: manderqueue `docs/WORKSHOP_GRANT_CONTRACT.md` version 2 (committed at
+02db5d4, sha256 `9a442993…`), vendored MQ snapshot 02db5d4. Device sign-out
+revokes the enrollment (all grants and incarnations) before the local sign-out.
 `mailbox.rs` persists: an explicitly selected existing Local session bound to
 one thread as the server-derived `enrollment:<id>` principal (never a legacy,
 remote-linked or other-account session); the server incarnation and grant

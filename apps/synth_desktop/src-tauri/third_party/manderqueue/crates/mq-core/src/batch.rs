@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::error::{Error, Result};
+use crate::grants::*;
 use crate::store::Store;
 use crate::types::*;
+use chrono::DateTime;
+use uuid::Uuid;
 
 /// Optional side-channel (e.g. Redis list) for durable staging before/alongside flush.
 #[async_trait]
@@ -99,6 +102,44 @@ impl Store for MeteredStore {
         after_seq: u64, limit: usize,
     ) -> Result<(Thread, Vec<Message>)> {
         self.inner.read_scoped(actor, thread_id, generation, after_seq, limit).await
+    }
+
+    async fn enroll(&self, owner: &Principal, req: EnrollDevice, now: DateTime<Utc>) -> Result<Enrollment> {
+        self.inner.enroll(owner, req, now).await
+    }
+    async fn get_enrollment(&self, enrollment_id: Uuid) -> Result<Option<Enrollment>> {
+        self.inner.get_enrollment(enrollment_id).await
+    }
+    async fn list_enrollments(&self, owner: &Principal) -> Result<Vec<Enrollment>> {
+        self.inner.list_enrollments(owner).await
+    }
+    async fn revoke_enrollment(&self, owner: &Principal, enrollment_id: Uuid, now: DateTime<Utc>) -> Result<Enrollment> {
+        self.inner.revoke_enrollment(owner, enrollment_id, now).await
+    }
+    async fn create_grant(&self, actor: &Principal, req: CreateGrant, now: DateTime<Utc>) -> Result<Grant> {
+        self.inner.create_grant(actor, req, now).await
+    }
+    async fn get_grant(&self, grant_id: Uuid, now: DateTime<Utc>) -> Result<Option<(Grant, Enrollment)>> {
+        self.inner.get_grant(grant_id, now).await
+    }
+    async fn list_grants(&self, org_id: &str, filter: &GrantFilter, now: DateTime<Utc>) -> Result<Vec<(Grant, Enrollment)>> {
+        self.inner.list_grants(org_id, filter, now).await
+    }
+    async fn mutate_grant(&self, actor: &Principal, grant_id: Uuid, mutation: GrantMutation, now: DateTime<Utc>) -> Result<Grant> {
+        self.inner.mutate_grant(actor, grant_id, mutation, now).await
+    }
+    async fn grant_issuance(&self, actor: &Principal, grant_id: Uuid, req: GrantIssuanceRequest, now: DateTime<Utc>) -> Result<Grant> {
+        self.inner.grant_issuance(actor, grant_id, req, now).await
+    }
+    async fn read_granted(
+        &self, actor: &Principal, thread_id: ThreadId, fence: &GrantFence, after_seq: u64, limit: usize,
+    ) -> Result<(Thread, Grant, Vec<Message>)> {
+        self.inner.read_granted(actor, thread_id, fence, after_seq, limit).await
+    }
+    async fn delivery_grant(
+        &self, thread_id: ThreadId, recipient: &Principal, message_seq: u64, now: DateTime<Utc>,
+    ) -> Result<DeliveryGrant> {
+        self.inner.delivery_grant(thread_id, recipient, message_seq, now).await
     }
 
     async fn list_threads(
@@ -324,6 +365,45 @@ impl Store for BatchingStore {
         self.durable.read_scoped(actor, thread_id, generation, after_seq, limit).await
     }
 
+    // Grant authority never passes through the volatile buffer.
+    async fn enroll(&self, owner: &Principal, req: EnrollDevice, now: DateTime<Utc>) -> Result<Enrollment> {
+        self.durable.enroll(owner, req, now).await
+    }
+    async fn get_enrollment(&self, enrollment_id: Uuid) -> Result<Option<Enrollment>> {
+        self.durable.get_enrollment(enrollment_id).await
+    }
+    async fn list_enrollments(&self, owner: &Principal) -> Result<Vec<Enrollment>> {
+        self.durable.list_enrollments(owner).await
+    }
+    async fn revoke_enrollment(&self, owner: &Principal, enrollment_id: Uuid, now: DateTime<Utc>) -> Result<Enrollment> {
+        self.durable.revoke_enrollment(owner, enrollment_id, now).await
+    }
+    async fn create_grant(&self, actor: &Principal, req: CreateGrant, now: DateTime<Utc>) -> Result<Grant> {
+        self.durable.create_grant(actor, req, now).await
+    }
+    async fn get_grant(&self, grant_id: Uuid, now: DateTime<Utc>) -> Result<Option<(Grant, Enrollment)>> {
+        self.durable.get_grant(grant_id, now).await
+    }
+    async fn list_grants(&self, org_id: &str, filter: &GrantFilter, now: DateTime<Utc>) -> Result<Vec<(Grant, Enrollment)>> {
+        self.durable.list_grants(org_id, filter, now).await
+    }
+    async fn mutate_grant(&self, actor: &Principal, grant_id: Uuid, mutation: GrantMutation, now: DateTime<Utc>) -> Result<Grant> {
+        self.durable.mutate_grant(actor, grant_id, mutation, now).await
+    }
+    async fn grant_issuance(&self, actor: &Principal, grant_id: Uuid, req: GrantIssuanceRequest, now: DateTime<Utc>) -> Result<Grant> {
+        self.durable.grant_issuance(actor, grant_id, req, now).await
+    }
+    async fn read_granted(
+        &self, actor: &Principal, thread_id: ThreadId, fence: &GrantFence, after_seq: u64, limit: usize,
+    ) -> Result<(Thread, Grant, Vec<Message>)> {
+        self.durable.read_granted(actor, thread_id, fence, after_seq, limit).await
+    }
+    async fn delivery_grant(
+        &self, thread_id: ThreadId, recipient: &Principal, message_seq: u64, now: DateTime<Utc>,
+    ) -> Result<DeliveryGrant> {
+        self.durable.delivery_grant(thread_id, recipient, message_seq, now).await
+    }
+
     async fn list_threads(
         &self,
         org_id: &str,
@@ -369,7 +449,7 @@ impl Store for BatchingStore {
         sender: &Principal,
         req: PublishMessage,
     ) -> Result<(Message, bool)> {
-        if req.expected_grant_generation.is_some() {
+        if req.expected_grant_generation.is_some() || req.grant_fence.is_some() {
             // Buffered messages do not retain ingress authority. Commit scoped
             // writes directly so serialization cannot discard the generation.
             return self.durable.append_message(thread_id, sender, req).await;

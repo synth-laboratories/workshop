@@ -60,6 +60,7 @@ struct FakeEnrollment {
     device: String,
     session: String,
     incarnation: u64,
+    revoked: bool,
 }
 struct FakeGrant {
     id: String,
@@ -171,7 +172,8 @@ impl Fake {
         json!({"enrollment_id":enrollment.id,"org_id":org(),"owner":{"kind":"human","id":account,"org_id":org()},
             "device_id":enrollment.device,"session_id":enrollment.session,"label":null,
             "principal":{"kind":"actor","id":format!("enrollment:{}",enrollment.id),"org_id":org()},
-            "incarnation":enrollment.incarnation,"created_at":"x","updated_at":"x"})
+            "incarnation":enrollment.incarnation,"revoked_at":enrollment.revoked.then_some("2026-09-12T00:00:00Z"),
+            "created_at":"x","updated_at":"x"})
     }
 
     fn grant_json(state: &FakeState, grant: &FakeGrant) -> Value {
@@ -189,6 +191,9 @@ impl Fake {
         let Some((grant_id, generation, incarnation)) = state.tokens.get(token).cloned() else { return Err(mq_problem(401, "unauthenticated")) };
         let grant = state.grants.iter().find(|g| g.id == grant_id).unwrap();
         let enrollment = state.enrollments.iter().find(|e| e.id == grant.enrollment).unwrap();
+        if enrollment.revoked {
+            return Err(mq_problem(403, "enrollment_revoked"));
+        }
         if grant.thread != thread {
             return Err(mq_problem(401, "unauthenticated"));
         }
@@ -226,12 +231,13 @@ impl Fake {
                 ("POST", ["enrollments"]) => {
                     let (device, session) = (body["device_id"].as_str().unwrap().to_owned(), body["session_id"].as_str().unwrap().to_owned());
                     let index = match state.enrollments.iter().position(|e| e.device == device && e.session == session) {
+                        Some(index) if state.enrollments[index].revoked => return problem(403, "enrollment_revoked"),
                         Some(index) => {
                             state.enrollments[index].incarnation += 1;
                             index
                         }
                         None => {
-                            state.enrollments.push(FakeEnrollment { id: uuid::Uuid::new_v4().to_string(), device, session, incarnation: 1 });
+                            state.enrollments.push(FakeEnrollment { id: uuid::Uuid::new_v4().to_string(), device, session, incarnation: 1, revoked: false });
                             state.enrollments.len() - 1
                         }
                     };
@@ -240,6 +246,21 @@ impl Fake {
                     Reply::Json(201, json!({"enrollment":enrollment,"mq_endpoint":state.endpoint,
                         "identity":{"backend_origin":ORIGIN,"backend_id":uuid_of(1),"profile_id":uuid_of(4),"account_id":account,"org_id":org()}}))
                 }
+                ("POST", ["enrollments", id, "revoke"]) => {
+                    let Some(index) = state.enrollments.iter().position(|e| e.id == *id) else { return problem(404, "not_found") };
+                    if !state.enrollments[index].revoked {
+                        state.enrollments[index].revoked = true;
+                        for grant in state.grants.iter_mut().filter(|g| g.enrollment == *id && !g.revoked) {
+                            grant.revoked = true;
+                            grant.generation += 1;
+                        }
+                    }
+                    Reply::Json(200, json!({"enrollment": Self::enrollment_json(&state, &state.enrollments[index])}))
+                }
+                ("GET", ["enrollments", id]) => match state.enrollments.iter().find(|e| e.id == *id) {
+                    Some(enrollment) => Reply::Json(200, json!({"enrollment": Self::enrollment_json(&state, enrollment)})),
+                    None => problem(404, "not_found"),
+                },
                 ("POST", ["grants"]) => {
                     let thread = body["thread_id"].as_str().unwrap().to_owned();
                     let enrollment = body["enrollment_id"].as_str().unwrap().to_owned();
@@ -281,7 +302,11 @@ impl Fake {
                 }
                 ("POST", ["grants", id, "credential"]) => {
                     let Some(index) = state.grants.iter().position(|g| g.id == *id) else { return problem(404, "not_found") };
-                    let current = state.enrollments.iter().find(|e| e.id == state.grants[index].enrollment).unwrap().incarnation;
+                    let enrollment = state.enrollments.iter().find(|e| e.id == state.grants[index].enrollment).unwrap();
+                    if enrollment.revoked {
+                        return problem(403, "enrollment_revoked");
+                    }
+                    let current = enrollment.incarnation;
                     if body["incarnation"].as_u64() != Some(current) {
                         return problem(403, "grant_incarnation_fenced");
                     }
@@ -913,6 +938,39 @@ async fn sse_wake_fetches_promptly_and_signout_stops_the_supervisor_mid_request(
     let (exit, passes) = tokio::time::timeout(Duration::from_secs(2), supervisor.join()).await.expect("sign-out must stop the supervisor promptly").unwrap();
     assert_eq!(exit, MailboxExit::SignedOut);
     assert!(passes >= 2);
+}
+
+#[tokio::test]
+async fn device_sign_out_revokes_the_enrollment_fences_writes_and_stops_the_supervisor() {
+    let h = harness(Preset::Collaborate, ParticipantPolicy::default(), None).await;
+    let config = MailboxLoopConfig { poll_interval: Duration::from_secs(60), ..MailboxLoopConfig::default() };
+    let supervisor = h.runtime.spawn_mailbox_supervisor(h.deps.clone(), h.thread.clone(), config);
+    // After the first pass the supervisor idles on its wake stream (60 s
+    // poll), so the write queued next stays queued until sign-out.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while h.fake.with(|state| state.wakes.is_empty()) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }).await.unwrap();
+    h.runtime.publish_mq_with(&h.deps, &h.thread, ask("signout-dev-1", "c")).await.unwrap();
+    let outcome = h.runtime.sign_out_device_with(&h.deps).await.unwrap();
+    assert_eq!((outcome.revoked.len(), outcome.unconfirmed.len()), (1, 0));
+    let (exit, _) = tokio::time::timeout(Duration::from_secs(5), supervisor.join()).await.unwrap().unwrap();
+    assert!(matches!(exit, MailboxExit::SignedOut | MailboxExit::Cancelled), "{exit:?}");
+    assert!(h.fake.with(|state| state.enrollments.iter().all(|e| e.revoked) && state.grants.iter().all(|g| g.revoked)));
+    assert_eq!(h.runtime.view().await.unwrap().availability, super::super::Availability::SignedOut);
+    // Signing back in as the same account finds the participant revoked and
+    // its queued write fenced; nothing is ever published.
+    let report = h.pass().await;
+    assert_eq!(report.stopped.as_deref(), Some("revoked"));
+    let snapshot = h.status().await;
+    let participant = snapshot.participant.as_ref().unwrap();
+    assert_eq!((participant.state.as_str(), participant.state_reason.as_deref()), ("revoked", Some("enrollment_revoked")));
+    assert_eq!(snapshot.outbox[0].status, "fenced");
+    assert_eq!(h.fake.with(|state| state.publish_posts), 0);
+    // The signed-out (device, session) cannot be re-enrolled.
+    let other = uuid::Uuid::new_v4().to_string();
+    assert!(h.runtime.connect_mq_session_with(&h.deps, connect_request(&other, &h.session, Preset::Collaborate, ParticipantPolicy::default())).await.is_err());
 }
 
 #[tokio::test]

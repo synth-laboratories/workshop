@@ -34,10 +34,17 @@ pub fn bridge_outcome(body: &Value) -> Option<DeliveryStatus> {
 }
 
 /// A successful response for another job or lease attempt cannot settle this job.
+/// When the envelope carries a grant, the receipt must echo exactly that grant,
+/// so a disposition for other (or no) grant authority cannot settle it.
 pub fn matching_bridge_outcome(body: &Value, envelope: &Value) -> Option<DeliveryStatus> {
     for key in ["job_id", "message_id", "thread_id", "recipient", "attempts"] {
         let expected = envelope.get(key)?;
         if expected.is_null() || body.get(key) != Some(expected) {
+            return None;
+        }
+    }
+    if let Some(grant) = envelope.get("grant") {
+        if body.get("grant") != Some(grant) {
             return None;
         }
     }
@@ -90,5 +97,25 @@ mod tests {
             assert_eq!(matching_bridge_outcome(&wrong, &envelope), None);
         }
         assert_eq!(matching_bridge_outcome(&json!({"status":"dispatched"}), &envelope), None);
+    }
+
+    #[test]
+    fn receipt_must_echo_the_exact_envelope_grant() {
+        let mut envelope = json!({"job_id":"job", "message_id":"message", "thread_id":"thread",
+            "recipient":{"kind":"actor","id":"enrollment:e","org_id":"org"}, "attempts":1});
+        envelope["grant"] = json!({"grant_id":"g","generation":1,"incarnation":2});
+        let mut receipt = envelope.clone();
+        receipt["status"] = json!("awaiting_pull");
+        assert_eq!(matching_bridge_outcome(&receipt, &envelope), Some(DeliveryStatus::AwaitingPull));
+        for stale in [json!({"grant_id":"g","generation":0,"incarnation":2}), json!({"grant_id":"g","generation":1,"incarnation":1}), Value::Null] {
+            let mut wrong = receipt.clone();
+            wrong["grant"] = stale;
+            assert_eq!(matching_bridge_outcome(&wrong, &envelope), None);
+        }
+        receipt.as_object_mut().unwrap().remove("grant");
+        assert_eq!(matching_bridge_outcome(&receipt, &envelope), None);
+        // Envelopes without a grant keep the previous identity-only binding.
+        envelope.as_object_mut().unwrap().remove("grant");
+        assert_eq!(matching_bridge_outcome(&receipt, &envelope), Some(DeliveryStatus::AwaitingPull));
     }
 }

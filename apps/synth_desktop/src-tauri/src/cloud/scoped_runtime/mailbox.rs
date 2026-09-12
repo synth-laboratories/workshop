@@ -129,6 +129,13 @@ pub struct MailboxStatus {
     pub gaps: Vec<(u64, u64, String)>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceSignOut {
+    pub revoked: Vec<String>,
+    pub unconfirmed: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub enum OperatorReply {
     Answer(String),
@@ -317,6 +324,43 @@ impl ScopedCloudRuntime {
         self.attach_grant_doc(generation, thread_id, &participant, &grant).await
     }
 
+    /// Device sign-out (grant contract v2 §5.1). Revokes every enrollment the
+    /// account's participants use (server-side: all grants and incarnations
+    /// refused, queued deliveries dead-lettered), fences local queued writes
+    /// and open deliveries, then signs out locally, which cancels network work
+    /// and drops credentials. A lost revoke response is resolved by a GET,
+    /// never a retried mutation. The local sign-out always happens; any
+    /// enrollment not confirmed revoked is reported as unconfirmed.
+    pub async fn sign_out_device_with(&self, deps: &MailboxDeps) -> Result<DeviceSignOut> {
+        let generation = self.revalidate_with(&deps.origin, || deps.verifier.verify()).await?.generation;
+        let participants = self.scoped_transaction(generation, |store, lease| store.mq_participants(&lease)).await?;
+        let mut enrollments: Vec<String> = participants.iter().map(|p| p.enrollment_id.clone()).collect();
+        enrollments.sort();
+        enrollments.dedup();
+        let mut outcome = DeviceSignOut::default();
+        for enrollment in enrollments {
+            let id = enrollment.clone();
+            let result = match self.authority_call(generation, || deps.authority.revoke_enrollment(id)).await {
+                Ok(document) => Ok(document),
+                Err(error) if error.downcast_ref::<AuthorityError>().is_some_and(|e| matches!(e, AuthorityError::Uncertain(_))) => {
+                    let id = enrollment.clone();
+                    self.authority_call(generation, || deps.authority.get_enrollment(id)).await
+                }
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(document) if document.revoked_at.is_some() && document.enrollment_id == enrollment => outcome.revoked.push(enrollment),
+                _ => outcome.unconfirmed.push(enrollment),
+            }
+        }
+        for participant in participants.iter().filter(|p| outcome.revoked.contains(&p.enrollment_id)) {
+            let thread = participant.thread_id.clone();
+            self.scoped_transaction(generation, move |store, lease| store.set_mq_participant_state(&lease, &thread, "revoked", "enrollment_revoked")).await?;
+        }
+        self.invalidate().await?;
+        Ok(outcome)
+    }
+
     /// Obtain a transport from a freshly issued, validated grant credential.
     async fn mailbox_transport(&self, generation: u32, deps: &MailboxDeps, participant: &ParticipantRecord) -> Result<std::result::Result<(Arc<MqGrantTransport>, ParticipantRecord), String>> {
         {
@@ -343,7 +387,7 @@ impl ScopedCloudRuntime {
                 let Some(code) = error.downcast_ref::<AuthorityError>().and_then(|e| e.code().map(str::to_owned)) else { return Err(error) };
                 let thread = participant.thread_id.clone();
                 let terminal = match code.as_str() {
-                    "grant_revoked" | "grant_membership_required" => Some(("revoked", code.clone())),
+                    "grant_revoked" | "grant_membership_required" | "enrollment_revoked" => Some(("revoked", code.clone())),
                     "grant_expired" => Some(("expired", code.clone())),
                     "grant_incarnation_fenced" | "invalid_incarnation" => Some(("fenced", code.clone())),
                     "desktop_cloud_identity_revoked_or_unavailable" => return Ok(Err("identity_revoked".into())),
@@ -375,7 +419,7 @@ impl ScopedCloudRuntime {
     async fn handle_mq_denial(&self, generation: u32, thread_id: &str, code: &str) -> Result<String> {
         self.mailbox.lock().await.transports.remove(thread_id);
         let (state, reason) = match code {
-            "grant_revoked" | "grant_membership_required" => ("revoked", code),
+            "grant_revoked" | "grant_membership_required" | "enrollment_revoked" => ("revoked", code),
             "grant_expired" => ("expired", code),
             "grant_incarnation_fenced" => ("fenced", code),
             // Stale generation or an expired/unknown credential: one fresh

@@ -1,10 +1,10 @@
 //! Grant-credential MQ transport (contract §6, §8).
 //!
-//! Publish uses the vendored `mq_sdk::MqClient`. The vendored SDK snapshot
-//! (c9a1131) predates the granted `/history` route and has no SSE reader, so
-//! those two reads live here with the SDK's hardening: canonical origin, no
-//! redirects, a request deadline and bounded bodies. Replace them with SDK
-//! methods when the snapshot is realigned to a reviewed MQ commit.
+//! Publish and granted `/history` reads use the vendored `mq_sdk::MqClient`
+//! (snapshot 02db5d4): canonical origin, no redirects, a 30 s request
+//! deadline and bounded bodies. The SDK has no SSE reader, so the wake
+//! stream lives here with the same hardening (no redirects, bounded
+//! connection setup and line length).
 use super::grant::{validate_origin, EndpointPolicy, SecretToken};
 use crate::cloud::storage::MqHistoryPage;
 use anyhow::Result;
@@ -12,7 +12,6 @@ use futures_util::StreamExt;
 use mq_core::{Message, PublishMessage, ThreadId};
 use serde_json::Value;
 
-const MAX_PAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ERROR_BYTES: usize = 64 * 1024;
 const MAX_SSE_LINE: usize = 8 * 1024;
 
@@ -68,7 +67,6 @@ pub enum WakeEvent {
 }
 
 pub struct MqGrantTransport {
-    http: reqwest::Client,
     stream_http: reqwest::Client,
     sdk: mq_sdk::MqClient,
     origin: String,
@@ -82,10 +80,6 @@ impl MqGrantTransport {
         let sdk = mq_sdk::MqClient::try_new(origin.clone(), token.expose().to_owned())
             .map_err(|_| anyhow::anyhow!("invalid MQ grant credential configuration"))?;
         Ok(Self {
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
             // Streams stay open; only connection establishment is bounded.
             stream_http: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10))
@@ -98,38 +92,20 @@ impl MqGrantTransport {
         })
     }
 
-    /// `GET /v1/threads/{id}/history?after_seq=&limit=` (1..=200).
+    /// `GET /v1/threads/{id}/history?after_seq=&limit=` (1..=200) through
+    /// the SDK. The page is still re-validated before any commit.
     pub async fn history(&self, after_seq: u64, limit: usize) -> Result<MqHistoryPage, MqCallError> {
         let limit = limit.clamp(1, 200);
-        let response = self
-            .http
-            .get(format!("{}/v1/threads/{}/history", self.origin, self.thread.0))
-            .query(&[("after_seq", after_seq), ("limit", limit as u64)])
-            .header("authorization", format!("Bearer {}", self.token.expose()))
-            .send()
-            .await
-            .map_err(|error| MqCallError::Uncertain(error.without_url().to_string()))?;
-        let status = response.status().as_u16();
-        let body = bounded(response, if (200..300).contains(&status) { MAX_PAGE_BYTES } else { MAX_ERROR_BYTES }).await?;
-        if !(200..300).contains(&status) {
-            return Err(classify(status, &body));
-        }
-        let page: MqHistoryPage = serde_json::from_slice(&body).map_err(|error| MqCallError::Uncertain(format!("history decode: {error}")))?;
-        if page.messages.len() > limit {
-            return Err(MqCallError::Uncertain("history page exceeds the requested bound".into()));
+        let page = self.sdk.read_history(self.thread, after_seq, limit).await.map_err(sdk_error)?;
+        if page.messages.len() > limit || page.thread_id != self.thread {
+            return Err(MqCallError::Uncertain("history page exceeds the requested bound or thread".into()));
         }
         Ok(page)
     }
 
     /// Publish the exact persisted request through the SDK.
     pub async fn publish(&self, request: PublishMessage) -> Result<Message, MqCallError> {
-        match self.sdk.publish(self.thread, request).await {
-            Ok(message) => Ok(message),
-            Err(mq_sdk::SdkError::Api { status, body }) => Err(classify(status.as_u16(), body.as_bytes())),
-            // A transport failure or an unreadable 2xx may hide a commit.
-            Err(mq_sdk::SdkError::Http(error)) => Err(MqCallError::Uncertain(error.without_url().to_string())),
-            Err(mq_sdk::SdkError::Decode(detail)) => Err(MqCallError::Uncertain(detail)),
-        }
+        self.sdk.publish(self.thread, request).await.map_err(sdk_error)
     }
 
     /// Open the wake stream. Events are hints; the caller fetches history.
@@ -148,6 +124,15 @@ impl MqGrantTransport {
             return Err(classify(status, &body));
         }
         Ok(WakeStream { bytes: Box::pin(response.bytes_stream()), buffer: Vec::new(), event: None })
+    }
+}
+
+fn sdk_error(error: mq_sdk::SdkError) -> MqCallError {
+    match error {
+        mq_sdk::SdkError::Api { status, body } => classify(status.as_u16(), body.as_bytes()),
+        // A transport failure or an unreadable 2xx may hide a commit.
+        mq_sdk::SdkError::Http(error) => MqCallError::Uncertain(error.without_url().to_string()),
+        mq_sdk::SdkError::Decode(detail) => MqCallError::Uncertain(detail),
     }
 }
 

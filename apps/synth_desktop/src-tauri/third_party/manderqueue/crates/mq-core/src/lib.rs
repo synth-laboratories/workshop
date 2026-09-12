@@ -5,6 +5,7 @@
 mod batch;
 mod error;
 mod fabric;
+pub mod grants;
 mod memory;
 mod store;
 mod types;
@@ -15,7 +16,12 @@ pub use batch::{
     StoreCounters,
 };
 pub use error::{Error, Result};
-pub use fabric::Fabric;
+pub use fabric::{Clock, Fabric, HistoryAuthority};
+pub use grants::{
+    CreateGrant, DeliveryCheck, DeliveryCheckRequest, DeliveryGrant, EnrollDevice, Enrollment, Grant, GrantFence, GrantFilter,
+    GrantIssuance, GrantIssuanceRequest, GrantMutation, GrantOperation, GrantState, GrantStatus,
+    HistoryPage, HistorySkip, RenewGrant,
+};
 pub use memory::{MemoryStore, MemoryCheckpoint};
 pub use store::Store;
 pub use types::*;

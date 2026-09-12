@@ -95,25 +95,11 @@ impl ParticipantRecord {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MqSkipped {
-    pub after_seq: u64,
-    pub through_seq: u64,
-    pub reason: String,
-}
+/// Authorized history skip `(after_seq, through_seq]` (contract §8).
+pub type MqSkipped = mq_core::HistorySkip;
 
-/// `GET /v1/threads/{id}/history` (contract §8).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MqHistoryPage {
-    pub thread_id: mq_core::ThreadId,
-    pub requested_after_seq: u64,
-    pub history_after_seq: u64,
-    pub effective_after_seq: u64,
-    pub skipped: Option<MqSkipped>,
-    pub messages: Vec<Message>,
-    pub next_after_seq: u64,
-    pub has_more: bool,
-}
+/// `GET /v1/threads/{id}/history` page, as typed by the vendored SDK.
+pub type MqHistoryPage = mq_core::HistoryPage;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -431,7 +417,9 @@ fn enqueue_mq_conn(conn: &Connection, lease: &ScopeLease, participant: &Particip
     let synth = payload.as_object_mut().context("payload object")?.entry("synth").or_insert_with(|| json!({}));
     synth.as_object_mut().context("payload.synth must be an object")?.insert("hop".into(), json!(draft.causal_depth));
     let publish = mq_core::PublishMessage {
+        // Both are server-side trusted ingress state, never on the wire.
         expected_grant_generation: None,
+        grant_fence: None,
         kind: draft.kind,
         body: draft.body.clone(),
         payload,
@@ -797,6 +785,16 @@ impl CloudStore {
             }
             conn.execute("UPDATE cloud_mq_participants SET state=?1,state_reason=?2,updated_at=?3 WHERE scope_id=?4 AND thread_id=?5", params![state, reason, chrono::Utc::now().to_rfc3339(), lease.scope_id, thread_id])?;
             require_participant(conn, lease, thread_id)
+        })
+    }
+
+    /// Every participant of the active account, for device sign-out.
+    pub fn mq_participants(&self, lease: &ScopeLease) -> Result<Vec<ParticipantRecord>> {
+        self.db.transaction(|conn| {
+            fence(conn, lease)?;
+            let mut statement = conn.prepare("SELECT thread_id FROM cloud_mq_participants WHERE scope_id=?1 ORDER BY thread_id")?;
+            let threads = statement.query_map(params![lease.scope_id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            threads.iter().map(|thread| require_participant(conn, lease, thread)).collect()
         })
     }
 

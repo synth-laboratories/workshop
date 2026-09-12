@@ -227,6 +227,200 @@ paths:
             text/event-stream:
               schema:
                 type: string
+  /v1/threads/{thread_id}/history:
+    get:
+      summary: Cursor page with explicit grant-history skips
+      description: >-
+        Use for catch-up. effective_after_seq = max(after_seq, history_after_seq).
+        skipped is non-null only when the request asked for sequences hidden by
+        the grant; messages are contiguous from effective_after_seq + 1. Store
+        next_after_seq as the durable cursor. See docs/WORKSHOP_GRANT_CONTRACT.md §8.
+      operationId: readHistory
+      parameters:
+        - $ref: "#/components/parameters/ThreadId"
+        - name: after_seq
+          in: query
+          schema: { type: integer, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistoryPage"
+  /v1/enrollments:
+    post:
+      summary: Enroll a device session (advances incarnation on every call)
+      description: Unrestricted human owner credential only. Backend-called.
+      operationId: enroll
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_id, session_id]
+              properties:
+                device_id: { type: string, maxLength: 128 }
+                session_id: { type: string, maxLength: 128 }
+                label: { type: string, maxLength: 200 }
+      responses:
+        "201":
+          description: Enrollment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Enrollment" }
+    get:
+      summary: List the caller's enrollments
+      operationId: listEnrollments
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Enrollment" }
+  /v1/enrollments/{enrollment_id}:
+    get:
+      summary: Get one enrollment (owner only; others see 404)
+      operationId: getEnrollment
+      parameters:
+        - { name: enrollment_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Enrollment" }
+  /v1/grants:
+    post:
+      summary: Create a thread grant for an owned enrollment
+      description: >-
+        Caller must own the enrollment and hold invite on the thread. Adds the
+        enrollment principal as member/observer if absent. One grant per
+        (thread, enrollment). history_after_seq defaults to the current head.
+      operationId: createGrant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [thread_id, enrollment_id, operations, ttl_seconds]
+              properties:
+                thread_id: { type: string, format: uuid }
+                enrollment_id: { type: string, format: uuid }
+                operations: { type: array, items: { type: string, enum: [read, publish] } }
+                ttl_seconds: { type: integer, minimum: 60, maximum: 2592000 }
+                history_after_seq: { type: integer, minimum: 0 }
+      responses:
+        "201":
+          description: Grant
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Grant" }
+    get:
+      summary: List grants visible to the caller
+      operationId: listGrants
+      parameters:
+        - { name: enrollment_id, in: query, schema: { type: string, format: uuid } }
+        - { name: thread_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Grant" }
+  /v1/grants/{grant_id}:
+    get:
+      summary: Get a grant (enrollment owner or thread invite holder)
+      operationId: getGrant
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Grant" }
+  /v1/grants/{grant_id}/revoke:
+    post:
+      summary: Revoke (increments generation, dead-letters pending delivery)
+      operationId: revokeGrant
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Grant" }
+  /v1/grants/{grant_id}/restore:
+    post:
+      summary: Restore a revoked, unexpired grant (generation unchanged)
+      operationId: restoreGrant
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Grant" }
+  /v1/grants/{grant_id}/renew:
+    post:
+      summary: Extend grant expiry (refused after revoke)
+      operationId: renewGrant
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ttl_seconds]
+              properties:
+                ttl_seconds: { type: integer, minimum: 60, maximum: 2592000 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Grant" }
+  /v1/grants/{grant_id}/issuance:
+    post:
+      summary: Live issuance authority for the backend credential issuer
+      description: Enrollment owner only; incarnation must be current. Not a credential.
+      operationId: grantIssuance
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enrollment_id, incarnation]
+              properties:
+                enrollment_id: { type: string, format: uuid }
+                incarnation: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  grant: { $ref: "#/components/schemas/Grant" }
+                  not_after: { type: string, format: date-time }
 components:
   securitySchemes:
     bearerAuth:
@@ -241,7 +435,73 @@ components:
       schema:
         type: string
         format: uuid
+    GrantId:
+      name: grant_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
   schemas:
+    PrincipalRef:
+      type: object
+      required: [kind, id, org_id]
+      properties:
+        kind: { $ref: "#/components/schemas/PrincipalKind" }
+        id: { type: string }
+        org_id: { type: string }
+    Enrollment:
+      type: object
+      properties:
+        enrollment_id: { type: string, format: uuid }
+        org_id: { type: string }
+        owner: { $ref: "#/components/schemas/PrincipalRef" }
+        device_id: { type: string }
+        session_id: { type: string }
+        label: { type: string, nullable: true }
+        principal:
+          $ref: "#/components/schemas/PrincipalRef"
+          description: Server-derived actor enrollment:<enrollment_id>; never caller-chosen.
+        incarnation: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Grant:
+      type: object
+      properties:
+        grant_id: { type: string, format: uuid }
+        org_id: { type: string }
+        thread_id: { type: string, format: uuid }
+        enrollment_id: { type: string, format: uuid }
+        principal: { $ref: "#/components/schemas/PrincipalRef" }
+        operations: { type: array, items: { type: string, enum: [read, publish] } }
+        history_after_seq: { type: integer, minimum: 0 }
+        expires_at: { type: string, format: date-time }
+        incarnation: { type: integer, description: Current enrollment incarnation (live). }
+        generation: { type: integer, description: Increments on revoke; restore/renew never change it. }
+        status: { type: string, enum: [active, revoked] }
+        state: { type: string, enum: [active, revoked, expired] }
+        granted_by: { $ref: "#/components/schemas/PrincipalRef" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    HistoryPage:
+      type: object
+      properties:
+        thread_id: { type: string, format: uuid }
+        requested_after_seq: { type: integer }
+        history_after_seq: { type: integer }
+        effective_after_seq: { type: integer }
+        skipped:
+          type: object
+          nullable: true
+          properties:
+            after_seq: { type: integer }
+            through_seq: { type: integer }
+            reason: { type: string, enum: [before_grant_history] }
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/Message" }
+        next_after_seq: { type: integer }
+        has_more: { type: boolean }
     ScopeKind:
       type: string
       description: Soft list/filter labels only. run is intentionally absent — SMR owns run_id→thread_id.

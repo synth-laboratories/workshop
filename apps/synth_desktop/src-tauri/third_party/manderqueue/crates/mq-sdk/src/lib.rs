@@ -4,7 +4,9 @@ mod catch_up;
 pub use catch_up::{CatchUpOutcome, CatchUpSupervisor};
 
 use mq_core::{
-    CreateThread, Message, Participant, PrincipalKind, PublishMessage, Role, ScopeBinding, ScopeKind, Thread, ThreadId,
+    CreateGrant, CreateThread, EnrollDevice, Enrollment, Grant, GrantFilter, GrantIssuance,
+    GrantIssuanceRequest, HistoryPage, Message, Participant, PrincipalKind, PublishMessage,
+    RenewGrant, Role, ScopeBinding, ScopeKind, Thread, ThreadId,
 };
 use reqwest::{Client, StatusCode};
 use thiserror::Error;
@@ -39,6 +41,28 @@ pub enum SdkError {
     Api { status: StatusCode, body: String },
     #[error("bad response: {0}")]
     Decode(String),
+}
+
+impl SdkError {
+    /// Stable server error code (`{"error": code}`), e.g. `grant_revoked`.
+    /// See docs/WORKSHOP_GRANT_CONTRACT.md §7.
+    pub fn api_code(&self) -> Option<String> {
+        match self {
+            SdkError::Api { body, .. } => serde_json::from_str::<serde_json::Value>(body)
+                .ok()?
+                .get("error")?
+                .as_str()
+                .map(str::to_owned),
+            _ => None,
+        }
+    }
+
+    pub fn status(&self) -> Option<StatusCode> {
+        match self {
+            SdkError::Api { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -242,6 +266,99 @@ impl MqClient {
                 .query(&[("after_seq", after_seq), ("limit", limit as u64)]),
         )
         .await
+    }
+
+    /// Cursor page with explicit history skips; use for catch-up under a grant.
+    /// See docs/WORKSHOP_GRANT_CONTRACT.md §8.
+    pub async fn read_history(
+        &self,
+        thread_id: ThreadId,
+        after_seq: u64,
+        limit: usize,
+    ) -> Result<HistoryPage, SdkError> {
+        self.send_json(
+            self.http
+                .get(self.url(&format!("/v1/threads/{}/history", thread_id.0)))
+                .query(&[("after_seq", after_seq), ("limit", limit as u64)]),
+        )
+        .await
+    }
+
+    // ---- Enrollment and grant administration ------------------------------
+    //
+    // These require an unrestricted owner credential (the backend acts as the
+    // Synth user). Every mutation is sent exactly once: on a transport error
+    // the outcome is unknown, so re-read (`get_grant`/`get_enrollment`) before
+    // deciding. Never retry automatically.
+
+    /// Enroll a device session; each call advances the incarnation.
+    pub async fn enroll(&self, req: &EnrollDevice) -> Result<Enrollment, SdkError> {
+        self.send_json(self.http.post(self.url("/v1/enrollments")).json(req)).await
+    }
+
+    pub async fn list_enrollments(&self) -> Result<Vec<Enrollment>, SdkError> {
+        self.send_json(self.http.get(self.url("/v1/enrollments"))).await
+    }
+
+    pub async fn get_enrollment(&self, enrollment_id: Uuid) -> Result<Enrollment, SdkError> {
+        self.send_json(self.http.get(self.url(&format!("/v1/enrollments/{enrollment_id}")))).await
+    }
+
+    /// Device sign-out: every grant and incarnation of the enrollment is
+    /// refused afterwards and queued deliveries are dead-lettered. Idempotent.
+    pub async fn revoke_enrollment(&self, enrollment_id: Uuid) -> Result<Enrollment, SdkError> {
+        self.send_json(
+            self.http
+                .post(self.url(&format!("/v1/enrollments/{enrollment_id}/revoke")))
+                .json(&serde_json::json!({})),
+        )
+        .await
+    }
+
+    pub async fn create_grant(&self, req: &CreateGrant) -> Result<Grant, SdkError> {
+        self.send_json(self.http.post(self.url("/v1/grants")).json(req)).await
+    }
+
+    pub async fn list_grants(&self, filter: &GrantFilter) -> Result<Vec<Grant>, SdkError> {
+        let mut query = Vec::new();
+        if let Some(enrollment_id) = filter.enrollment_id {
+            query.push(("enrollment_id", enrollment_id.to_string()));
+        }
+        if let Some(thread_id) = filter.thread_id {
+            query.push(("thread_id", thread_id.0.to_string()));
+        }
+        self.send_json(self.http.get(self.url("/v1/grants")).query(&query)).await
+    }
+
+    pub async fn get_grant(&self, grant_id: Uuid) -> Result<Grant, SdkError> {
+        self.send_json(self.http.get(self.url(&format!("/v1/grants/{grant_id}")))).await
+    }
+
+    pub async fn revoke_grant(&self, grant_id: Uuid) -> Result<Grant, SdkError> {
+        self.send_json(self.http.post(self.url(&format!("/v1/grants/{grant_id}/revoke"))).json(&serde_json::json!({}))).await
+    }
+
+    pub async fn restore_grant(&self, grant_id: Uuid) -> Result<Grant, SdkError> {
+        self.send_json(self.http.post(self.url(&format!("/v1/grants/{grant_id}/restore"))).json(&serde_json::json!({}))).await
+    }
+
+    /// Extend the grant's own expiry. Refused after revoke.
+    pub async fn renew_grant(&self, grant_id: Uuid, ttl_seconds: i64) -> Result<Grant, SdkError> {
+        self.send_json(
+            self.http
+                .post(self.url(&format!("/v1/grants/{grant_id}/renew")))
+                .json(&RenewGrant { ttl_seconds }),
+        )
+        .await
+    }
+
+    /// Live issuance authority (backend issuer only). Not itself a credential.
+    pub async fn grant_issuance(
+        &self,
+        grant_id: Uuid,
+        req: &GrantIssuanceRequest,
+    ) -> Result<GrantIssuance, SdkError> {
+        self.send_json(self.http.post(self.url(&format!("/v1/grants/{grant_id}/issuance"))).json(req)).await
     }
 }
 

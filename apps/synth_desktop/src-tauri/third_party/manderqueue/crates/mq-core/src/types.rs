@@ -211,6 +211,10 @@ pub struct PublishMessage {
     /// Trusted ingress authority only; never accepted from or sent on the wire.
     #[serde(skip)]
     pub expected_grant_generation: Option<u64>,
+    /// Trusted grant-credential authority, checked atomically with the commit.
+    /// Never accepted from or sent on the wire.
+    #[serde(skip)]
+    pub grant_fence: Option<crate::grants::GrantFence>,
     pub kind: MessageKind,
     pub body: String,
     #[serde(default)]
@@ -232,6 +236,7 @@ impl Default for PublishMessage {
         Self {
             kind: MessageKind::Notice,
             expected_grant_generation: None,
+            grant_fence: None,
             body: String::new(),
             payload: serde_json::Value::Null,
             idempotency_key: None,
