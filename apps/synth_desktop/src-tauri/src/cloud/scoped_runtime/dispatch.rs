@@ -112,7 +112,7 @@ impl ScopedCloudRuntime {
         Ok((generation, session))
     }
 
-    async fn scoped_transaction<T, F>(&self, generation: u32, operation: F) -> Result<T>
+    pub(super) async fn scoped_transaction<T, F>(&self, generation: u32, operation: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(CloudStore, ScopeLease) -> Result<T> + Send + 'static,

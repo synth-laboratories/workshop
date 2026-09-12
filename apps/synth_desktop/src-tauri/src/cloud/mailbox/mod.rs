@@ -5,5 +5,6 @@
 //! Persistence lives in `cloud::storage` (mailbox submodule); host
 //! composition and fencing live in `cloud::scoped_runtime::mailbox`.
 pub mod grant;
+pub mod host;
 pub mod policy;
 pub mod wire;

@@ -17,6 +17,14 @@ use tokio::sync::{watch, Mutex};
 
 mod dispatch;
 pub use dispatch::ScopedCreation;
+#[cfg_attr(not(feature = "eval-driver"), allow(dead_code))]
+mod mailbox;
+#[cfg_attr(not(feature = "eval-driver"), allow(unused_imports))]
+pub use mailbox::{
+    ConnectRequest, IdentityVerifier, MailboxDeps, MailboxExit, MailboxLoopConfig, MailboxPassReport,
+    MailboxStatus, MailboxSupervisor, OperatorReply, PassBudget, RestrictedExecutor, RestrictedOutcome,
+    RestrictedTurn, TurnBoundary,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
@@ -47,6 +55,11 @@ pub struct ScopedCloudRuntime {
     state: Arc<Mutex<State>>,
     changes: watch::Sender<ScopeView>,
     verification_attempts: watch::Sender<u64>,
+    /// In-memory MQ grant credentials; dropped on every scope reset.
+    mailbox: Arc<Mutex<mailbox::MailboxCache>>,
+    /// Counts deliberate sign-outs (not expiry) so long-running mailbox
+    /// supervisors stop instead of re-verifying into a new session.
+    signouts: watch::Sender<u64>,
 }
 #[derive(Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +82,7 @@ impl ScopedCloudRuntime {
         };
         let (changes, _) = watch::channel(view);
         let (verification_attempts, _) = watch::channel(0);
+        let (signouts, _) = watch::channel(0);
         Self {
             state: Arc::new(Mutex::new(State {
                 store: None,
@@ -78,6 +92,8 @@ impl ScopedCloudRuntime {
             })),
             changes,
             verification_attempts,
+            mailbox: Arc::new(Mutex::new(mailbox::MailboxCache::default())),
+            signouts,
         }
     }
     pub fn subscribe(&self) -> watch::Receiver<ScopeView> {
@@ -88,26 +104,40 @@ impl ScopedCloudRuntime {
         self.expire(&mut state).await?;
         Ok(state.view)
     }
-    // There is intentionally no production activation entry point until the
-    // deployment/profile contract and registered migration are qualified.
+    // The schema is registered (migration 69). The runtime itself stays
+    // gated: only `activate_store` installs a store, and no default boot
+    // path calls it until the deployment/profile contract is qualified.
     #[cfg(test)]
     pub async fn install_fixture(&self, store: CloudStore) -> Result<()> {
+        self.activate_store(store).await
+    }
+    /// Install the registered, schema-verified store. Only an explicitly
+    /// qualified profile (or the eval-driver fixture path) calls this; the
+    /// default CoreRuntime stays `QualificationRequired`. Installing does not
+    /// verify identity, issue grants or start any network task.
+    pub(crate) async fn activate_store(&self, store: CloudStore) -> Result<()> {
         let mut state = self.state.lock().await;
         state.store = Some(store);
-        self.reset(&mut state).await?;
+        self.reset(&mut state, false).await?;
         Ok(())
     }
+    /// Deliberate sign-out: cancels network work, drops credentials and
+    /// permanently fences this account's queued MQ writes.
     pub async fn invalidate(&self) -> Result<ScopeView> {
         let mut state = self.state.lock().await;
-        self.reset(&mut state).await?;
+        self.reset(&mut state, true).await?;
         Ok(state.view)
     }
-    async fn reset(&self, state: &mut State) -> Result<()> {
+    async fn reset(&self, state: &mut State, explicit: bool) -> Result<()> {
         state.attempt = state
             .attempt
             .checked_add(1)
             .context("identity attempt exhausted")?;
         state.active = None;
+        self.mailbox.lock().await.clear();
+        if explicit {
+            self.signouts.send_modify(|count| *count = count.wrapping_add(1));
+        }
         self.verification_attempts.send_replace(state.attempt);
         state.view.generation = state
             .view
@@ -123,9 +153,15 @@ impl ScopedCloudRuntime {
         // coordinator will no longer authorize reads from the old scope.
         self.changes.send_replace(state.view);
         if let Some(store) = state.store.clone() {
-            tokio::task::spawn_blocking(move || store.sign_out())
-                .await
-                .context("join scope invalidation")??;
+            tokio::task::spawn_blocking(move || {
+                if explicit {
+                    store.sign_out_explicit()
+                } else {
+                    store.sign_out()
+                }
+            })
+            .await
+            .context("join scope invalidation")??;
         }
         Ok(())
     }
@@ -135,7 +171,7 @@ impl ScopedCloudRuntime {
             .as_ref()
             .is_some_and(|active| active.until <= Utc::now())
         {
-            self.reset(state).await?;
+            self.reset(state, false).await?;
         }
         Ok(())
     }
@@ -188,7 +224,7 @@ impl ScopedCloudRuntime {
         let (identity, until) = match observed {
             Ok(value) => value,
             Err(_) => {
-                self.reset(&mut state).await?;
+                self.reset(&mut state, false).await?;
                 bail!("cloud identity authority unavailable");
             }
         };
@@ -216,7 +252,7 @@ impl ScopedCloudRuntime {
         let lease = match result {
             Ok(lease) => lease,
             Err(_) => {
-                self.reset(&mut state).await?;
+                self.reset(&mut state, false).await?;
                 bail!("cloud identity activation failed");
             }
         };
@@ -265,7 +301,7 @@ impl ScopedCloudRuntime {
                 match tokio::task::spawn_blocking(move || store.bound_sessions(&lease)).await {
                     Ok(Ok(ids)) => ids.into_iter().collect::<HashSet<_>>(),
                     _ => {
-                        let _ = self.reset(&mut state).await;
+                        let _ = self.reset(&mut state, false).await;
                         HashSet::new()
                     }
                 }
