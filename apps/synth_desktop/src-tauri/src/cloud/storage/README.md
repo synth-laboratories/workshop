@@ -55,6 +55,10 @@ atomically creates an idempotent `mq.input` command receipt from the persisted
 message and records its command ID on the queue entry. A failed transaction
 leaves the message pending and creates no command. Repeated acceptance returns
 the same command, and the original message remains stored for recovery/audit.
+`mq_input_commands` recovers those command receipts in bounded sequence pages
+under a freshly verified scope lease after restart. It preserves command status
+and performs no acceptance or execution. The dispatcher must reconcile uncertain
+execution rather than resubmit simply because a receipt exists.
 This is durable handoff, not execution or an answered receipt. The schema remains
 an unregistered migration candidate. Turn-boundary dispatch, restricted tool
 policy, grant validation and the network adapter are still required before

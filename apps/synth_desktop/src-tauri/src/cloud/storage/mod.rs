@@ -618,6 +618,32 @@ impl CloudStore {
             Ok(accepted)
         })
     }
+
+    /// Recover durable handoffs without replaying command acceptance or execution.
+    /// Returned statuses must be reconciled by the dispatcher before any action.
+    pub fn mq_input_commands(
+        &self, lease: &ScopeLease, stream: &Stream, after_sequence: u64, limit: usize,
+    ) -> Result<Vec<(u64, crate::storage::CommandReceiptRecord)>> {
+        if stream.adapter != Adapter::Mq || !(1..=200).contains(&limit) {
+            bail!("invalid MQ command recovery query");
+        }
+        let after_sequence = i64::try_from(after_sequence)?;
+        self.db.transaction(|conn| {
+            fence(conn, lease)?;
+            let session = binding(conn, lease, stream)?;
+            let mut statement = conn.prepare("SELECT sequence,accepted_command_id FROM cloud_mq_pending_inputs WHERE scope_id=?1 AND external_id=?2 AND sequence>?3 AND accepted_command_id IS NOT NULL ORDER BY sequence LIMIT ?4")?;
+            let rows = statement.query_map(params![lease.scope_id,stream.external_id,after_sequence,limit as i64], |row| Ok((row.get::<_,u64>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut recovered = Vec::with_capacity(rows.len());
+            for (sequence, id) in rows {
+                let receipt = crate::domain::load_command_in_transaction(conn, &id)?;
+                if receipt.session_id != session || receipt.kind != "mq.input" || receipt.source != EventSource::Remote {
+                    bail!("MQ command binding mismatch");
+                }
+                recovered.push((sequence, receipt));
+            }
+            Ok(recovered)
+        })
+    }
 }
 
 fn enqueue_conn(

@@ -102,11 +102,24 @@ fn mq_acceptance_retains_pending_inputs_atomically_across_restart_and_account_sw
     assert_eq!(replay.value.command_id, accepted.value.command_id);
     assert!(replay.event.is_none());
     assert!(reopened.pending_mq_inputs(&renewed, &mq, 200).unwrap().is_empty());
+    let restarted = CloudStore::open(db.clone()).unwrap();
+    assert!(restarted.mq_input_commands(&renewed, &mq, 0, 200).is_err());
+    let recovery_lease = restarted.activate_verified(&identity("a")).unwrap();
+    let recovered = restarted.mq_input_commands(&recovery_lease, &mq, 0, 200).unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].0, 1);
+    assert_eq!(recovered[0].1.command_id, accepted.value.command_id);
+    assert_eq!(recovered[0].1.status, "accepted");
+    assert!(restarted.mq_input_commands(&recovery_lease, &mq, 1, 200).unwrap().is_empty());
+    assert!(restarted.mq_input_commands(&recovery_lease, &mq, 0, 201).is_err());
+    assert!(restarted.mq_input_commands(&recovery_lease, &mq, u64::MAX, 200).is_err());
     let other = reopened.activate_verified(&identity("b")).unwrap();
     assert!(reopened.pending_mq_inputs(&renewed, &mq, 200).is_err());
     assert!(reopened.pending_mq_inputs(&other, &mq, 200).is_err());
     assert!(reopened.accept_mq_input(&renewed, &mq, "message").is_err());
     assert!(reopened.accept_mq_input(&other, &mq, "message").is_err());
+    assert!(restarted.mq_input_commands(&recovery_lease, &mq, 0, 200).is_err());
+    assert!(restarted.mq_input_commands(&other, &mq, 0, 200).is_err());
 }
 
 #[test]
