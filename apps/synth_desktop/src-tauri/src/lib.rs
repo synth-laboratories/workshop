@@ -56,6 +56,7 @@ mod runtime;
 mod secrets;
 mod services;
 mod session;
+mod stderr_sink;
 mod skills;
 pub mod storage;
 mod synth_config;
@@ -5503,6 +5504,31 @@ fn terminal_close(
 }
 
 pub fn run() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(stderr_sink::MODE)) {
+        let result = (|| -> std::io::Result<()> {
+            let path = std::env::args_os().nth(2).ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::InvalidInput, "stderr sink path missing"))?;
+            let mut options = std::fs::OpenOptions::new();
+            options.create(true).write(true).truncate(true);
+            #[cfg(unix)] {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let output = options.open(path)?;
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                output.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            stderr_sink::drain(std::io::stdin().lock(), output, |text| {
+                diagnostics::redact::redact_text(&codex_oauth::redact_text(text))
+            })
+        })();
+        if result.is_err() {
+            // Even a log-open failure must leave the persistent server a reader.
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+        }
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
     if crate::visuals::mermaid::hidden_mode_requested() {
         std::process::exit(crate::visuals::mermaid::run_hidden_mode());
     }

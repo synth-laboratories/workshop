@@ -267,7 +267,7 @@ async fn spawn_persistent_server<R: tauri::Runtime>(
                 .env("CODEX_HOME", home)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::from(open_stderr_log(&stderr_log)?))
+                .stderr(detached_stderr_sink(&stderr_log)?)
                 .kill_on_drop(false);
             if let Some(path) = codex_child_path(binary, std::env::var_os("PATH").as_deref())? {
                 command.env("PATH", path);
@@ -449,6 +449,7 @@ fn redact_stderr_line(line: &str) -> String {
     crate::diagnostics::redact::redact_text(&crate::codex_oauth::redact_text(line))
 }
 
+#[cfg(test)]
 fn open_stderr_log(path: &Path) -> Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.create(true).write(true).truncate(true);
@@ -460,6 +461,28 @@ fn open_stderr_log(path: &Path) -> Result<std::fs::File> {
     options
         .open(path)
         .with_context(|| format!("open app-server stderr log {}", path.display()))
+}
+
+/// The sink survives UI exit alongside the persistent server; its input closes
+/// when the server exits. No unredacted bytes are written to the log file.
+fn detached_stderr_sink(path: &Path) -> Result<Stdio> {
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command.arg(crate::stderr_sink::MODE).arg(path)
+        .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(unix)] {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().context("spawn bounded Codex stderr sink")?;
+    let input = child.stdin.take().context("capture Codex stderr sink input")?;
+    std::thread::spawn(move || {
+        match child.wait() {
+            Ok(status) if !status.success() => eprintln!("Codex stderr sink exited unsuccessfully: {status}"),
+            Err(error) => eprintln!("Codex stderr sink wait failed: {error}"),
+            _ => {},
+        }
+    });
+    Ok(Stdio::from(input))
 }
 
 /// Last `max_bytes` of `path`, starting at a whole line.
