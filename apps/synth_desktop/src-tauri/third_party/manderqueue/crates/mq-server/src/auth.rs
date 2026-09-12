@@ -62,6 +62,7 @@ struct JwtClaims {
 #[serde(deny_unknown_fields)]
 struct ThreadScope {
     thread_id: uuid::Uuid,
+    grant_generation: u64,
     operations: Vec<ThreadOperation>,
 }
 
@@ -107,14 +108,14 @@ fn principal_from_dev_token(token: &str) -> Result<Principal, &'static str> {
 
 #[cfg(test)]
 fn principal_from_jwt(token: &str, secret: &str) -> Result<Principal, &'static str> {
-    principal_from_jwt_for_access(token, secret, None)
+    principal_from_jwt_for_access(token, secret, None).map(|(principal, _)| principal)
 }
 
 fn principal_from_jwt_for_access(
     token: &str,
     secret: &str,
     access: Option<(uuid::Uuid, ThreadOperation)>,
-) -> Result<Principal, &'static str> {
+) -> Result<(Principal, Option<u64>), &'static str> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_audience(&["manderqueue"]);
     validation.set_issuer(&["manderqueue"]);
@@ -129,6 +130,7 @@ fn principal_from_jwt_for_access(
     .map_err(|_| "invalid_jwt")?;
 
     let claims = data.claims;
+    let generation = claims.thread_scope.as_ref().map(|scope| scope.grant_generation);
     if let Some(scope) = &claims.thread_scope {
         if scope.operations.is_empty() || scope.operations.len() > 2
             || (scope.operations.len() == 2 && scope.operations[0] == scope.operations[1])
@@ -163,11 +165,11 @@ fn principal_from_jwt_for_access(
         if p.id.trim().is_empty() || p.org_id.trim().is_empty() {
             return Err("missing_principal");
         }
-        return Ok(Principal {
+        return Ok((Principal {
             kind: parse_kind(&p.kind)?,
             id: p.id,
             org_id: p.org_id,
-        });
+        }, generation));
     }
     let kind = claims.kind.as_deref().ok_or("missing_principal")?;
     let id = claims.id.or(claims.sub).ok_or("missing_principal")?;
@@ -175,11 +177,11 @@ fn principal_from_jwt_for_access(
     if id.trim().is_empty() || org_id.trim().is_empty() {
         return Err("missing_principal");
     }
-    Ok(Principal {
+    Ok((Principal {
         kind: parse_kind(kind)?,
         id,
         org_id,
-    })
+    }, generation))
 }
 
 /// Resolve principal from `Authorization` header according to [`AuthMode`].
@@ -187,7 +189,7 @@ pub fn principal_from_authorization(
     mode: &AuthMode,
     header: Option<&str>,
 ) -> Result<Principal, &'static str> {
-    principal_for_access(mode, header, None)
+    principal_for_access(mode, header, None).map(|(principal, _)| principal)
 }
 
 /// Enforce signed attenuation before the caller checks persisted membership.
@@ -196,7 +198,7 @@ pub fn principal_for_thread(
     header: Option<&str>,
     thread: uuid::Uuid,
     operation: ThreadOperation,
-) -> Result<Principal, &'static str> {
+) -> Result<(Principal, Option<u64>), &'static str> {
     principal_for_access(mode, header, Some((thread, operation)))
 }
 
@@ -204,7 +206,7 @@ fn principal_for_access(
     mode: &AuthMode,
     header: Option<&str>,
     access: Option<(uuid::Uuid, ThreadOperation)>,
-) -> Result<Principal, &'static str> {
+) -> Result<(Principal, Option<u64>), &'static str> {
     let raw = header.ok_or("missing_authorization")?;
     let token = raw
         .strip_prefix("Bearer ")
@@ -219,7 +221,7 @@ fn principal_for_access(
                     }
                 }
             }
-            principal_from_dev_token(token)
+            principal_from_dev_token(token).map(|principal| (principal, None))
         }
         AuthMode::Jwt { secret } => principal_from_jwt_for_access(token, secret, access),
     }
@@ -237,7 +239,7 @@ mod tests {
         let mut claims = serde_json::json!({"iss":"manderqueue", "aud":"manderqueue",
             "exp":chrono::Utc::now().timestamp()+300, "jti":"fixture",
             "principal":{"kind":"actor","id":"a1","org_id":"org"},
-            "thread_scope":{"thread_id":thread,"operations":["read"]}});
+            "thread_scope":{"thread_id":thread,"grant_generation":0,"operations":["read"]}});
         let sign = |value: &serde_json::Value| encode(&Header::default(), value, &EncodingKey::from_secret(secret.as_bytes())).unwrap();
         let token = sign(&claims);
         assert!(principal_from_jwt(&token, secret).is_err());

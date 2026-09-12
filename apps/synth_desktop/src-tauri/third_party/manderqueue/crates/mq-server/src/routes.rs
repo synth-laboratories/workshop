@@ -80,12 +80,20 @@ fn actor(state: &AppState, headers: &HeaderMap) -> Result<Principal, ApiError> {
     })
 }
 
-fn thread_actor(state: &AppState, headers: &HeaderMap, thread_id: Uuid, operation: ThreadOperation) -> Result<Principal, ApiError> {
+async fn thread_actor(state: &AppState, headers: &HeaderMap, thread_id: Uuid, operation: ThreadOperation) -> Result<Principal, ApiError> {
+    thread_authority(state, headers, thread_id, operation).await.map(|(principal, _)| principal)
+}
+
+async fn thread_authority(state: &AppState, headers: &HeaderMap, thread_id: Uuid, operation: ThreadOperation) -> Result<(Principal, Option<u64>), ApiError> {
     let value = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
-    principal_for_thread(&state.auth, value, thread_id, operation).map_err(|_| ApiError {
+    let (principal, generation) = principal_for_thread(&state.auth, value, thread_id, operation).map_err(|_| ApiError {
         status: StatusCode::UNAUTHORIZED,
         code: "unauthenticated",
-    })
+    })?;
+    if let Some(generation) = generation {
+        state.fabric.validate_grant_generation(&principal, ThreadId(thread_id), generation).await?;
+    }
+    Ok((principal, generation))
 }
 
 async fn create_thread(
@@ -154,7 +162,7 @@ async fn get_thread(
     headers: HeaderMap,
     Path(thread_id): Path<Uuid>,
 ) -> Result<Json<Thread>, ApiError> {
-    let principal = thread_actor(&state, &headers, thread_id, ThreadOperation::Read)?;
+    let principal = thread_actor(&state, &headers, thread_id, ThreadOperation::Read).await?;
     let thread = state
         .fabric
         .get_thread(&principal, ThreadId(thread_id))
@@ -217,9 +225,10 @@ async fn publish_message(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(thread_id): Path<Uuid>,
-    Json(body): Json<PublishMessage>,
+    Json(mut body): Json<PublishMessage>,
 ) -> Result<(StatusCode, Json<Message>), ApiError> {
-    let principal = thread_actor(&state, &headers, thread_id, ThreadOperation::Publish)?;
+    let (principal, generation) = thread_authority(&state, &headers, thread_id, ThreadOperation::Publish).await?;
+    body.expected_grant_generation = generation;
     let message = state
         .fabric
         .publish(&principal, ThreadId(thread_id), body)
@@ -245,7 +254,7 @@ async fn read_messages(
     Path(thread_id): Path<Uuid>,
     Query(q): Query<ReadQuery>,
 ) -> Result<Json<Vec<Message>>, ApiError> {
-    let principal = thread_actor(&state, &headers, thread_id, ThreadOperation::Read)?;
+    let principal = thread_actor(&state, &headers, thread_id, ThreadOperation::Read).await?;
     let messages = state
         .fabric
         .read_messages(&principal, ThreadId(thread_id), q.after_seq, q.limit)
@@ -258,7 +267,7 @@ async fn thread_events(
     headers: HeaderMap,
     Path(thread_id): Path<Uuid>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let principal = thread_actor(&state, &headers, thread_id, ThreadOperation::Read)?;
+    let principal = thread_actor(&state, &headers, thread_id, ThreadOperation::Read).await?;
     let _ = state
         .fabric
         .get_thread(&principal, ThreadId(thread_id))
@@ -279,7 +288,7 @@ async fn thread_events(
                 };
                 // Revalidate the token as well as persisted membership. Quiet
                 // streams must not retain authority after credential expiry.
-                let authorized = match thread_actor(&state, &headers, thread_id, ThreadOperation::Read) {
+                let authorized = match thread_actor(&state, &headers, thread_id, ThreadOperation::Read).await {
                     Ok(current) => state.fabric
                         .get_thread(&current, ThreadId(thread_id)).await.is_ok(),
                     _ => false,

@@ -154,6 +154,9 @@ pub struct Thread {
 pub struct Participant {
     pub principal: Principal,
     pub role: Role,
+    /// Server-owned credential generation, advanced on revocation.
+    #[serde(default)]
+    pub grant_generation: u64,
     /// Derived from [`Role::caps`]; stored for enforcement / display.
     #[serde(default)]
     pub caps: Vec<Cap>,
@@ -164,11 +167,13 @@ impl Participant {
         Self {
             principal,
             role,
+            grant_generation: 0,
             caps: role.caps(),
         }
     }
 
     pub fn normalize(mut self) -> Self {
+        self.grant_generation = 0;
         self.caps = self.role.caps();
         self
     }
@@ -203,6 +208,9 @@ pub struct CreateThread {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublishMessage {
+    /// Trusted ingress authority only; never accepted from or sent on the wire.
+    #[serde(skip)]
+    pub expected_grant_generation: Option<u64>,
     pub kind: MessageKind,
     pub body: String,
     #[serde(default)]
@@ -223,6 +231,7 @@ impl Default for PublishMessage {
     fn default() -> Self {
         Self {
             kind: MessageKind::Notice,
+            expected_grant_generation: None,
             body: String::new(),
             payload: serde_json::Value::Null,
             idempotency_key: None,

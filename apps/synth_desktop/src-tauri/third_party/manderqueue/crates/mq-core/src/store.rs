@@ -81,6 +81,7 @@ pub trait Store: Send + Sync {
     async fn flush_write_batch(&self, batch: &[BufferedPublish]) -> Result<()> {
         for item in batch {
             let req = PublishMessage {
+                expected_grant_generation: None,
                 kind: item.message.kind,
                 body: item.message.body.clone(),
                 payload: item.message.payload.clone(),

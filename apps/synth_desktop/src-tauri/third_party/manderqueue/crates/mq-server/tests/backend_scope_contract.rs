@@ -20,7 +20,7 @@ async fn backend_scoped_token_enforces_http_permissions() {
         let output = std::process::Command::new(root.join(".venv/bin/python"))
             .current_dir(&root)
             .env("MQ_AUTH", "jwt").env("MQ_PROFILE", "deployed").env("MQ_JWT_SECRET", secret)
-            .args(["-c", "import sys; from services.mq.jwt_mint import mint_mq_thread_bearer; print(mint_mq_thread_bearer(kind='human',org_id='org',principal_id='owner',thread_id=sys.argv[1],operations=(sys.argv[2],)))", &thread.0.to_string(), operation])
+            .args(["-c", "import sys; from services.mq.jwt_mint import mint_mq_thread_bearer; print(mint_mq_thread_bearer(kind='human',org_id='org',principal_id='owner',thread_id=sys.argv[1],operations=(sys.argv[2],),grant_generation=0))", &thread.0.to_string(), operation])
             .output().expect("run backend fixture issuer");
         assert!(output.status.success(), "backend fixture issuer failed");
         let token = String::from_utf8(output.stdout).unwrap();

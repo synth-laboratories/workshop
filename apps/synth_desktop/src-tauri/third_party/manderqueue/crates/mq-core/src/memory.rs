@@ -251,6 +251,9 @@ impl Store for MemoryStore {
         let Some(p) = ps.iter_mut().find(|p| p.principal == *principal) else {
             return Err(Error::NotFound("participant"));
         };
+        if role == Role::Revoked && p.role != Role::Revoked {
+            p.grant_generation = p.grant_generation.checked_add(1).ok_or(Error::Invalid("grant_generation_exhausted"))?;
+        }
         p.role = role;
         p.caps = role.caps();
         Ok(())
@@ -274,12 +277,15 @@ impl Store for MemoryStore {
             .participants
             .get_mut(&thread_id)
             .ok_or(Error::NotFound("thread"))?;
-        let target = target.normalize();
+        let mut target = target.normalize();
         if !validate_participant_change(&org, actor, members, &target, create)? {
             return Ok(());
         }
         let revoked = (target.role == Role::Revoked).then(|| target.principal.clone());
         if let Some(existing) = members.iter_mut().find(|p| p.principal == target.principal) {
+            target.grant_generation = if target.role == Role::Revoked {
+                existing.grant_generation.checked_add(1).ok_or(Error::Invalid("grant_generation_exhausted"))?
+            } else { existing.grant_generation };
             *existing = target;
         } else {
             members.push(target);
@@ -339,6 +345,11 @@ impl Store for MemoryStore {
             return Err(Error::Forbidden("publish_membership_required"));
         }
         let fingerprint = publish_fingerprint(&req);
+        if let Some(generation) = req.expected_grant_generation {
+            if !g.participants[&thread_id].iter().any(|p| p.principal == *sender && p.grant_generation == generation) {
+                return Err(Error::Forbidden("stale_grant_generation"));
+            }
+        }
         if let Some(key) = req.idempotency_key.as_ref() {
             let map_key = publish_key(thread_id, sender, key);
             if let Some(existing) = g.idempotency.get(&map_key) {

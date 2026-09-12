@@ -1,8 +1,8 @@
 {
   "schema_version": "workshop.research-source-pin.v1",
-  "backend_revision": "ec7fe8489860b708ef1b7f19614b5b86e6406b37",
+  "backend_revision": "c5bf2b787f49835f81143ff59417d97113402833",
   "backend_path": "research_openapi.json",
-  "sha256": "d9f2d59184d2f56f82da55a2aee6fce4f4ec595904731a3f72a978a7b128e07b",
+  "sha256": "75ebc0d663a08e8cac95fda452c8186e548ae84b69eda91e079984bfa9e3f6b9",
   "qualification": "committed_source_only",
   "served_profile": null,
   "live_activation": false,

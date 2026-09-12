@@ -6,6 +6,31 @@ Source changes only; no deployed security or E01 qualification.
 
 ## Principal token thread restrictions
 
+Participant `grant_generation` is now server-owned persisted state. New members
+start at zero; incoming values are ignored. Revocation increments it atomically
+with role mutation, repeated revocation is idempotent, and restoration preserves
+the increment. Memory checkpoints preserve generations. Postgres requires the
+20260912120000 migration; its live qualification remains pending. Overflow
+refuses rather than wrapping. Tokens and request checks are not yet wired to
+this value in the original storage commit; the subsequent integration now
+requires grant_generation in scoped JWTs and checks persisted generation before
+HTTP operations and each SSE recheck. Revoke/restore keeps old tokens invalid
+and closes their existing streams; a new generation is accepted. Python issuer
+and Rust HTTP conformance pass with the updated contract. Operation-commit
+generation comparison and native recipient fencing remain required to close
+the race after the initial authority check. Legacy unscoped credentials retain
+their prior authority and must not be used as device credentials.
+
+Scoped publish ingress now carries its verified generation as non-wire request
+metadata. Atomic acceptance compares it under the memory mutex or Postgres
+thread/participant locks before idempotency replay or insertion. HTTP JSON cannot
+set this field. Scoped calls to the legacy buffer bypass buffering so authority
+is not discarded during serialization. The deterministic memory interleaving
+test checks authorization at generation zero, revoke/restore, stale commit refusal
+with no row, and generation-one acceptance. Workspace tests pass; the Postgres
+commit-time generation branch still requires live migration/transaction proof.
+Native recipient fencing and atomic generation checks for reads remain open.
+
 SDK `try_new` validates an HTTP(S) origin with no userinfo, path, query or
 fragment, and a nonempty valid bearer header. Invalid input returns a fixed
 diagnostic without echoing credentials. `new` delegates to it and panics on

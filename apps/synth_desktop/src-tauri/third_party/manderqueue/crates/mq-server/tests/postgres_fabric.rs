@@ -44,6 +44,8 @@ async fn postgres_revocation_cancels_queued_and_leased_jobs() {
     }
     let claimed = mq.claim_delivery_jobs(1).await.unwrap();
     assert_eq!(claimed.len(), 1);
+    mq.validate_grant_generation(&target, thread, 0).await.unwrap();
+    mq.set_participant_role(&owner, thread, &target, Role::Revoked).await.unwrap();
     mq.set_participant_role(&owner, thread, &target, Role::Revoked).await.unwrap();
     assert!(mq.claim_delivery_jobs(10).await.unwrap().is_empty());
     assert!(mq.settle_delivery_job(claimed[0].job_id, claimed[0].attempts, DeliveryStatus::Delivered).await.is_err());
@@ -55,6 +57,83 @@ async fn postgres_revocation_cancels_queued_and_leased_jobs() {
     recovered.set_participant_role(&owner, thread, &target, Role::Agent).await.unwrap();
     assert_eq!(recovered.read_messages(&target, thread, 0, 10).await.unwrap().len(), 2);
     assert!(recovered.claim_delivery_jobs(10).await.unwrap().is_empty());
+    // Restoration retains the persisted generation; repeated revocation does
+    // not increment it twice. An authorization captured before revocation must
+    // also fail inside the append transaction, before messages or jobs exist.
+    recovered.validate_grant_generation(&target, thread, 1).await.unwrap();
+    assert!(recovered.validate_grant_generation(&target, thread, 0).await.is_err());
+    let request = PublishMessage {
+        body: "generation fenced".into(),
+        recipients: vec![owner.clone()],
+        idempotency_key: Some("generation-fenced".into()),
+        expected_grant_generation: Some(0),
+        ..Default::default()
+    };
+    assert!(matches!(recovered.publish(&target, thread, request.clone()).await,
+        Err(Error::Forbidden(reason)) if reason == "stale_grant_generation"));
+    assert_eq!(recovered.read_messages(&owner, thread, 0, 10).await.unwrap().len(), 2);
+    assert!(recovered.claim_delivery_jobs(10).await.unwrap().is_empty());
+    let current = PublishMessage { expected_grant_generation: Some(1), ..request.clone() };
+    recovered.publish(&target, thread, current).await.unwrap();
+    // A stale token cannot obtain an idempotent replay either.
+    assert!(matches!(recovered.publish(&target, thread, request).await,
+        Err(Error::Forbidden(reason)) if reason == "stale_grant_generation"));
+    assert_eq!(recovered.read_messages(&owner, thread, 0, 10).await.unwrap().len(), 3);
+    let jobs = recovered.claim_delivery_jobs(10).await.unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].recipient, owner);
+}
+
+#[tokio::test]
+#[ignore = "requires isolated disposable DATABASE_URL Postgres"]
+async fn postgres_generation_upgrade_preserves_existing_rows() {
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    // Build the actual preceding schema, including SQLx's migration checksums.
+    // Do not simulate an upgrade by changing a current-schema status marker.
+    let mut preceding = sqlx::migrate!("./migrations");
+    preceding.migrations.to_mut().retain(|migration| migration.version < 20260912120000);
+    preceding.run(&pool).await.unwrap();
+    let missing: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='mq_participants' AND column_name='grant_generation'"
+    ).fetch_one(&pool).await.unwrap();
+    assert_eq!(missing, 0);
+    let thread = ThreadId(uuid::Uuid::new_v4());
+    let message = uuid::Uuid::new_v4();
+    let job = uuid::Uuid::new_v4();
+    let owner = human("upgrade-org", "owner");
+    let target = human("upgrade-org", "target");
+    sqlx::query("INSERT INTO mq_threads (thread_id,org_id,scope_kind,scope_id) VALUES ($1,'upgrade-org','org','upgrade-org')")
+        .bind(thread.0).execute(&pool).await.unwrap();
+    for (id, role, caps) in [
+        ("owner", "owner", vec!["read", "publish", "invite", "close"]),
+        ("target", "member", vec!["read", "publish"]),
+    ] {
+        sqlx::query("INSERT INTO mq_participants (thread_id,principal_kind,principal_id,org_id,role,caps) VALUES ($1,'human',$2,'upgrade-org',$3,$4)")
+            .bind(thread.0).bind(id).bind(role).bind(caps).execute(&pool).await.unwrap();
+    }
+    sqlx::query("INSERT INTO mq_messages (message_id,thread_id,org_id,seq,kind,body,sender_kind,sender_id,sender_org_id) VALUES ($1,$2,'upgrade-org',1,'notice','before upgrade','human','owner','upgrade-org')")
+        .bind(message).bind(thread.0).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO mq_delivery_jobs (job_id,message_id,thread_id,recipient_kind,recipient_id,recipient_org_id) VALUES ($1,$2,$3,'human','target','upgrade-org')")
+        .bind(job).bind(message).bind(thread.0).execute(&pool).await.unwrap();
+
+    let mq = Fabric::from_store(Arc::new(PostgresStore::connect(&url).await.unwrap()));
+    mq.validate_grant_generation(&owner, thread, 0).await.unwrap();
+    mq.validate_grant_generation(&target, thread, 0).await.unwrap();
+    let messages = mq.read_messages(&target, thread, 0, 10).await.unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].message_id.0, message);
+    assert_eq!(messages[0].body, "before upgrade");
+    let jobs = mq.claim_delivery_jobs(10).await.unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].job_id.0, job);
+    assert!(sqlx::query("UPDATE mq_participants SET grant_generation=-1 WHERE thread_id=$1")
+        .bind(thread.0).execute(&pool).await.is_err());
+    mq.set_participant_role(&owner, thread, &target, Role::Revoked).await.unwrap();
+    mq.set_participant_role(&owner, thread, &target, Role::Member).await.unwrap();
+    mq.validate_grant_generation(&target, thread, 1).await.unwrap();
+    assert!(mq.validate_grant_generation(&target, thread, 0).await.is_err());
+    pool.close().await;
 }
 
 #[tokio::test]

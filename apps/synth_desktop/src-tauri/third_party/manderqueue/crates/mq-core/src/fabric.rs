@@ -257,6 +257,16 @@ impl Fabric {
         self.store.read_messages(thread_id, after_seq, limit).await
     }
 
+    /// Compare persisted revocation generation; a signed token cannot set it.
+    pub async fn validate_grant_generation(&self, actor: &Principal, thread: ThreadId, generation: u64) -> Result<()> {
+        self.load_workspace_thread(actor, thread).await?;
+        let members = self.store.list_participants(thread).await?;
+        if !members.iter().any(|p| p.principal == *actor && p.grant_generation == generation && p.role != Role::Revoked) {
+            return Err(Error::Forbidden("stale_grant_generation"));
+        }
+        Ok(())
+    }
+
     pub async fn claim_delivery_jobs(&self, limit: usize) -> Result<Vec<DeliveryJob>> {
         self.store.claim_delivery_jobs(limit).await
     }

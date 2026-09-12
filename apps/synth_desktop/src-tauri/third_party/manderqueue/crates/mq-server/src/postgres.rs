@@ -249,6 +249,7 @@ struct ParticipantRow {
     org_id: String,
     role: String,
     caps: Vec<String>,
+    grant_generation: i64,
 }
 
 impl ParticipantRow {
@@ -261,6 +262,7 @@ impl ParticipantRow {
                 org_id: self.org_id,
             },
             role,
+            grant_generation: u64::try_from(self.grant_generation).map_err(|_| Error::Invalid("grant_generation"))?,
             caps: {
                 let stored = parse_caps(&self.caps);
                 if stored.is_empty() {
@@ -548,7 +550,8 @@ impl Store for PostgresStore {
         let res = sqlx::query(
             r#"
             UPDATE mq_participants
-            SET role = $5, caps = $6
+            SET role = $5, caps = $6,
+                grant_generation = grant_generation + CASE WHEN $5='revoked' AND role<>'revoked' THEN 1 ELSE 0 END
             WHERE thread_id = $1 AND principal_kind = $2 AND principal_id = $3 AND org_id = $4
             "#,
         )
@@ -582,7 +585,7 @@ impl Store for PostgresStore {
                 .await
                 .map_err(map_db)?
                 .ok_or(Error::NotFound("thread"))?;
-        let rows = sqlx::query_as::<_, ParticipantRow>("SELECT principal_kind, principal_id, org_id, role, caps FROM mq_participants WHERE thread_id=$1 FOR UPDATE")
+        let rows = sqlx::query_as::<_, ParticipantRow>("SELECT principal_kind, principal_id, org_id, role, caps, grant_generation FROM mq_participants WHERE thread_id=$1 FOR UPDATE")
             .bind(thread_id.0).fetch_all(&mut *tx).await.map_err(map_db)?;
         let members = rows
             .into_iter()
@@ -590,7 +593,7 @@ impl Store for PostgresStore {
             .collect::<Result<Vec<_>>>()?;
         let target = target.normalize();
         if mq_core::validate_participant_change(&org, actor, &members, &target, create)? {
-            sqlx::query("INSERT INTO mq_participants(thread_id,principal_kind,principal_id,org_id,role,caps) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(thread_id,principal_kind,principal_id,org_id) DO UPDATE SET role=EXCLUDED.role,caps=EXCLUDED.caps")
+            sqlx::query("INSERT INTO mq_participants(thread_id,principal_kind,principal_id,org_id,role,caps) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(thread_id,principal_kind,principal_id,org_id) DO UPDATE SET role=EXCLUDED.role,caps=EXCLUDED.caps,grant_generation=mq_participants.grant_generation + CASE WHEN EXCLUDED.role='revoked' AND mq_participants.role<>'revoked' THEN 1 ELSE 0 END")
                 .bind(thread_id.0).bind(kind_str(target.principal.kind)).bind(&target.principal.id)
                 .bind(&target.principal.org_id).bind(role_str(target.role)).bind(cap_strs(&target.caps))
                 .execute(&mut *tx).await.map_err(map_db)?;
@@ -638,6 +641,14 @@ impl Store for PostgresStore {
             .fetch_optional(&mut *tx).await.map_err(map_db)?;
         if publisher != Some(true) {
             return Err(Error::Forbidden("publish_membership_required"));
+        }
+        if let Some(expected) = req.expected_grant_generation {
+            let generation: i64 = sqlx::query_scalar("SELECT grant_generation FROM mq_participants WHERE thread_id=$1 AND principal_kind=$2 AND principal_id=$3 AND org_id=$4 FOR SHARE")
+                .bind(thread_id.0).bind(kind_str(sender.kind)).bind(&sender.id).bind(&sender.org_id)
+                .fetch_one(&mut *tx).await.map_err(map_db)?;
+            if u64::try_from(generation).ok() != Some(expected) {
+                return Err(Error::Forbidden("stale_grant_generation"));
+            }
         }
         let fingerprint = publish_fingerprint(&req);
         if let Some(key) = req.idempotency_key.as_ref() {
@@ -766,7 +777,7 @@ impl Store for PostgresStore {
     async fn list_participants(&self, thread_id: ThreadId) -> Result<Vec<Participant>> {
         let rows = sqlx::query_as::<_, ParticipantRow>(
             r#"
-            SELECT principal_kind, principal_id, org_id, role, caps
+            SELECT principal_kind, principal_id, org_id, role, caps, grant_generation
             FROM mq_participants WHERE thread_id = $1
             "#,
         )

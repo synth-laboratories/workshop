@@ -353,6 +353,11 @@ impl Store for BatchingStore {
         sender: &Principal,
         req: PublishMessage,
     ) -> Result<(Message, bool)> {
+        if req.expected_grant_generation.is_some() {
+            // Buffered messages do not retain ingress authority. Commit scoped
+            // writes directly so serialization cannot discard the generation.
+            return self.durable.append_message(thread_id, sender, req).await;
+        }
         let thread = self
             .durable
             .get_thread(thread_id)

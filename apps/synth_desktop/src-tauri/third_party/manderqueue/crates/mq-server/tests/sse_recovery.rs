@@ -34,6 +34,34 @@ async fn setup(state: &AppState) -> mq_core::ThreadId {
 }
 
 #[tokio::test]
+async fn restored_membership_does_not_restore_old_scoped_credentials() {
+    let mut state = AppState::memory();
+    let thread = setup(&state).await;
+    let owner = Principal { kind: PrincipalKind::Human, org_id: "org".into(), id: "owner".into() };
+    let target = Principal { kind: PrincipalKind::Actor, org_id: "org".into(), id: "device".into() };
+    state.fabric.add_participant(&owner, thread, Participant::new(target.clone(), Role::Agent)).await.unwrap();
+    let secret = "fixture-secret-at-least-32-bytes-long";
+    state.auth = AuthMode::Jwt { secret: secret.into() };
+    let token = |generation| jsonwebtoken::encode(&jsonwebtoken::Header::default(),
+        &serde_json::json!({"iss":"manderqueue","aud":"manderqueue","exp":chrono::Utc::now().timestamp()+60,
+            "jti":"generation-fixture","principal":{"kind":"actor","id":"device","org_id":"org"},
+            "thread_scope":{"thread_id":thread.0,"grant_generation":generation,"operations":["read"]}}),
+        &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes())).unwrap();
+    let old_token = token(0);
+    let mut body = stream(state.clone(),thread,&old_token).await;
+    state.fabric.set_participant_role(&owner,thread,&target,Role::Revoked).await.unwrap();
+    state.fabric.set_participant_role(&owner,thread,&target,Role::Agent).await.unwrap();
+    let frame = tokio::time::timeout(Duration::from_secs(6),body.frame()).await.unwrap().unwrap().unwrap();
+    assert!(std::str::from_utf8(frame.data_ref().unwrap()).unwrap().contains("revoked"));
+    for (credential,expected) in [(old_token,403),(token(1),200)] {
+        let response = mq_server::router(state.clone()).oneshot(Request::builder()
+            .uri(format!("/v1/threads/{}/messages",thread.0)).header("authorization",format!("Bearer {credential}"))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status().as_u16(),expected);
+    }
+}
+
+#[tokio::test]
 async fn scoped_token_is_enforced_on_reads_streams_and_global_routes() {
     let mut state = AppState::memory();
     let thread = setup(&state).await;
@@ -42,7 +70,7 @@ async fn scoped_token_is_enforced_on_reads_streams_and_global_routes() {
     let claims = serde_json::json!({"iss":"manderqueue","aud":"manderqueue",
         "exp":chrono::Utc::now().timestamp()+60,"jti":"scope-fixture",
         "principal":{"kind":"human","id":"owner","org_id":"org"},
-        "thread_scope":{"thread_id":thread.0,"operations":["read"]}});
+        "thread_scope":{"thread_id":thread.0,"grant_generation":0,"operations":["read"]}});
     let token = jsonwebtoken::encode(&jsonwebtoken::Header::default(), &claims,
         &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes())).unwrap();
     for (path, status) in [
