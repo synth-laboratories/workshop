@@ -18,8 +18,17 @@ local shape, not remote truth. The unlimited helper exists only in unit tests.
 The live authority adapter is still gated. Opening the service, switching identity and signing out invalidate
 old leases. Old outbox requests survive; they cannot silently flush under a new
 auth epoch. Scoped reads fail for stale leases. Legacy sessions are never adopted:
-only `create_conversation` can allocate a new scope-owned conversation, and all
+only explicit conversation creation can allocate a new scope-owned conversation, and all
 additional stream bindings must reference such a conversation.
+
+`create_local_mq_conversation` explicitly allocates a fresh Codex conversation
+and an MQ thread binding in one transaction. Its inference target may be local,
+remote or gateway-backed; session execution stays Local. The thread ID never
+becomes a Codex runtime ID. Same-target retries reuse the binding, while a
+different target or an Intern-bound thread refuses. Account epochs fence both
+creation and inbox reads. This does not adopt existing local/legacy sessions,
+issue device grants or start a turn; explicit existing-session connection and
+the restricted dispatcher remain required for the complete product flow.
 
 `dispatch_once` persists the exact body, key and generation; atomically changes a
 pending request to outcome_unknown before invoking an injected transport; checks

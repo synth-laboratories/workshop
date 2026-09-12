@@ -330,6 +330,46 @@ impl CloudStore {
         })
     }
 
+    /// Allocate an account-scoped local participant conversation for one MQ thread.
+    /// See docs/plans/2026-09-11-hybrid-research-product-and-messaging-spec.md.
+    /// This stores an explicit binding only; it does not issue grants or start turns.
+    pub fn create_local_mq_conversation(
+        &self,
+        lease: &ScopeLease,
+        thread_id: &str,
+        title: &str,
+        target: &crate::domain::RuntimeTarget,
+    ) -> Result<String> {
+        valid_id(thread_id)?;
+        if matches!(target, crate::domain::RuntimeTarget::InternRuntime { .. }) {
+            bail!("local MQ participant requires a Codex runtime target");
+        }
+        let target_json = target.to_json_value().to_string();
+        self.db.transaction(|conn| {
+            fence(conn, lease)?;
+            let existing: Option<(String, String, String)> = conn.query_row(
+                "SELECT s.id,s.kind,s.target_json FROM cloud_session_bindings b JOIN sessions s ON s.id=b.local_session_id WHERE b.scope_id=?1 AND b.adapter='mq' AND b.external_id=?2",
+                params![lease.scope_id, thread_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).optional()?;
+            if let Some((id, kind, stored_target)) = existing {
+                if kind != "codex" || stored_target != target_json {
+                    bail!("MQ thread already bound to a different conversation target");
+                }
+                return Ok(id);
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO sessions(id,title,kind,target_json,runtime_target_kind,status,metadata_json,created_at,updated_at) VALUES(?1,?2,'codex',?3,?4,'ready','{}',?5,?5)",
+                params![id, title, target_json, target.kind_str(), now],
+            )?;
+            conn.execute("INSERT INTO cloud_owned_sessions VALUES(?1,?2)", params![id, lease.scope_id])?;
+            conn.execute("INSERT INTO cloud_session_bindings VALUES(?1,'mq',?2,?3)", params![lease.scope_id, thread_id, id])?;
+            Ok(id)
+        })
+    }
+
     pub fn bind_session(
         &self,
         lease: &ScopeLease,

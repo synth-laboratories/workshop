@@ -54,6 +54,50 @@ fn event(id: &str, seq: u64) -> RemoteEvent {
 }
 
 #[test]
+fn local_mq_conversation_preserves_execution_identity_and_account_fencing() {
+    let (_dir, db, store, lease, _) = setup();
+    let target = crate::domain::RuntimeTarget::RemoteRuntime {
+        model: "fixture/model".into(), adapter: None, target_id: None,
+    };
+    let session = store.create_local_mq_conversation(&lease, "local-thread", "Local", &target).unwrap();
+    assert_eq!(store.create_local_mq_conversation(&lease, "local-thread", "Retry", &target).unwrap(), session);
+    db.transaction(|conn| {
+        let (kind, substrate, remote): (String, String, Option<String>) = conn.query_row(
+            "SELECT kind,runtime_target_kind,remote_id FROM sessions WHERE id=?1", [&session],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(kind, "codex");
+        assert_eq!(substrate, "remote");
+        assert_eq!(remote, None);
+        Ok(())
+    }).unwrap();
+    let mq = Stream { adapter: Adapter::Mq, external_id: "local-thread".into() };
+    let checkpoint = Checkpoint::Mq { subscription_id: "subscription".into(), sequence: 1 };
+    store.commit_page(&lease, &mq, None, &checkpoint, &[event("local-message", 1)]).unwrap();
+    store.accept_mq_input(&lease, &mq, "local-message").unwrap();
+    assert_eq!(store.mq_input_commands(&lease, &mq, 0, 10).unwrap().len(), 1);
+    assert!(store.create_local_mq_conversation(&lease, "local-thread", "Conflict", &crate::domain::RuntimeTarget::local_laguna()).is_err());
+    let other = store.activate_verified(&identity("b")).unwrap();
+    assert!(store.create_local_mq_conversation(&lease, "stale", "Stale", &target).is_err());
+    assert!(store.authorize_session(&other, &session).is_err());
+    let other_session = store.create_local_mq_conversation(&other, "local-thread", "Other", &target).unwrap();
+    assert_ne!(other_session, session);
+    assert!(store.pending_mq_inputs(&other, &mq, 10).unwrap().is_empty());
+    let intern = crate::domain::RuntimeTarget::InternRuntime { mode: crate::domain::InternMode::Sync, binding: None };
+    assert!(store.create_local_mq_conversation(&other, "wrong-kind", "Intern", &intern).is_err());
+    db.transaction(|conn| {
+        conn.execute_batch("CREATE TRIGGER fail_local_binding BEFORE INSERT ON cloud_session_bindings BEGIN SELECT RAISE(ABORT,'fixture binding failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    assert!(store.create_local_mq_conversation(&other, "failed-thread", "Rollback fixture", &target).is_err());
+    db.transaction(|conn| {
+        let count: i64 = conn.query_row("SELECT count(*) FROM sessions WHERE title='Rollback fixture'", [], |row| row.get(0))?;
+        assert_eq!(count, 0);
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
 fn mq_acceptance_retains_pending_inputs_atomically_across_restart_and_account_switch() {
     let (_dir, db, store, lease, session) = setup();
     let mq = Stream { adapter: Adapter::Mq, external_id: "thread".into() };
