@@ -1,5 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBuildCommand": "npm run package:prepare && npm run package:stage-diagnostics"
+  },
   "bundle": {
     "resources": {
       "../../../services/laguna-daemon/laguna_daemon": "services/laguna-daemon/laguna_daemon",
