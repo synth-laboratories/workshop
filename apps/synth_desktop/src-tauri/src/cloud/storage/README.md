@@ -46,6 +46,10 @@ identity on MQ 401/403. Each bounded pass resumes from the stored cursor; SSE
 hints never enter this commit path. The host must supply a client whose endpoint
 and credential belong to the verified identity. Verified grant/client issuance,
 automatic polling and restricted execution remain activation prerequisites.
+Each fetched page also requires every sender organization to match the verified
+host account organization before committing any row or advancing its checkpoint.
+An HTTP authorization refusal invalidates cached identity; it is not an empty
+successful catch-up. These checks do not replace verified client issuance.
 
 `dispatch_once` persists the exact body, key and generation; atomically changes a
 pending request to outcome_unknown before invoking an injected transport; checks

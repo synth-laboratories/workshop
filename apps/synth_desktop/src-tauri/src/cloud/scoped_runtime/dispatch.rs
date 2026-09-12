@@ -26,6 +26,11 @@ impl ScopedCloudRuntime {
             bail!("invalid MQ catch-up request");
         }
         let generation = self.revalidate_with(origin, verify).await?.generation;
+        let org_id = {
+            let state = self.state.lock().await;
+            if state.view.generation != generation { bail!("cloud operation was superseded"); }
+            state.active.as_ref().context("cloud identity unavailable")?.identity.org_id.clone()
+        };
         let stream = Stream { adapter: Adapter::Mq, external_id: thread_id.0.to_string() };
         let query = stream.clone();
         let mut expected = self.scoped_transaction(generation, move |store, lease| store.checkpoint(&lease, &query)).await?;
@@ -37,11 +42,15 @@ impl ScopedCloudRuntime {
         let mut supervisor = mq_sdk::CatchUpSupervisor::new(thread_id, cursor);
         self.await_scoped(generation, || async {
             supervisor.catch_up(client, max_pages, |messages, sequence| {
+                let org_id = org_id.clone();
                 let previous = expected.clone();
                 let next = Checkpoint::Mq { subscription_id: subscription_id.clone(), sequence };
                 expected = Some(next.clone());
                 let stream = stream.clone();
                 async move {
+                    if messages.iter().any(|message| message.sender.org_id != org_id) {
+                        return Err(mq_sdk::SdkError::Decode("MQ message organization mismatch".into()));
+                    }
                     let events = messages.into_iter().map(|message| Ok(RemoteEvent {
                         id: message.message_id.0.to_string(), kind: "mq.message".into(),
                         sequence: Some(message.seq), generation: None,

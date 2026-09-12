@@ -398,6 +398,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mq_http_authorization_failure_invalidates_host_scope() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_dir, core, _) = setup().await;
+        let runtime = core.scoped_cloud();
+        let thread = mq_core::ThreadId::new();
+        runtime.create_local_mq_with("https://fixture.invalid", thread.0.to_string(), "MQ".into(),
+            RuntimeTarget::local_laguna(), || async { Ok(observation(2)) }).await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            socket.read(&mut buffer).await.unwrap();
+            socket.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+        });
+        let client = mq_sdk::MqClient::new(format!("http://{address}"), "fixture");
+        assert!(runtime.catch_up_mq_with("https://fixture.invalid", thread, "subscription".into(), &client, 1,
+            || async { Ok(observation(2)) }).await.is_err());
+        server.await.unwrap();
+        assert_eq!(runtime.view().await.unwrap().availability, Availability::SignedOut);
+        assert!(runtime.pending_mq_with("https://fixture.invalid", thread.0.to_string(), 10,
+            || async { Ok(observation(2)) }).await.unwrap().1.is_empty());
+    }
+
+    #[tokio::test]
     async fn mq_http_catchup_commits_native_inbox_before_advancing() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (_dir, core, _) = setup().await;
@@ -411,7 +436,11 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            for (cursor, response) in [(0, json!([message]).to_string()), (1, "[]".into())] {
+            let mut foreign = message.clone();
+            foreign["seq"] = json!(2);
+            foreign["message_id"] = json!(uuid::Uuid::new_v4());
+            foreign["sender"]["org_id"] = json!(uuid::Uuid::from_u128(99));
+            for (cursor, response) in [(0, json!([message]).to_string()), (1, "[]".into()), (1, json!([foreign]).to_string())] {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut buffer = [0; 4096];
                 let count = socket.read(&mut buffer).await.unwrap();
@@ -427,6 +456,8 @@ mod tests {
             "https://fixture.invalid", thread, "subscription".into(), &client, 2,
             || async { Ok(observation(2)) })).await.unwrap().unwrap();
         assert_eq!(outcome, mq_sdk::CatchUpOutcome::CaughtUp);
+        assert!(runtime.catch_up_mq_with("https://fixture.invalid", thread, "subscription".into(), &client, 1,
+            || async { Ok(observation(2)) }).await.is_err());
         server.await.unwrap();
         let rows = runtime.pending_mq_with("https://fixture.invalid", thread.0.to_string(), 10,
             || async { Ok(observation(2)) }).await.unwrap().1;
