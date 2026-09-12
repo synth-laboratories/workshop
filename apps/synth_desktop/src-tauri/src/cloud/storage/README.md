@@ -82,6 +82,13 @@ an unregistered migration candidate. Turn-boundary dispatch, restricted tool
 policy, grant validation and the network adapter are still required before
 activating this path in the product.
 
+The desktop now depends on the existing `mq-sdk` and `mq-core` through the
+immutable `third_party/manderqueue` Git snapshot. `VENDOR_PROVENANCE.json` records
+the source commit and per-file hashes; run `python3 scripts/check-mq-vendor.py`
+from the repository root to verify them. Update the snapshot from a reviewed MQ
+Git commit rather than editing vendored source. This establishes the dependency,
+not network activation or a second HTTP client implementation.
+
 Run from the repository root:
 
 ```sh
