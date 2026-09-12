@@ -347,7 +347,7 @@ async fn authorize(store: CloudStore, lease: ScopeLease, session_id: String) -> 
 mod tests {
     use super::*;
     use crate::{
-        cloud::storage::{Adapter, Stream, MIGRATION_CANDIDATE},
+        cloud::storage::{Adapter, Stream, SCHEMA},
         core_runtime::CoreRuntime,
         domain::{RuntimeTarget, SessionCreate, SessionKind, SessionStatus},
         storage::{EventAppend, EventSource},
@@ -362,7 +362,7 @@ mod tests {
         let core = CoreRuntime::open(dir.path()).unwrap();
         let db = core.storage().database().clone();
         db.transaction(|conn| {
-            conn.execute_batch(MIGRATION_CANDIDATE)?;
+            conn.execute_batch(SCHEMA)?;
             Ok(())
         })
         .unwrap();
@@ -877,7 +877,13 @@ mod tests {
             core.scoped_cloud().view().await.unwrap().availability,
             Availability::QualificationRequired
         );
-        assert!(CloudStore::open(core.storage().database().clone()).is_err());
+        // The schema is a registered migration now, so the store opens; the
+        // host runtime still stays gated until a store is explicitly installed.
+        assert!(CloudStore::open(core.storage().database().clone()).is_ok());
+        assert_eq!(
+            core.scoped_cloud().view().await.unwrap().availability,
+            Availability::QualificationRequired
+        );
     }
     #[tokio::test]
     async fn legacy_cloud_rows_cannot_crowd_local_history_out_before_filtering() {

@@ -22,7 +22,7 @@ fn setup() -> (TempDir, Arc<Database>, CloudStore, ScopeLease, String) {
     let storage = Storage::open(dir.path()).unwrap();
     let db = storage.database().clone();
     db.transaction(|conn| {
-        conn.execute_batch(MIGRATION_CANDIDATE)?;
+        conn.execute_batch(SCHEMA)?;
         Ok(())
     })
     .unwrap();
@@ -167,19 +167,19 @@ fn mq_acceptance_retains_pending_inputs_atomically_across_restart_and_account_sw
 }
 
 #[test]
-fn schema_is_not_automatically_installed_and_upgrade_rolls_back() {
+fn registered_schema_adopts_no_legacy_rows_and_replay_is_idempotent() {
     let dir = tempdir().unwrap();
     let db = Storage::open(dir.path()).unwrap().database().clone();
-    assert!(CloudStore::open(db.clone()).is_err());
     db.with_conn(|conn| { conn.execute("INSERT INTO sessions(id,title,target_json,status,created_at,updated_at) VALUES('legacy','legacy','{}','ready','now','now')",[])?;Ok(()) }).unwrap();
+    // A failed replay inside a transaction rolls back and leaves the
+    // registered schema intact; replaying the idempotent DDL is a no-op.
     let failed: Result<()> = db.transaction(|conn| {
-        conn.execute_batch(MIGRATION_CANDIDATE)?;
+        conn.execute_batch(SCHEMA)?;
         bail!("simulated upgrade failure")
     });
     assert!(failed.is_err());
-    assert!(CloudStore::open(db.clone()).is_err());
     db.transaction(|conn| {
-        conn.execute_batch(MIGRATION_CANDIDATE)?;
+        conn.execute_batch(SCHEMA)?;
         Ok(())
     })
     .unwrap();

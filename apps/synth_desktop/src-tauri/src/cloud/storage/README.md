@@ -1,9 +1,44 @@
 # Scoped cloud storage
 
-Native SQLite service for WI-233/234/236/237. The SQL migration candidate is
-compiled into Workshop but is deliberately absent from the migration registry.
-`CloudStore::open` fails when the candidate has not been explicitly installed.
-Only isolated native tests install it today; CoreRuntime does not activate it.
+Native SQLite service for WI-233/234/236/237 and the WP6 native mailbox.
+
+## Registration status (v0.11)
+
+`schema.sql` is registered as desktop migration 69 after qualification:
+clean install, an existing v68 profile (no row modified or adopted, schema
+identical to a clean install), a failed upgrade (whole-migration rollback,
+version not stamped, next launch retries), a lane that collided on version 69
+(`heal_missing_tables` recreates every table from idempotent DDL), restart and
+account isolation. `CloudStore::open` verifies the column shape and refuses a
+same-named table with another shape; local Workshop keeps working.
+
+Registration activates storage only. `ScopedCloudRuntime` stays
+`QualificationRequired` until `activate_store` installs a store; no default
+boot path calls it. Grant issuance, polling and message handling remain off
+until a qualified deployment/profile opts in.
+
+## Native MQ mailbox (WP6)
+
+Contract: manderqueue `docs/WORKSHOP_GRANT_CONTRACT.md` (sha256 `8fc1669a…`).
+`mailbox.rs` persists: an explicitly selected existing Local session bound to
+one thread as the server-derived `enrollment:<id>` principal (never a legacy,
+remote-linked or other-account session); the server incarnation and grant
+generation; granted-history pages with their authorized skip recorded in
+`cloud_mq_history_gaps`; the delivery ladder delivered → observed → acting →
+answered/declined/expired (or fenced); and outbound publications whose exact
+body/key/correlation/causation live immutably in `cloud_command_outbox`.
+
+Fences: native acceptance requires the exact session, incarnation and grant
+generation; input delivered under an older generation is fenced, never run.
+Queued writes fence permanently on explicit sign-out or account switch
+(`cloud_mq_scope_fences`) and on a grant-generation change or revocation, and
+survive identity-observation expiry/sleep for the same account and grant.
+An uncertain send stays `outcome_unknown`; only our own publication observed
+in authoritative history (same key and semantics) settles it, otherwise the
+lookup is recorded and nothing is resent. See `cloud/scoped_runtime/mailbox.rs`
+for the host pass, restricted delivery and supervisor.
+
+The remainder of this file documents the earlier candidate slices.
 
 The service owns scopes, a global monotonic auth epoch, explicit new conversation
 ownership, external stream/run bindings, outbox requests and checkpoints. It reuses

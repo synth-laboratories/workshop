@@ -71,6 +71,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_66,
     MIGRATION_67,
     MIGRATION_68,
+    MIGRATION_69,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -269,6 +270,24 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("human_annotation_sessions", MIGRATION_67),
     ("human_annotation_results", MIGRATION_67),
     ("human_annotation_events", MIGRATION_67),
+    // A collided lane that stamped version 69 with other DDL heals every
+    // scoped-cloud table here; the DDL is idempotent (IF NOT EXISTS / OR
+    // IGNORE). CloudStore::open then verifies the column shape.
+    ("cloud_scopes", MIGRATION_69),
+    ("cloud_auth_state", MIGRATION_69),
+    ("cloud_owned_sessions", MIGRATION_69),
+    ("cloud_session_bindings", MIGRATION_69),
+    ("cloud_execution_bindings", MIGRATION_69),
+    ("cloud_command_outbox", MIGRATION_69),
+    ("cloud_checkpoints", MIGRATION_69),
+    ("cloud_event_bindings", MIGRATION_69),
+    ("cloud_mq_pending_inputs", MIGRATION_69),
+    ("cloud_creation_intents", MIGRATION_69),
+    ("cloud_mq_device", MIGRATION_69),
+    ("cloud_mq_scope_fences", MIGRATION_69),
+    ("cloud_mq_participants", MIGRATION_69),
+    ("cloud_mq_outbox", MIGRATION_69),
+    ("cloud_mq_history_gaps", MIGRATION_69),
 ];
 
 /// Lane C: provisional findings relayed from a rollout's live annotation
@@ -5180,6 +5199,130 @@ mod tests {
             "missing verifier evidence must not store a score"
         );
     }
+
+    const CLOUD_TABLES: &[&str] = &[
+        "cloud_scopes",
+        "cloud_auth_state",
+        "cloud_owned_sessions",
+        "cloud_session_bindings",
+        "cloud_execution_bindings",
+        "cloud_command_outbox",
+        "cloud_checkpoints",
+        "cloud_event_bindings",
+        "cloud_mq_pending_inputs",
+        "cloud_creation_intents",
+        "cloud_mq_device",
+        "cloud_mq_scope_fences",
+        "cloud_mq_participants",
+        "cloud_mq_outbox",
+        "cloud_mq_history_gaps",
+    ];
+
+    fn cloud_schema(conn: &Connection) -> Vec<(String, String)> {
+        let mut statement = conn
+            .prepare("SELECT name, sql FROM sqlite_master WHERE (name LIKE 'cloud_%' OR name LIKE 'immutable_cloud_%') AND sql IS NOT NULL ORDER BY name")
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    fn table_exists(conn: &Connection, table: &str) -> bool {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [table],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn migration_69_on_a_clean_profile_creates_the_scoped_cloud_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        for table in CLOUD_TABLES {
+            assert!(table_exists(&conn, table), "{table}");
+        }
+        let auth: (i64, i64, Option<String>) = conn
+            .query_row("SELECT singleton, epoch, active_scope_id FROM cloud_auth_state", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        assert_eq!(auth, (1, 0, None));
+        // Reapplying on every launch is a no-op.
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM cloud_auth_state", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn migration_69_is_additive_on_an_existing_v68_profile() {
+        let conn = seed_at_version(68);
+        conn.execute_batch(
+            "INSERT INTO sessions(id,title,target_json,status,created_at,updated_at) VALUES('legacy','Legacy','{\"kind\":\"intern\"}','ready','t','t');
+             INSERT INTO sessions(id,title,target_json,status,remote_id,created_at,updated_at) VALUES('remote','Remote','{}','ready','legacy-remote','t','t');
+             INSERT INTO command_receipts(command_id,session_id,source,kind,status,created_at,updated_at) VALUES('cmd','legacy','codex','turn','completed','t','t');
+             INSERT INTO events(event_id,session_id,source,kind,payload_json,created_at) VALUES('evt','legacy','codex','agent.message','{}','t');",
+        )
+        .unwrap();
+        let snapshot = |conn: &Connection| -> Vec<String> {
+            let mut statement = conn
+                .prepare("SELECT id||'|'||title||'|'||target_json||'|'||COALESCE(remote_id,'') FROM sessions UNION ALL SELECT command_id||'|'||status FROM command_receipts UNION ALL SELECT event_id||'|'||kind FROM events ORDER BY 1")
+                .unwrap();
+            statement.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<Vec<String>>>().unwrap()
+        };
+        let before = snapshot(&conn);
+        assert!(!table_exists(&conn, "cloud_scopes"));
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        assert_eq!(snapshot(&conn), before, "no existing row is modified");
+        let owned: i64 = conn.query_row("SELECT COUNT(*) FROM cloud_owned_sessions", [], |r| r.get(0)).unwrap();
+        let bindings: i64 = conn.query_row("SELECT COUNT(*) FROM cloud_session_bindings", [], |r| r.get(0)).unwrap();
+        assert_eq!((owned, bindings), (0, 0), "legacy sessions are never adopted");
+        // The upgraded schema is identical to a clean install.
+        let fresh = Connection::open_in_memory().unwrap();
+        apply_migrations(&fresh).unwrap();
+        assert_eq!(cloud_schema(&conn), cloud_schema(&fresh));
+    }
+
+    #[test]
+    fn migration_69_failure_rolls_back_whole_and_the_next_launch_retries() {
+        let conn = seed_at_version(68);
+        conn.execute_batch(
+            "INSERT INTO sessions(id,title,target_json,status,created_at,updated_at) VALUES('keep','Keep','{}','ready','t','t');
+             CREATE TABLE cloud_auth_state (legacy_only TEXT);",
+        )
+        .unwrap();
+        assert!(apply_migrations(&conn).is_err());
+        assert_eq!(schema_version(&conn).unwrap(), 68, "the version stamp is not advanced");
+        for table in CLOUD_TABLES.iter().filter(|table| **table != "cloud_auth_state") {
+            assert!(!table_exists(&conn, table), "{table} must roll back with the failed migration");
+        }
+        let kept: i64 = conn.query_row("SELECT COUNT(*) FROM sessions WHERE id='keep'", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, 1);
+        // The cause is removed (for example by a support fix); relaunch applies it.
+        conn.execute_batch("DROP TABLE cloud_auth_state;").unwrap();
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        for table in CLOUD_TABLES {
+            assert!(table_exists(&conn, table), "{table}");
+        }
+    }
+
+    #[test]
+    fn a_lane_that_stamped_version_69_heals_every_scoped_cloud_table() {
+        let conn = seed_at_version(68);
+        conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (69, datetime('now'))",
+            [],
+        )
+        .unwrap();
+        assert!(!table_exists(&conn, "cloud_mq_participants"));
+        apply_migrations(&conn).unwrap();
+        for table in CLOUD_TABLES {
+            assert!(table_exists(&conn, table), "{table}");
+        }
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM cloud_auth_state", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 1);
+    }
 }
 
 /// Backfill admitted specs for runs that predate kernel admission.
@@ -5612,3 +5755,11 @@ CREATE TABLE IF NOT EXISTS human_annotation_adjudications (
 CREATE INDEX IF NOT EXISTS human_annotation_adjudication_campaign
     ON human_annotation_adjudications(campaign_id, created_at);
 "#;
+
+/// Scoped cloud storage: account scopes and auth epochs, explicit cloud
+/// session ownership, outbox/checkpoints, the durable MQ inbox/outbox and
+/// local MQ participant bindings. Qualified by `cloud::storage` migration
+/// tests (clean, existing v68 profile, failed upgrade, restart, account
+/// isolation). Additive and idempotent; it never adopts or backfills legacy
+/// rows, so an existing profile's sessions stay exactly as they were.
+const MIGRATION_69: &str = crate::cloud::storage::SCHEMA;

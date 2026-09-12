@@ -1008,7 +1008,7 @@ mod tests {
 
     #[tokio::test]
     async fn account_replacement_and_failures_preserve_history_without_adopting_it() {
-        use crate::cloud::storage::{CloudStore, MIGRATION_CANDIDATE};
+        use crate::cloud::storage::{CloudStore, SCHEMA};
         for failure in ["none", "missing", "invalid", "resolve", "persistence"] {
             let old = MockIntern::start().await;
             let replacement = MockIntern::start().await;
@@ -1019,7 +1019,7 @@ mod tests {
             let old_posts = old.requests.posts.load(Ordering::SeqCst);
             if failure == "persistence" {
                 let db = core.storage().database().clone();
-                db.transaction(|conn| { conn.execute_batch(MIGRATION_CANDIDATE)?; Ok(()) }).unwrap();
+                db.transaction(|conn| { conn.execute_batch(SCHEMA)?; Ok(()) }).unwrap();
                 core.scoped_cloud().install_fixture(CloudStore::open(db.clone()).unwrap()).await.unwrap();
                 db.transaction(|conn| { conn.execute_batch("CREATE TRIGGER fail_reset BEFORE UPDATE ON cloud_auth_state BEGIN SELECT RAISE(ABORT, 'fixture'); END")?; Ok(()) }).unwrap();
             }
@@ -1104,7 +1104,7 @@ mod tests {
 
     #[tokio::test]
     async fn scoped_async_binding_is_not_reused_before_or_after_signout() {
-        use crate::cloud::storage::{Adapter, CloudScopeIdentity, CloudStore, Stream, MIGRATION_CANDIDATE};
+        use crate::cloud::storage::{Adapter, CloudScopeIdentity, CloudStore, Stream, SCHEMA};
         let dir = tempdir().unwrap();
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = attempts.clone();
@@ -1114,7 +1114,7 @@ mod tests {
         });
         let core = CoreRuntime::open_with_intern(dir.path(), runtime).unwrap();
         let db = core.storage().database().clone();
-        db.transaction(|conn| { conn.execute_batch(MIGRATION_CANDIDATE)?; Ok(()) }).unwrap();
+        db.transaction(|conn| { conn.execute_batch(SCHEMA)?; Ok(()) }).unwrap();
         let store = CloudStore::open(db.clone()).unwrap();
         let lease = store.activate_verified(&CloudScopeIdentity {
             backend_origin: "https://fixture.invalid".into(), backend_id: "backend".into(),
@@ -1157,11 +1157,13 @@ mod tests {
         assert!(existing_async_binding(&core).await.unwrap_err().to_string().contains("ownership verification"));
         assert!(create(&core, async_create()).await.unwrap_err().to_string().contains("ownership verification"));
         assert_eq!(list(&core).await.unwrap()[0].id, "legacy-async");
-        let installed: bool = core.storage().database().with_conn(|conn| Ok(conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='cloud_owned_sessions')",
+        // The registered schema exists, but the historical session is never
+        // adopted into scoped ownership or bound to any stream.
+        let adopted: i64 = core.storage().database().with_conn(|conn| Ok(conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM cloud_owned_sessions) + (SELECT COUNT(*) FROM cloud_session_bindings)",
             [], |row| row.get(0),
         )?)).unwrap();
-        assert!(!installed);
+        assert_eq!(adopted, 0);
     }
 
     #[tokio::test]

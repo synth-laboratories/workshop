@@ -1,8 +1,10 @@
-//! Native scoped persistence, held behind the cloud qualification gate.
+//! Native scoped persistence.
 //!
-//! There is deliberately no automatic schema registration or identity discovery.
-//! The host must supply a verified identity after the cloud contract is qualified.
-//! No renderer, credential hash, profile label alone or legacy row can supply it.
+//! The schema is registered as desktop migration 69 after qualification
+//! (clean/existing/failed/restart/account-isolation tests in `tests.rs`).
+//! There is still no automatic identity discovery: the host must supply a
+//! verified identity. No renderer, credential hash, profile label alone or
+//! legacy row can supply it, and registration adopts no existing rows.
 use crate::storage::{append_event, AppEvent, Database, EventAppend, EventSource};
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -11,7 +13,34 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-pub const MIGRATION_CANDIDATE: &str = include_str!("schema.sql");
+pub const SCHEMA: &str = include_str!("schema.sql");
+
+/// Columns this build reads and writes. A prerelease lane that created a
+/// same-named table with another shape must refuse the store rather than
+/// corrupt it; local Workshop keeps working without the cloud store.
+const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
+    ("cloud_auth_state", &["singleton", "epoch", "active_scope_id", "valid_until_ms", "last_scope_id"]),
+    ("cloud_mq_pending_inputs", &["stage", "delivered_generation", "delivered_incarnation", "causal_depth", "deadline_ms", "reply_command_id"]),
+    ("cloud_mq_participants", &["incarnation", "grant_generation", "history_after_seq", "policy_json", "state"]),
+    ("cloud_mq_outbox", &["scope_fence", "grant_generation", "sent_after_seq", "lookup_json", "mq_message_id"]),
+    ("cloud_mq_scope_fences", &["scope_id", "fence"]),
+    ("cloud_mq_history_gaps", &["after_seq", "through_seq"]),
+    ("cloud_mq_device", &["device_id"]),
+    ("cloud_command_outbox", &["delivery_state", "auth_epoch", "expected_generation"]),
+];
+
+fn verify_schema(conn: &Connection) -> Result<()> {
+    for (table, columns) in REQUIRED_COLUMNS {
+        let mut statement = conn.prepare("SELECT name FROM pragma_table_info(?1)")?;
+        let present = statement
+            .query_map([table], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+        if let Some(missing) = columns.iter().find(|column| !present.contains(**column)) {
+            bail!("cloud storage schema is not installed or has an unexpected shape ({table}.{missing})");
+        }
+    }
+    Ok(())
+}
 const MAX_BODY: usize = 1024 * 1024;
 const MAX_PAGE: usize = 500;
 
@@ -209,6 +238,7 @@ impl CloudStore {
     /// persisted remote objects remain intact until verified identity is supplied.
     pub fn open(db: Arc<Database>) -> Result<Self> {
         db.transaction(|conn| {
+            verify_schema(conn)?;
             invalidate(conn)?;
             Ok(())
         })?;
@@ -281,8 +311,18 @@ impl CloudStore {
                 ],
             )?;
             let epoch = invalidate(conn)?;
+            // Activating a different account fences every other account's
+            // queued MQ writes; they stay visible and never flush later.
             conn.execute(
-                "UPDATE cloud_auth_state SET active_scope_id=?1,valid_until_ms=?2 WHERE singleton=1",
+                "INSERT OR IGNORE INTO cloud_mq_scope_fences(scope_id,fence) VALUES(?1,0)",
+                params![key],
+            )?;
+            conn.execute(
+                "UPDATE cloud_mq_scope_fences SET fence=fence+1 WHERE scope_id<>?1",
+                params![key],
+            )?;
+            conn.execute(
+                "UPDATE cloud_auth_state SET active_scope_id=?1,valid_until_ms=?2,last_scope_id=?1 WHERE singleton=1",
                 params![key, valid_until_ms],
             )?;
             Ok(ScopeLease {
@@ -292,8 +332,25 @@ impl CloudStore {
         })
     }
 
+    /// Epoch invalidation for expiry, boot and failed verification. Queued MQ
+    /// writes for the same account survive and flush only after fresh
+    /// identity and grant checks.
     pub fn sign_out(&self) -> Result<()> {
         self.db.transaction(|conn| {
+            invalidate(conn)?;
+            Ok(())
+        })
+    }
+
+    /// A deliberate sign-out (or remote identity denial): also advance the
+    /// account's MQ write fence in the same transaction, so every queued
+    /// write captured before it is fenced permanently.
+    pub fn sign_out_explicit(&self) -> Result<()> {
+        self.db.transaction(|conn| {
+            conn.execute(
+                "UPDATE cloud_mq_scope_fences SET fence=fence+1 WHERE scope_id IN (SELECT active_scope_id FROM cloud_auth_state WHERE singleton=1 UNION SELECT last_scope_id FROM cloud_auth_state WHERE singleton=1)",
+                [],
+            )?;
             invalidate(conn)?;
             Ok(())
         })
@@ -581,29 +638,12 @@ impl CloudStore {
             if current.as_ref()!=expected { bail!("checkpoint changed; reload committed state"); }
             validate_page(stream,expected,next,events)?;
             let mut committed=Vec::new();
+            let prior_sequence = match expected {
+                Some(Checkpoint::Intern { sequence,.. }) | Some(Checkpoint::Mq { sequence,.. }) => Some(*sequence),
+                _ => None,
+            };
             for event in events {
-                valid_id(&event.id)?;
-                let bytes=serde_json::to_vec(&(&event.kind,&event.payload,event.sequence,event.generation))?;
-                if bytes.len()>MAX_BODY { bail!("event exceeds limit"); }
-                let hash=digest(&bytes);
-                let old:Option<String>=conn.query_row("SELECT event_sha256 FROM cloud_event_bindings WHERE scope_id=?1 AND adapter=?2 AND external_id=?3 AND remote_event_id=?4",params![lease.scope_id,stream.adapter.as_str(),stream.external_id,event.id],|r|r.get(0)).optional()?;
-                if let Some(old)=old { if old!=hash { bail!("remote event identity reused with different content"); } continue; }
-                let prior_sequence = match expected {
-                    Some(Checkpoint::Intern { sequence,.. }) | Some(Checkpoint::Mq { sequence,.. }) => Some(*sequence),
-                    _ => None,
-                };
-                if matches!(stream.adapter,Adapter::InternSync|Adapter::InternAsync|Adapter::Mq)
-                    && event.sequence.is_some_and(|s| s == 0 || prior_sequence.is_some_and(|p|s<=p)) {
-                    bail!("unrecognized event at an already committed sequence");
-                }
-                let journal_id=format!("cloud:{}",digest(&serde_json::to_vec(&(&lease.scope_id,stream.adapter.as_str(),&stream.external_id,&event.id))?));
-                let app=append_event(conn,EventAppend {
-                    event_id:Some(journal_id.clone()),session_id:Some(session.clone()),run_id:None,
-                    source:match stream.adapter { Adapter::InternSync|Adapter::InternAsync=>EventSource::Intern,_=>EventSource::Remote },kind:event.kind.clone(),
-                    payload:json!({"cloudScopeId":lease.scope_id,"adapter":stream.adapter.as_str(),"externalId":stream.external_id,"data":event.payload}),
-                    remote_sequence:None,command_id:None,created_at:None,
-                })?;
-                conn.execute("INSERT INTO cloud_event_bindings VALUES(?1,?2,?3,?4,?5,?6)",params![lease.scope_id,stream.adapter.as_str(),stream.external_id,event.id,hash,journal_id])?;
+                let Some((app, journal_id)) = append_remote_event(conn, lease, stream, &session, prior_sequence, event)? else { continue };
                 if stream.adapter == Adapter::Mq {
                     let sequence = i64::try_from(event.sequence.context("MQ sequence missing")?)?;
                     conn.execute("INSERT INTO cloud_mq_pending_inputs(scope_id,external_id,remote_event_id,sequence,journal_event_id) VALUES(?1,?2,?3,?4,?5)", params![lease.scope_id,stream.external_id,event.id,sequence,journal_id])?;
@@ -643,19 +683,7 @@ impl CloudStore {
         valid_id(message_id)?;
         self.db.transaction(|conn| {
             fence(conn, lease)?;
-            let session = binding(conn, lease, stream)?;
-            let (journal_id, payload): (String, String) = conn.query_row(
-                "SELECT p.journal_event_id,e.payload_json FROM cloud_mq_pending_inputs p JOIN events e ON e.event_id=p.journal_event_id WHERE p.scope_id=?1 AND p.external_id=?2 AND p.remote_event_id=?3",
-                params![lease.scope_id,stream.external_id,message_id], |row| Ok((row.get(0)?,row.get(1)?))
-            ).context("MQ pending input missing")?;
-            let command_id = format!("mq-input:{}", digest(&serde_json::to_vec(&(&lease.scope_id,&stream.external_id,message_id))?));
-            let accepted = crate::domain::accept_command_in_transaction(conn, crate::domain::CommandReceiptInput {
-                command_id: command_id.clone(), session_id: session, run_id: None,
-                source: EventSource::Remote, kind: "mq.input".into(),
-                request: json!({"messageId":message_id,"threadId":stream.external_id,"journalEventId":journal_id,"message":serde_json::from_str::<Value>(&payload)?}),
-            })?;
-            conn.execute("UPDATE cloud_mq_pending_inputs SET accepted_command_id=?1 WHERE scope_id=?2 AND external_id=?3 AND remote_event_id=?4", params![command_id,lease.scope_id,stream.external_id,message_id])?;
-            Ok(accepted)
+            accept_mq_input_conn(conn, lease, stream, message_id)
         })
     }
 
@@ -684,6 +712,80 @@ impl CloudStore {
             Ok(recovered)
         })
     }
+}
+
+/// Journal one remote event and its scoped binding. `None` means an identical
+/// replay of an already committed event (no new row). Different content under
+/// a reused identity, or an unknown event at a committed sequence, refuses.
+fn append_remote_event(
+    conn: &Connection,
+    lease: &ScopeLease,
+    stream: &Stream,
+    session: &str,
+    prior_sequence: Option<u64>,
+    event: &RemoteEvent,
+) -> Result<Option<(AppEvent, String)>> {
+    valid_id(&event.id)?;
+    let bytes = serde_json::to_vec(&(&event.kind, &event.payload, event.sequence, event.generation))?;
+    if bytes.len() > MAX_BODY {
+        bail!("event exceeds limit");
+    }
+    let hash = digest(&bytes);
+    let old: Option<String> = conn.query_row("SELECT event_sha256 FROM cloud_event_bindings WHERE scope_id=?1 AND adapter=?2 AND external_id=?3 AND remote_event_id=?4", params![lease.scope_id, stream.adapter.as_str(), stream.external_id, event.id], |r| r.get(0)).optional()?;
+    if let Some(old) = old {
+        if old != hash {
+            bail!("remote event identity reused with different content");
+        }
+        return Ok(None);
+    }
+    if matches!(stream.adapter, Adapter::InternSync | Adapter::InternAsync | Adapter::Mq)
+        && event.sequence.is_some_and(|s| s == 0 || prior_sequence.is_some_and(|p| s <= p))
+    {
+        bail!("unrecognized event at an already committed sequence");
+    }
+    let journal_id = format!("cloud:{}", digest(&serde_json::to_vec(&(&lease.scope_id, stream.adapter.as_str(), &stream.external_id, &event.id))?));
+    let app = append_event(conn, EventAppend {
+        event_id: Some(journal_id.clone()),
+        session_id: Some(session.to_owned()),
+        run_id: None,
+        source: match stream.adapter {
+            Adapter::InternSync | Adapter::InternAsync => EventSource::Intern,
+            _ => EventSource::Remote,
+        },
+        kind: event.kind.clone(),
+        payload: json!({"cloudScopeId":lease.scope_id,"adapter":stream.adapter.as_str(),"externalId":stream.external_id,"data":event.payload}),
+        remote_sequence: None,
+        command_id: None,
+        created_at: None,
+    })?;
+    conn.execute("INSERT INTO cloud_event_bindings VALUES(?1,?2,?3,?4,?5,?6)", params![lease.scope_id, stream.adapter.as_str(), stream.external_id, event.id, hash, journal_id])?;
+    Ok(Some((app, journal_id)))
+}
+
+/// Durable handoff of one persisted MQ input to an idempotent `mq.input`
+/// command. Caller holds the transaction and has already fenced the lease.
+fn accept_mq_input_conn(
+    conn: &Connection,
+    lease: &ScopeLease,
+    stream: &Stream,
+    message_id: &str,
+) -> Result<crate::domain::DomainMutation<crate::storage::CommandReceiptRecord>> {
+    let session = binding(conn, lease, stream)?;
+    let (journal_id, payload): (String, String) = conn.query_row(
+        "SELECT p.journal_event_id,e.payload_json FROM cloud_mq_pending_inputs p JOIN events e ON e.event_id=p.journal_event_id WHERE p.scope_id=?1 AND p.external_id=?2 AND p.remote_event_id=?3",
+        params![lease.scope_id, stream.external_id, message_id], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).context("MQ pending input missing")?;
+    let command_id = format!("mq-input:{}", digest(&serde_json::to_vec(&(&lease.scope_id, &stream.external_id, message_id))?));
+    let accepted = crate::domain::accept_command_in_transaction(conn, crate::domain::CommandReceiptInput {
+        command_id: command_id.clone(),
+        session_id: session,
+        run_id: None,
+        source: EventSource::Remote,
+        kind: "mq.input".into(),
+        request: json!({"messageId":message_id,"threadId":stream.external_id,"journalEventId":journal_id,"message":serde_json::from_str::<Value>(&payload)?}),
+    })?;
+    conn.execute("UPDATE cloud_mq_pending_inputs SET accepted_command_id=?1 WHERE scope_id=?2 AND external_id=?3 AND remote_event_id=?4", params![command_id, lease.scope_id, stream.external_id, message_id])?;
+    Ok(accepted)
 }
 
 fn enqueue_conn(
@@ -899,6 +1001,13 @@ fn validate_page(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod mailbox_tests;
 
 mod creation;
 pub use creation::{CreationIntent, CreationReceipt, CreationRecord, FirstCommand};
+
+#[cfg_attr(not(feature = "eval-driver"), allow(dead_code))]
+mod mailbox;
+#[cfg_attr(not(feature = "eval-driver"), allow(unused_imports))]
+pub use mailbox::*;
