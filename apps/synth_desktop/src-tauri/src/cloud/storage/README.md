@@ -39,6 +39,14 @@ fence for inbox reads and durable command handoff. Account switching cannot
 accept another account's stored input. These methods do not grant tool authority
 or dispatch execution; the restricted dispatcher must consume the command later.
 
+`catch_up_mq_with` composes the existing SDK supervisor with scoped native
+checkpoint reads and atomic inbox/page commits. It refuses a changed subscription
+identity, cancels network work on host scope changes and invalidates cached
+identity on MQ 401/403. Each bounded pass resumes from the stored cursor; SSE
+hints never enter this commit path. The host must supply a client whose endpoint
+and credential belong to the verified identity. Verified grant/client issuance,
+automatic polling and restricted execution remain activation prerequisites.
+
 `dispatch_once` persists the exact body, key and generation; atomically changes a
 pending request to outcome_unknown before invoking an injected transport; checks
 receipt identity; then records the response under the current epoch. Concurrent

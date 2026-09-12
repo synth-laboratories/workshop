@@ -398,6 +398,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mq_http_catchup_commits_native_inbox_before_advancing() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_dir, core, _) = setup().await;
+        let runtime = core.scoped_cloud();
+        let thread = mq_core::ThreadId::new();
+        runtime.create_local_mq_with("https://fixture.invalid", thread.0.to_string(), "MQ".into(),
+            RuntimeTarget::local_laguna(), || async { Ok(observation(2)) }).await.unwrap();
+        let message = json!({"message_id":uuid::Uuid::new_v4(),"thread_id":thread.0,"seq":1,"kind":"ask",
+            "body":"hello","payload":{},"sender":{"kind":"actor","org_id":uuid::Uuid::from_u128(3),"id":"sender"},
+            "idempotency_key":null,"correlation_id":null,"parent_message_id":null,"causation_id":null,"created_at":Utc::now()});
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for (cursor, response) in [(0, json!([message]).to_string()), (1, "[]".into())] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 4096];
+                let count = socket.read(&mut buffer).await.unwrap();
+                let request = std::str::from_utf8(&buffer[..count]).unwrap();
+                assert!(request.contains(&format!("after_seq={cursor}")));
+                assert!(request.to_lowercase().contains("authorization: bearer fixture"));
+                let wire = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response);
+                socket.write_all(wire.as_bytes()).await.unwrap();
+            }
+        });
+        let client = mq_sdk::MqClient::new(format!("http://{address}"), "fixture");
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), runtime.catch_up_mq_with(
+            "https://fixture.invalid", thread, "subscription".into(), &client, 2,
+            || async { Ok(observation(2)) })).await.unwrap().unwrap();
+        assert_eq!(outcome, mq_sdk::CatchUpOutcome::CaughtUp);
+        server.await.unwrap();
+        let rows = runtime.pending_mq_with("https://fixture.invalid", thread.0.to_string(), 10,
+            || async { Ok(observation(2)) }).await.unwrap().1;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].sequence, 1);
+    }
+
+    #[tokio::test]
     async fn local_mq_binding_requires_fresh_identity_and_separates_accounts() {
         let (_dir, core, store) = setup().await;
         let runtime = core.scoped_cloud();
