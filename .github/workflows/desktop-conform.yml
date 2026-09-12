@@ -21,6 +21,9 @@ jobs:
       - name: Install ripgrep
         run: command -v rg >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep)
 
+      - name: Verify research contract pin
+        run: python3 scripts/check-research-contract.py
+
       - name: Print SynthStyle CONFORM CHECK counts
         run: ./scripts/desktop.sh conform
 

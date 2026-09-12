@@ -1,10 +1,10 @@
 {
   "schema_version": "workshop.research-source-pin.v1",
-  "backend_revision": "d6bb637fe9904ddf0bd44c5ca4a406c9e058d06d",
+  "backend_revision": "ec7fe8489860b708ef1b7f19614b5b86e6406b37",
   "backend_path": "research_openapi.json",
-  "sha256": "7a5f6cabf1cf33bbc4ef14efaa4ab82b9f2875fa94c7f15a77bc3d6e6e79f407",
+  "sha256": "d9f2d59184d2f56f82da55a2aee6fce4f4ec595904731a3f72a978a7b128e07b",
   "qualification": "committed_source_only",
   "served_profile": null,
   "live_activation": false,
-  "model_route_and_wheel_alignment": "aligned_rc1"
+  "model_route_and_wheel_alignment": "requires_final_candidate_verification"
 }
