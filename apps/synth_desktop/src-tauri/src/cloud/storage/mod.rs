@@ -115,6 +115,13 @@ pub struct RemoteEvent {
     pub generation: Option<u64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingMqInput {
+    pub message_id: String,
+    pub sequence: u64,
+    pub journal_event_id: String,
+}
+
 #[derive(Clone)]
 pub struct CommandIntent {
     pub command_id: String,
@@ -557,10 +564,33 @@ impl CloudStore {
                     remote_sequence:None,command_id:None,created_at:None,
                 })?;
                 conn.execute("INSERT INTO cloud_event_bindings VALUES(?1,?2,?3,?4,?5,?6)",params![lease.scope_id,stream.adapter.as_str(),stream.external_id,event.id,hash,journal_id])?;
+                if stream.adapter == Adapter::Mq {
+                    let sequence = i64::try_from(event.sequence.context("MQ sequence missing")?)?;
+                    conn.execute("INSERT INTO cloud_mq_pending_inputs(scope_id,external_id,remote_event_id,sequence,journal_event_id) VALUES(?1,?2,?3,?4,?5)", params![lease.scope_id,stream.external_id,event.id,sequence,journal_id])?;
+                }
                 committed.push(app);
             }
             conn.execute("INSERT INTO cloud_checkpoints VALUES(?1,?2,?3,?4) ON CONFLICT(scope_id,adapter,external_id) DO UPDATE SET checkpoint_json=excluded.checkpoint_json",params![lease.scope_id,stream.adapter.as_str(),stream.external_id,serde_json::to_string(next)?])?;
             Ok(committed)
+        })
+    }
+
+    /// Pending acceptance is not an answered receipt or permission to execute.
+    /// Turn-boundary delivery must use the same active lease and session binding.
+    pub fn pending_mq_inputs(
+        &self, lease: &ScopeLease, stream: &Stream, limit: usize,
+    ) -> Result<Vec<PendingMqInput>> {
+        if stream.adapter != Adapter::Mq || !(1..=200).contains(&limit) {
+            bail!("invalid MQ pending input query");
+        }
+        self.db.transaction(|conn| {
+            fence(conn, lease)?;
+            binding(conn, lease, stream)?;
+            let mut statement = conn.prepare("SELECT remote_event_id,sequence,journal_event_id FROM cloud_mq_pending_inputs WHERE scope_id=?1 AND external_id=?2 ORDER BY sequence LIMIT ?3")?;
+            let rows = statement.query_map(params![lease.scope_id,stream.external_id,limit as i64], |row| {
+                Ok(PendingMqInput { message_id: row.get(0)?, sequence: row.get(1)?, journal_event_id: row.get(2)? })
+            })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
 }

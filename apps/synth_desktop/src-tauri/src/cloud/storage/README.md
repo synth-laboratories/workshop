@@ -47,6 +47,14 @@ host integration after the identity contract is qualified. Do not call the exist
 unscoped Intern reload path as a substitute. No new route/DTO selection or live
 cloud authorization is implied by this implementation.
 
+MQ page commits also insert `cloud_mq_pending_inputs` in the event/checkpoint
+transaction. Pending inputs remain separate from message execution or answered
+receipts and survive restart. Reads require the current scope lease and exact
+session binding; replay does not duplicate the queue entry. The schema remains
+an unregistered migration candidate. Turn-boundary command acceptance, durable
+consumption, grant validation and the network adapter are still required before
+activating this path in the product.
+
 Run from the repository root:
 
 ```sh

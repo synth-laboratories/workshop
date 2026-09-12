@@ -54,6 +54,41 @@ fn event(id: &str, seq: u64) -> RemoteEvent {
 }
 
 #[test]
+fn mq_acceptance_retains_pending_inputs_atomically_across_restart_and_account_switch() {
+    let (_dir, db, store, lease, session) = setup();
+    let mq = Stream { adapter: Adapter::Mq, external_id: "thread".into() };
+    store.bind_session(&lease, &mq, &session).unwrap();
+    let checkpoint = Checkpoint::Mq { subscription_id: "subscription".into(), sequence: 1 };
+    store.commit_page(&lease, &mq, None, &checkpoint, &[event("message", 1)]).unwrap();
+    let pending = store.pending_mq_inputs(&lease, &mq, 200).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].message_id, "message");
+    store.commit_page(&lease, &mq, Some(&checkpoint), &checkpoint, &[event("message", 1)]).unwrap();
+    assert_eq!(store.pending_mq_inputs(&lease, &mq, 200).unwrap(), pending);
+    let invalid = Checkpoint::Mq { subscription_id: "subscription".into(), sequence: 3 };
+    assert!(store.commit_page(&lease, &mq, Some(&checkpoint), &invalid, &[event("gap", 3)]).is_err());
+    assert_eq!(store.checkpoint(&lease, &mq).unwrap(), Some(checkpoint.clone()));
+    assert_eq!(store.pending_mq_inputs(&lease, &mq, 200).unwrap(), pending);
+    db.transaction(|conn| {
+        conn.execute_batch("CREATE TRIGGER reject_mq_input BEFORE INSERT ON cloud_mq_pending_inputs BEGIN SELECT RAISE(ABORT,'fixture inbox disk failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    let second = Checkpoint::Mq { subscription_id: "subscription".into(), sequence: 2 };
+    assert!(store.commit_page(&lease, &mq, Some(&checkpoint), &second, &[event("second", 2)]).is_err());
+    assert_eq!(store.event_payloads(&lease, &mq, 200).unwrap().len(), 1);
+    assert_eq!(store.checkpoint(&lease, &mq).unwrap(), Some(checkpoint.clone()));
+    assert_eq!(store.pending_mq_inputs(&lease, &mq, 200).unwrap(), pending);
+    db.transaction(|conn| { conn.execute_batch("DROP TRIGGER reject_mq_input")?; Ok(()) }).unwrap();
+    let reopened = CloudStore::open(db).unwrap();
+    assert!(reopened.pending_mq_inputs(&lease, &mq, 200).is_err());
+    let renewed = reopened.activate_verified(&identity("a")).unwrap();
+    assert_eq!(reopened.pending_mq_inputs(&renewed, &mq, 200).unwrap(), pending);
+    let other = reopened.activate_verified(&identity("b")).unwrap();
+    assert!(reopened.pending_mq_inputs(&renewed, &mq, 200).is_err());
+    assert!(reopened.pending_mq_inputs(&other, &mq, 200).is_err());
+}
+
+#[test]
 fn schema_is_not_automatically_installed_and_upgrade_rolls_back() {
     let dir = tempdir().unwrap();
     let db = Storage::open(dir.path()).unwrap().database().clone();

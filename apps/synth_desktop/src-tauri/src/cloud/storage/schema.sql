@@ -76,6 +76,20 @@ CREATE TABLE cloud_event_bindings (
  FOREIGN KEY(scope_id,adapter,external_id) REFERENCES cloud_session_bindings(scope_id,adapter,external_id)
 );
 
+-- Acceptance and local-turn consumption are separate durable facts.
+CREATE TABLE cloud_mq_pending_inputs (
+ scope_id TEXT NOT NULL,
+ adapter TEXT NOT NULL DEFAULT 'mq' CHECK(adapter='mq'),
+ external_id TEXT NOT NULL,
+ remote_event_id TEXT NOT NULL,
+ sequence INTEGER NOT NULL CHECK(sequence>0),
+ journal_event_id TEXT NOT NULL UNIQUE,
+ PRIMARY KEY(scope_id,external_id,remote_event_id),
+ UNIQUE(scope_id,external_id,sequence),
+ FOREIGN KEY(scope_id,adapter,external_id,remote_event_id)
+ REFERENCES cloud_event_bindings(scope_id,adapter,external_id,remote_event_id)
+);
+
 -- Durable creation precedes remote binding. No retry after an uncertain create.
 CREATE TABLE cloud_creation_intents (
  scope_id TEXT NOT NULL REFERENCES cloud_scopes(id),
