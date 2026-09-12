@@ -13,6 +13,32 @@ pub struct ScopedCreation {
 }
 
 impl ScopedCloudRuntime {
+    /// Read only the currently verified account's durable MQ inbox.
+    pub async fn pending_mq_with<V, VF>(
+        &self, origin: &str, thread_id: String, limit: usize, verify: V,
+    ) -> Result<(u32, Vec<crate::cloud::storage::PendingMqInput>)>
+    where V: FnOnce() -> VF, VF: Future<Output = Result<IdentityObservation>>,
+    {
+        let generation = self.revalidate_with(origin, verify).await?.generation;
+        let rows = self.scoped_transaction(generation, move |store, lease| {
+            store.pending_mq_inputs(&lease, &Stream { adapter: crate::cloud::storage::Adapter::Mq, external_id: thread_id }, limit)
+        }).await?;
+        Ok((generation, rows))
+    }
+
+    /// Accept a persisted MQ message under fresh identity; never starts a turn.
+    pub async fn accept_mq_with<V, VF>(
+        &self, origin: &str, thread_id: String, message_id: String, verify: V,
+    ) -> Result<(u32, crate::domain::DomainMutation<crate::storage::CommandReceiptRecord>)>
+    where V: FnOnce() -> VF, VF: Future<Output = Result<IdentityObservation>>,
+    {
+        let generation = self.revalidate_with(origin, verify).await?.generation;
+        let receipt = self.scoped_transaction(generation, move |store, lease| {
+            store.accept_mq_input(&lease, &Stream { adapter: crate::cloud::storage::Adapter::Mq, external_id: thread_id }, &message_id)
+        }).await?;
+        Ok((generation, receipt))
+    }
+
     /// Create an explicit local MQ binding after fresh identity verification.
     /// Does not activate grants or message execution; see cloud/storage/README.md.
     pub async fn create_local_mq_with<V, VF>(

@@ -34,6 +34,10 @@ the restricted dispatcher remain required for the complete product flow.
 identity verification and the host generation fence. Persistence runs on a
 blocking database worker while the host scope lock is retained; superseded or
 expired operations refuse. Production qualification remains closed.
+`pending_mq_with` and `accept_mq_with` use the same fresh verification and host
+fence for inbox reads and durable command handoff. Account switching cannot
+accept another account's stored input. These methods do not grant tool authority
+or dispatch execution; the restricted dispatcher must consume the command later.
 
 `dispatch_once` persists the exact body, key and generation; atomically changes a
 pending request to outcome_unknown before invoking an injected transport; checks

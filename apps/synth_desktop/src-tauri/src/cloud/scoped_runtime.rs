@@ -399,13 +399,26 @@ mod tests {
 
     #[tokio::test]
     async fn local_mq_binding_requires_fresh_identity_and_separates_accounts() {
-        let (_dir, core, _) = setup().await;
+        let (_dir, core, store) = setup().await;
         let runtime = core.scoped_cloud();
         let (_, first) = runtime.create_local_mq_with("https://fixture.invalid", "thread".into(),
             "A".into(), RuntimeTarget::local_laguna(), || async { Ok(observation(2)) }).await.unwrap();
         let (_, replay) = runtime.create_local_mq_with("https://fixture.invalid", "thread".into(),
             "A".into(), RuntimeTarget::local_laguna(), || async { Ok(observation(2)) }).await.unwrap();
         assert_eq!(first, replay);
+        let lease = runtime.state.lock().await.active.as_ref().unwrap().lease.clone();
+        let stream = Stream { adapter: Adapter::Mq, external_id: "thread".into() };
+        store.commit_page(&lease, &stream, None,
+            &crate::cloud::storage::Checkpoint::Mq { subscription_id: "subscription".into(), sequence: 1 },
+            &[crate::cloud::storage::RemoteEvent { id: "message".into(), kind: "agent_message".into(), payload: json!({"body":"hello"}), sequence: Some(1), generation: None }]).unwrap();
+        assert_eq!(runtime.pending_mq_with("https://fixture.invalid", "thread".into(), 10,
+            || async { Ok(observation(2)) }).await.unwrap().1.len(), 1);
+        assert!(runtime.accept_mq_with("https://fixture.invalid", "thread".into(), "message".into(),
+            || async { Ok(observation(5)) }).await.is_err());
+        runtime.accept_mq_with("https://fixture.invalid", "thread".into(), "message".into(),
+            || async { Ok(observation(2)) }).await.unwrap();
+        assert!(runtime.pending_mq_with("https://fixture.invalid", "thread".into(), 10,
+            || async { Ok(observation(2)) }).await.unwrap().1.is_empty());
         assert!(runtime.create_local_mq_with("https://fixture.invalid", "denied".into(),
             "Denied".into(), RuntimeTarget::local_laguna(), || async { anyhow::bail!("revoked identity") }).await.is_err());
         let (_, other) = runtime.create_local_mq_with("https://fixture.invalid", "thread".into(),
