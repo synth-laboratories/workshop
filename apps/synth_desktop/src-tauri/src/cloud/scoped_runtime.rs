@@ -398,6 +398,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn signout_cancels_stalled_mq_http_without_advancing_inbox() {
+        use tokio::io::AsyncReadExt;
+        let (_dir, core, store) = setup().await;
+        let runtime = core.scoped_cloud();
+        let thread = mq_core::ThreadId::new();
+        runtime.create_local_mq_with("https://fixture.invalid", thread.0.to_string(), "MQ".into(),
+            RuntimeTarget::local_laguna(), || async { Ok(observation(2)) }).await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (arrived_tx, arrived_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            assert!(socket.read(&mut buffer).await.unwrap() > 0);
+            arrived_tx.send(()).unwrap();
+            // Keep the peer open until the test tears down the fixture.
+            std::future::pending::<()>().await;
+        });
+        let client = mq_sdk::MqClient::new(format!("http://{address}"), "fixture");
+        let worker = runtime.clone();
+        let request = tokio::spawn(async move {
+            worker.catch_up_mq_with("https://fixture.invalid", thread, "subscription".into(), &client, 1,
+                || async { Ok(observation(2)) }).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), arrived_rx).await.unwrap().unwrap();
+        assert!(!request.is_finished(), "fixture request must still be waiting for HTTP");
+        runtime.invalidate().await.unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), request).await.unwrap().unwrap();
+        assert!(result.is_err());
+        assert_eq!(runtime.view().await.unwrap().availability, Availability::SignedOut);
+        let rows = runtime.pending_mq_with("https://fixture.invalid", thread.0.to_string(), 10,
+            || async { Ok(observation(2)) }).await.unwrap().1;
+        assert!(rows.is_empty());
+        let lease = runtime.state.lock().await.active.as_ref().unwrap().lease.clone();
+        assert!(store.checkpoint(&lease, &Stream { adapter: Adapter::Mq, external_id: thread.0.to_string() }).unwrap().is_none());
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test]
     async fn mq_http_authorization_failure_invalidates_host_scope() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (_dir, core, _) = setup().await;

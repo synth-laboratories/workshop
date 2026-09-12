@@ -50,6 +50,10 @@ Each fetched page also requires every sender organization to match the verified
 host account organization before committing any row or advancing its checkpoint.
 An HTTP authorization refusal invalidates cached identity; it is not an empty
 successful catch-up. These checks do not replace verified client issuance.
+The scoped-runtime HTTP cancellation test holds a real request pending, signs
+out, and requires completion before the normal transport timeout. Fresh identity
+verification then confirms both inbox and checkpoint remain empty. Native actor
+execution and device-grant revocation are separate qualification requirements.
 
 `dispatch_once` persists the exact body, key and generation; atomically changes a
 pending request to outcome_unknown before invoking an injected transport; checks
