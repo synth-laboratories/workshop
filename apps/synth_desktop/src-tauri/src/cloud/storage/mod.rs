@@ -586,11 +586,36 @@ impl CloudStore {
         self.db.transaction(|conn| {
             fence(conn, lease)?;
             binding(conn, lease, stream)?;
-            let mut statement = conn.prepare("SELECT remote_event_id,sequence,journal_event_id FROM cloud_mq_pending_inputs WHERE scope_id=?1 AND external_id=?2 ORDER BY sequence LIMIT ?3")?;
+            let mut statement = conn.prepare("SELECT remote_event_id,sequence,journal_event_id FROM cloud_mq_pending_inputs WHERE scope_id=?1 AND external_id=?2 AND accepted_command_id IS NULL ORDER BY sequence LIMIT ?3")?;
             let rows = statement.query_map(params![lease.scope_id,stream.external_id,limit as i64], |row| {
                 Ok(PendingMqInput { message_id: row.get(0)?, sequence: row.get(1)?, journal_event_id: row.get(2)? })
             })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Transfer an accepted message to one durable command without executing it.
+    /// The host dispatcher must enforce turn boundaries and message tool policy.
+    pub fn accept_mq_input(
+        &self, lease: &ScopeLease, stream: &Stream, message_id: &str,
+    ) -> Result<crate::domain::DomainMutation<crate::storage::CommandReceiptRecord>> {
+        if stream.adapter != Adapter::Mq { bail!("MQ stream required"); }
+        valid_id(message_id)?;
+        self.db.transaction(|conn| {
+            fence(conn, lease)?;
+            let session = binding(conn, lease, stream)?;
+            let (journal_id, payload): (String, String) = conn.query_row(
+                "SELECT p.journal_event_id,e.payload_json FROM cloud_mq_pending_inputs p JOIN events e ON e.event_id=p.journal_event_id WHERE p.scope_id=?1 AND p.external_id=?2 AND p.remote_event_id=?3",
+                params![lease.scope_id,stream.external_id,message_id], |row| Ok((row.get(0)?,row.get(1)?))
+            ).context("MQ pending input missing")?;
+            let command_id = format!("mq-input:{}", digest(&serde_json::to_vec(&(&lease.scope_id,&stream.external_id,message_id))?));
+            let accepted = crate::domain::accept_command_in_transaction(conn, crate::domain::CommandReceiptInput {
+                command_id: command_id.clone(), session_id: session, run_id: None,
+                source: EventSource::Remote, kind: "mq.input".into(),
+                request: json!({"messageId":message_id,"threadId":stream.external_id,"journalEventId":journal_id,"message":serde_json::from_str::<Value>(&payload)?}),
+            })?;
+            conn.execute("UPDATE cloud_mq_pending_inputs SET accepted_command_id=?1 WHERE scope_id=?2 AND external_id=?3 AND remote_event_id=?4", params![command_id,lease.scope_id,stream.external_id,message_id])?;
+            Ok(accepted)
         })
     }
 }

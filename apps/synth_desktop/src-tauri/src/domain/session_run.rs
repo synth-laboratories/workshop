@@ -918,7 +918,7 @@ fn transition_run(
     })
 }
 
-fn accept_command(
+pub(crate) fn accept_command(
     conn: &Connection,
     input: CommandReceiptInput,
 ) -> Result<DomainMutation<CommandReceiptRecord>> {

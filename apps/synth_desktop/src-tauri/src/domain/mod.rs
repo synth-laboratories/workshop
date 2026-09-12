@@ -3,6 +3,7 @@
 mod runtime_target;
 mod session_kind;
 mod session_run;
+pub(crate) use session_run::accept_command as accept_command_in_transaction;
 
 pub use runtime_target::{InternBinding, InternMode, RuntimeTarget, LOCAL_LAGUNA_MODEL};
 pub use session_kind::{ExecutionLocation, SessionKind};

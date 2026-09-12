@@ -50,9 +50,14 @@ cloud authorization is implied by this implementation.
 MQ page commits also insert `cloud_mq_pending_inputs` in the event/checkpoint
 transaction. Pending inputs remain separate from message execution or answered
 receipts and survive restart. Reads require the current scope lease and exact
-session binding; replay does not duplicate the queue entry. The schema remains
-an unregistered migration candidate. Turn-boundary command acceptance, durable
-consumption, grant validation and the network adapter are still required before
+session binding; replay does not duplicate the queue entry. `accept_mq_input`
+atomically creates an idempotent `mq.input` command receipt from the persisted
+message and records its command ID on the queue entry. A failed transaction
+leaves the message pending and creates no command. Repeated acceptance returns
+the same command, and the original message remains stored for recovery/audit.
+This is durable handoff, not execution or an answered receipt. The schema remains
+an unregistered migration candidate. Turn-boundary dispatch, restricted tool
+policy, grant validation and the network adapter are still required before
 activating this path in the product.
 
 Run from the repository root:

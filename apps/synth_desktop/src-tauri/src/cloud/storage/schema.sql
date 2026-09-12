@@ -84,6 +84,7 @@ CREATE TABLE cloud_mq_pending_inputs (
  remote_event_id TEXT NOT NULL,
  sequence INTEGER NOT NULL CHECK(sequence>0),
  journal_event_id TEXT NOT NULL UNIQUE,
+ accepted_command_id TEXT UNIQUE REFERENCES command_receipts(command_id),
  PRIMARY KEY(scope_id,external_id,remote_event_id),
  UNIQUE(scope_id,external_id,sequence),
  FOREIGN KEY(scope_id,adapter,external_id,remote_event_id)

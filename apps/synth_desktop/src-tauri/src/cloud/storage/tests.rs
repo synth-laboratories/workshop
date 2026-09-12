@@ -79,13 +79,34 @@ fn mq_acceptance_retains_pending_inputs_atomically_across_restart_and_account_sw
     assert_eq!(store.checkpoint(&lease, &mq).unwrap(), Some(checkpoint.clone()));
     assert_eq!(store.pending_mq_inputs(&lease, &mq, 200).unwrap(), pending);
     db.transaction(|conn| { conn.execute_batch("DROP TRIGGER reject_mq_input")?; Ok(()) }).unwrap();
-    let reopened = CloudStore::open(db).unwrap();
+    let reopened = CloudStore::open(db.clone()).unwrap();
     assert!(reopened.pending_mq_inputs(&lease, &mq, 200).is_err());
     let renewed = reopened.activate_verified(&identity("a")).unwrap();
     assert_eq!(reopened.pending_mq_inputs(&renewed, &mq, 200).unwrap(), pending);
+    db.transaction(|conn| {
+        conn.execute_batch("CREATE TRIGGER reject_mq_accept BEFORE UPDATE ON cloud_mq_pending_inputs BEGIN SELECT RAISE(ABORT,'fixture handoff failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    assert!(reopened.accept_mq_input(&renewed, &mq, "message").is_err());
+    db.with_conn(|conn| {
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM command_receipts WHERE kind='mq.input'", [], |row| row.get(0))?;
+        assert_eq!(count, 0);
+        Ok(())
+    }).unwrap();
+    assert_eq!(reopened.pending_mq_inputs(&renewed, &mq, 200).unwrap(), pending);
+    db.transaction(|conn| { conn.execute_batch("DROP TRIGGER reject_mq_accept")?; Ok(()) }).unwrap();
+    let accepted = reopened.accept_mq_input(&renewed, &mq, "message").unwrap();
+    assert!(accepted.event.is_some());
+    assert_eq!(accepted.value.kind, "mq.input");
+    let replay = reopened.accept_mq_input(&renewed, &mq, "message").unwrap();
+    assert_eq!(replay.value.command_id, accepted.value.command_id);
+    assert!(replay.event.is_none());
+    assert!(reopened.pending_mq_inputs(&renewed, &mq, 200).unwrap().is_empty());
     let other = reopened.activate_verified(&identity("b")).unwrap();
     assert!(reopened.pending_mq_inputs(&renewed, &mq, 200).is_err());
     assert!(reopened.pending_mq_inputs(&other, &mq, 200).is_err());
+    assert!(reopened.accept_mq_input(&renewed, &mq, "message").is_err());
+    assert!(reopened.accept_mq_input(&other, &mq, "message").is_err());
 }
 
 #[test]
