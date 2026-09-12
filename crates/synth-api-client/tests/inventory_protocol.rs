@@ -48,6 +48,64 @@ async fn inventory_read_encodes_recorded_identity_for_both_kinds() {
 }
 
 #[test]
+fn inventory_fields_and_dispositions_match_pinned_backend_schema() {
+    use std::collections::BTreeSet;
+    use synth_api_client::inventory::{InventoryCoverage, Relation, ResourceDisposition};
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../contracts/research-v1.json")).unwrap();
+    let models = &schema["components"]["schemas"];
+    let item = ResourceDisposition {
+        resource_kind: "intern_runtime".into(),
+        resource_id: "runtime".into(),
+        cleanup_owner_run_id: None,
+        relation: Relation::Self_,
+        disposition: Disposition::Unknown,
+        reason: "unconfirmed".into(),
+    };
+    let inventory = RuntimeInventory {
+        runtime_kind: RuntimeKind::Async,
+        runtime_id: "runtime".into(),
+        observed_at: "2026-09-12T00:00:00Z".into(),
+        coverage: InventoryCoverage::RegisteredRuntimeResourcesV1,
+        coverage_complete: false,
+        incomplete_reasons: vec!["unconfirmed".into()],
+        resources: vec![item.clone()],
+    };
+    for (name, value) in [
+        (
+            "InternResourceDisposition",
+            serde_json::to_value(item).unwrap(),
+        ),
+        (
+            "InternResourceInventory",
+            serde_json::to_value(inventory).unwrap(),
+        ),
+    ] {
+        let actual: BTreeSet<_> = value.as_object().unwrap().keys().collect();
+        let expected: BTreeSet<_> = models[name]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect();
+        assert_eq!(actual, expected, "field drift for {name}");
+    }
+    for value in models["InternResourceDisposition"]["properties"]["disposition"]["enum"]
+        .as_array()
+        .unwrap()
+    {
+        let parsed: Disposition = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), *value);
+    }
+    for value in models["InternResourceDisposition"]["properties"]["relation"]["enum"]
+        .as_array()
+        .unwrap()
+    {
+        let parsed: Relation = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), *value);
+    }
+}
+
+#[test]
 fn incomplete_inventory_preserves_unknown_and_rejects_drift() {
     let value = serde_json::json!({"runtime_kind":"async", "runtime_id":"recorded",
         "observed_at":"2026-09-12T00:00:00Z", "coverage":"registered-runtime-resources-v1",
