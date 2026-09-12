@@ -13,6 +13,27 @@ pub struct ScopedCreation {
 }
 
 impl ScopedCloudRuntime {
+    /// Create an explicit local MQ binding after fresh identity verification.
+    /// Does not activate grants or message execution; see cloud/storage/README.md.
+    pub async fn create_local_mq_with<V, VF>(
+        &self,
+        origin: &str,
+        thread_id: String,
+        title: String,
+        target: crate::domain::RuntimeTarget,
+        verify: V,
+    ) -> Result<(u32, String)>
+    where
+        V: FnOnce() -> VF,
+        VF: Future<Output = Result<IdentityObservation>>,
+    {
+        let generation = self.revalidate_with(origin, verify).await?.generation;
+        let session = self.scoped_transaction(generation, move |store, lease| {
+            store.create_local_mq_conversation(&lease, &thread_id, &title, &target)
+        }).await?;
+        Ok((generation, session))
+    }
+
     async fn scoped_transaction<T, F>(&self, generation: u32, operation: F) -> Result<T>
     where
         T: Send + 'static,

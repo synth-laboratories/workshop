@@ -30,6 +30,11 @@ creation and inbox reads. This does not adopt existing local/legacy sessions,
 issue device grants or start a turn; explicit existing-session connection and
 the restricted dispatcher remain required for the complete product flow.
 
+`ScopedCloudRuntime::create_local_mq_with` composes this creation with fresh
+identity verification and the host generation fence. Persistence runs on a
+blocking database worker while the host scope lock is retained; superseded or
+expired operations refuse. Production qualification remains closed.
+
 `dispatch_once` persists the exact body, key and generation; atomically changes a
 pending request to outcome_unknown before invoking an injected transport; checks
 receipt identity; then records the response under the current epoch. Concurrent

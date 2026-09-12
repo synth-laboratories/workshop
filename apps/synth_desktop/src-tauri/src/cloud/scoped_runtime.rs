@@ -397,6 +397,22 @@ mod tests {
         id
     }
 
+    #[tokio::test]
+    async fn local_mq_binding_requires_fresh_identity_and_separates_accounts() {
+        let (_dir, core, _) = setup().await;
+        let runtime = core.scoped_cloud();
+        let (_, first) = runtime.create_local_mq_with("https://fixture.invalid", "thread".into(),
+            "A".into(), RuntimeTarget::local_laguna(), || async { Ok(observation(2)) }).await.unwrap();
+        let (_, replay) = runtime.create_local_mq_with("https://fixture.invalid", "thread".into(),
+            "A".into(), RuntimeTarget::local_laguna(), || async { Ok(observation(2)) }).await.unwrap();
+        assert_eq!(first, replay);
+        assert!(runtime.create_local_mq_with("https://fixture.invalid", "denied".into(),
+            "Denied".into(), RuntimeTarget::local_laguna(), || async { anyhow::bail!("revoked identity") }).await.is_err());
+        let (_, other) = runtime.create_local_mq_with("https://fixture.invalid", "thread".into(),
+            "B".into(), RuntimeTarget::local_laguna(), || async { Ok(observation(5)) }).await.unwrap();
+        assert_ne!(first, other);
+    }
+
     fn creation_plan() -> crate::cloud::storage::CreationIntent {
         use crate::cloud::storage::{CreationIntent, FirstCommand};
         CreationIntent {
