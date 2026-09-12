@@ -50,15 +50,35 @@ pub struct MqClient {
 
 impl MqClient {
     pub fn new(base_url: impl Into<String>, bearer_token: impl Into<String>) -> Self {
-        Self {
+        Self::try_new(base_url, bearer_token).expect("invalid MQ client configuration")
+    }
+
+    /// Validate a host-configured origin before attaching credentials. TLS and
+    /// endpoint/account trust remain the host's responsibility.
+    pub fn try_new(base_url: impl Into<String>, bearer_token: impl Into<String>) -> Result<Self, SdkError> {
+        let url = reqwest::Url::parse(&base_url.into())
+            .map_err(|_| SdkError::Decode("invalid MQ origin".into()))?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
+            || !url.username().is_empty() || url.password().is_some()
+            || url.query().is_some() || url.fragment().is_some() || url.path() != "/"
+        {
+            return Err(SdkError::Decode("MQ endpoint must be an HTTP origin without credentials, path, query or fragment".into()));
+        }
+        let token = bearer_token.into();
+        if token.trim().is_empty() || token.trim() != token
+            || reqwest::header::HeaderValue::from_str(&format!("Bearer {token}")).is_err()
+        {
+            return Err(SdkError::Decode("invalid MQ bearer credential".into()));
+        }
+        Ok(Self {
             http: Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
-                .expect("valid HTTP client configuration"),
-            base: base_url.into().trim_end_matches('/').to_string(),
-            token: bearer_token.into(),
-        }
+                .map_err(SdkError::Http)?,
+            base: url.origin().ascii_serialization(),
+            token,
+        })
     }
 
     /// Dev helper: `kind:org:id` token form used by mq-server.

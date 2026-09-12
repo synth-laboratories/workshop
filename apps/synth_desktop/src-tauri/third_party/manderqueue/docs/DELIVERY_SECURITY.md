@@ -6,6 +6,12 @@ Source changes only; no deployed security or E01 qualification.
 
 ## Principal token thread restrictions
 
+SDK `try_new` validates an HTTP(S) origin with no userinfo, path, query or
+fragment, and a nonempty valid bearer header. Invalid input returns a fixed
+diagnostic without echoing credentials. `new` delegates to it and panics on
+invalid configuration; dynamic host configuration should use `try_new`.
+This is syntactic validation, not endpoint trust, account binding or TLS policy.
+
 The Rust SDK exposes `set_participant_role`, including `Role::Revoked`, using
 the authenticated PATCH route. Participant identifiers are encoded as single
 URL path segments; empty and dot-segment identities refuse locally. HTTP errors

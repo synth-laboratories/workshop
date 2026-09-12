@@ -7,6 +7,18 @@ use std::sync::{
 };
 use tokio::net::TcpListener;
 
+#[test]
+fn configured_endpoint_and_bearer_are_validated_before_requests() {
+    for endpoint in ["not a url", "file:///tmp/mq", "https://user:pass@example.test", "https://example.test/api", "https://example.test?redirect=other", "https://example.test#fragment"] {
+        assert!(MqClient::try_new(endpoint, "fixture").is_err());
+    }
+    for token in ["", " ", "fixture\r\nX-Other: value", " fixture"] {
+        assert!(MqClient::try_new("https://example.test", token).is_err());
+    }
+    assert!(MqClient::try_new("https://example.test/", "fixture").is_ok());
+    assert!(MqClient::try_new("http://127.0.0.1:1234", "fixture").is_ok());
+}
+
 #[tokio::test]
 async fn authenticated_reads_do_not_follow_even_same_origin_redirects() {
     let hits = Arc::new(AtomicUsize::new(0));
