@@ -131,6 +131,8 @@ impl SidecarConfig {
 #[derive(Default)]
 struct Inner {
     child: Option<Child>,
+    #[cfg(feature = "eval-driver")]
+    binary_proof: Option<serde_json::Value>,
     state: Option<SidecarState>,
     url: Option<String>,
     attempt: usize,
@@ -164,6 +166,45 @@ impl VictoriaLogsSidecar {
 
     pub async fn url(&self) -> Option<String> {
         self.inner.lock().await.url.clone()
+    }
+
+    /// Read-only acceptance evidence from the supervised child, not a fresh
+    /// binary lookup that could report a different executable after launch.
+    #[cfg(feature = "eval-driver")]
+    pub async fn acceptance_status(&self) -> serde_json::Value {
+        let (state, pid, url, proof) = {
+            let mut inner = self.inner.lock().await;
+            let pid = inner.child.as_mut().and_then(|child| match child.try_wait() {
+                Ok(None) => child.id(),
+                _ => None,
+            });
+            (inner.state.clone().unwrap_or(SidecarState::Stopped), pid,
+                inner.url.clone(), inner.binary_proof.clone())
+        };
+        let healthy = if pid.is_some() && matches!(state, SidecarState::Ready) {
+            match url.clone().and_then(|url| super::victorialogs::VictoriaLogsClient::new(url).ok()) {
+                Some(client) => client.healthy().await,
+                None => false,
+            }
+        } else { false };
+        // A stop/restart may race the asynchronous probe. Never combine an old
+        // launch identity with a replacement listener's successful health.
+        let healthy = if healthy {
+            let mut inner = self.inner.lock().await;
+            let current_pid = inner.child.as_mut().and_then(|child| match child.try_wait() {
+                Ok(None) => child.id(),
+                _ => None,
+            });
+            current_pid == pid && inner.url == url && inner.binary_proof == proof
+                && matches!(inner.state, Some(SidecarState::Ready))
+        } else { false };
+        let mut result = proof.unwrap_or_else(|| json!({
+            "source": null, "executableDigest": null, "dataRootDigest": null
+        }));
+        result["ready"] = json!(healthy);
+        result["state"] = json!(state.label());
+        result["processId"] = json!(pid);
+        result
     }
 
     /// Start the sidecar, or record precisely why it is degraded.
@@ -213,6 +254,13 @@ impl VictoriaLogsSidecar {
             },
         };
         let url = format!("http://127.0.0.1:{port}");
+        #[cfg(feature = "eval-driver")]
+        let binary_proof = {
+            let binary = binary.clone();
+            let root = self.config.root.clone();
+            tokio::task::spawn_blocking(move || binary_acceptance_proof(&binary, &root))
+                .await.ok().and_then(Result::ok)
+        };
         let child = match self.spawn_process(&binary, port).await {
             Ok(child) => child,
             Err(error) => {
@@ -228,6 +276,8 @@ impl VictoriaLogsSidecar {
         {
             let mut inner = self.inner.lock().await;
             inner.child = Some(child);
+            #[cfg(feature = "eval-driver")]
+            { inner.binary_proof = binary_proof; }
             inner.url = Some(url.clone());
         }
 
@@ -463,6 +513,28 @@ pub fn locate_binary() -> Option<PathBuf> {
         std::env::current_exe().ok(),
         Path::new(env!("CARGO_MANIFEST_DIR")),
     )
+}
+
+#[cfg(feature = "eval-driver")]
+fn binary_acceptance_proof(binary: &Path, root: &Path) -> Result<serde_json::Value> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(binary)?;
+    let mut digest = Sha256::new();
+    std::io::copy(&mut file, &mut digest)?;
+    let executable = std::env::current_exe()?;
+    let source = if std::env::var_os(BINARY_ENV).is_some() {
+        "override"
+    } else if is_packaged_bundle(&executable) {
+        let expected = executable.parent().and_then(Path::parent)
+            .context("packaged executable parent")?
+            .join("Resources").join(BUNDLED_RELATIVE_PATH);
+        if binary.canonicalize()? == expected.canonicalize()? { "bundled" } else { "development" }
+    } else { "development" };
+    Ok(json!({
+        "source": source,
+        "executableDigest": format!("{:x}", digest.finalize()),
+        "dataRootDigest": format!("{:x}", Sha256::digest(root.canonicalize()?.as_os_str().as_encoded_bytes())),
+    }))
 }
 
 /// Resolution without process state, so the packaged layout is testable.
@@ -746,6 +818,59 @@ mod tests {
     fn restart_backoff_is_bounded() {
         assert!(RESTART_BACKOFF.len() <= 8);
         assert!(RESTART_BACKOFF.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[cfg(feature = "eval-driver")]
+    #[tokio::test]
+    async fn acceptance_never_reports_ready_without_a_supervised_live_child() {
+        let dir = tempdir().unwrap();
+        let sidecar = VictoriaLogsSidecar::new(SidecarConfig::for_root(dir.path()));
+        let stopped = sidecar.acceptance_status().await;
+        assert_eq!(stopped["ready"], false);
+        assert!(stopped["executableDigest"].is_null());
+        sidecar.inner.lock().await.state = Some(SidecarState::Ready);
+        assert_eq!(sidecar.acceptance_status().await["ready"], false);
+    }
+
+    #[cfg(feature = "eval-driver")]
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn acceptance_rechecks_child_after_the_health_probe() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempdir().unwrap();
+        let sidecar = VictoriaLogsSidecar::new(SidecarConfig::for_root(dir.path()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        {
+            let mut inner = sidecar.inner.lock().await;
+            let mut child = Command::new("/bin/sleep");
+            isolate_process_group(&mut child);
+            inner.child = Some(child.arg("30").kill_on_drop(true).spawn().unwrap());
+            inner.state = Some(SidecarState::Ready);
+            inner.url = Some(format!("http://{}", listener.local_addr().unwrap()));
+        }
+        let observing = sidecar.clone();
+        let observation = tokio::spawn(async move { observing.acceptance_status().await });
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
+        let mut request = [0u8; 4096];
+        socket.read(&mut request).await.unwrap();
+        sidecar.stop().await.unwrap();
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+        assert_eq!(observation.await.unwrap()["ready"], false);
+    }
+
+    #[cfg(feature = "eval-driver")]
+    #[test]
+    fn acceptance_identity_is_content_bound_and_does_not_expose_paths() {
+        use sha2::{Digest, Sha256};
+        let dir = tempdir().unwrap();
+        let binary = dir.path().join("binary");
+        std::fs::write(&binary, b"fixture binary bytes").unwrap();
+        let proof = binary_acceptance_proof(&binary, dir.path()).unwrap();
+        assert_eq!(proof["executableDigest"], format!("{:x}", Sha256::digest(b"fixture binary bytes")));
+        assert_eq!(proof["dataRootDigest"], format!("{:x}", Sha256::digest(dir.path().canonicalize().unwrap().as_os_str().as_encoded_bytes())));
+        assert!(!proof.to_string().contains(dir.path().to_str().unwrap()));
+        std::fs::write(&binary, b"changed").unwrap();
+        assert_ne!(proof["executableDigest"], binary_acceptance_proof(&binary, dir.path()).unwrap()["executableDigest"]);
     }
 
     #[tokio::test]

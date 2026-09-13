@@ -336,6 +336,9 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
             "schemaVersion": PROTOCOL_VERSION,
             "instance": crate::instance::diagnostics(),
         })),
+        ("GET", "/v1/diagnostics/log-store") => {
+            Ok(core.diagnostics_service().sidecar().acceptance_status().await)
+        }
         ("POST", "/v1/sessions") | ("POST", "/v1/create_session") => {
             create_session(deps, body).await
         }
