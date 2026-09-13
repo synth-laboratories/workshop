@@ -295,6 +295,11 @@ impl ToolGate {
         }
     }
 
+    /// Canonical allowed roots (roots that failed to canonicalize are absent).
+    pub fn allowed_file_roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
     pub fn remaining_cost(&self) -> u64 {
         self.remaining_cost.lock().map(|value| *value).unwrap_or(0)
     }

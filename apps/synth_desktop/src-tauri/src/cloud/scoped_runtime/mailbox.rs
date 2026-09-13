@@ -53,11 +53,28 @@ pub struct RestrictedTurn {
 pub struct RestrictedOutcome {
     pub answer: String,
     pub cost_usd_micros: u64,
+    /// Hashed inputs and outputs of the turn (materialized allowed files,
+    /// the answer). Carried on the correlated reply and the disposition.
+    pub artifacts: Vec<ArtifactDigest>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactDigest {
+    pub role: String,
+    pub name: String,
+    pub sha256: String,
+    pub bytes: u64,
 }
 
 /// A bounded, tool-restricted execution path. It receives only the gate;
 /// every file, artifact, tool, spend or side effect must be authorized by it.
 pub trait RestrictedExecutor: Send + Sync {
+    /// Whether every restriction this policy implies can be enforced. A
+    /// request whose policy cannot be enforced is declined, never run.
+    fn can_enforce(&self, _policy: &ParticipantPolicy) -> std::result::Result<(), String> {
+        Ok(())
+    }
     fn run(&self, turn: RestrictedTurn, gate: Arc<ToolGate>) -> BoxFuture<'_, Result<RestrictedOutcome>>;
 }
 
@@ -648,6 +665,12 @@ impl ScopedCloudRuntime {
     }
 
     async fn run_restricted(&self, generation: u32, participant: &ParticipantRecord, fence: &DeliveryFence, executor: Arc<dyn RestrictedExecutor>, message: &mq_core::Message, view: &MqDeliveryView) -> Result<DeliverySettlement> {
+        // Refuse, before consuming any handler budget, a request whose
+        // restrictions this executor cannot enforce. It is never run.
+        if let Err(gap) = executor.can_enforce(&participant.policy) {
+            self.decline(generation, participant, message, view, json!({"reasons":[format!("restriction_not_enforceable:{gap}")]}), true).await?;
+            return Ok(DeliverySettlement::Declined);
+        }
         let (thread, id, check, session) = (participant.thread_id.clone(), view.message_id.clone(), fence.clone(), participant.local_session_id.clone());
         let (admission, budget) = self.scoped_transaction(generation, move |store, lease| {
             let admission = store.begin_mq_acting(&lease, &thread, &id, &check, Utc::now().timestamp_millis())?;
@@ -686,8 +709,9 @@ impl ScopedCloudRuntime {
         let audit = serde_json::to_value(gate.audit())?;
         match outcome {
             Ok(Ok(outcome)) if outcome.cost_usd_micros <= cost_cap => {
-                let draft = reply_draft(participant, message, view, OutboundDisposition::Answer, outcome.answer, json!({"handler":"restricted"}));
-                self.settle(generation, participant, view, DeliverySettlement::Answered, json!({"handler":"restricted","gate":audit,"costUsdMicros":outcome.cost_usd_micros}), Some(draft), true).await?;
+                let artifacts = serde_json::to_value(&outcome.artifacts)?;
+                let draft = reply_draft(participant, message, view, OutboundDisposition::Answer, outcome.answer, json!({"handler":"restricted","artifacts":artifacts}));
+                self.settle(generation, participant, view, DeliverySettlement::Answered, json!({"handler":"restricted","gate":audit,"costUsdMicros":outcome.cost_usd_micros,"artifacts":artifacts}), Some(draft), true).await?;
                 Ok(DeliverySettlement::Answered)
             }
             Ok(Ok(outcome)) => {

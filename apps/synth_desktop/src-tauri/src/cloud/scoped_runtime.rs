@@ -21,7 +21,7 @@ pub use dispatch::ScopedCreation;
 mod mailbox;
 #[cfg_attr(not(feature = "eval-driver"), allow(unused_imports))]
 pub use mailbox::{
-    ConnectRequest, DeviceSignOut, IdentityVerifier, MailboxDeps, MailboxExit, MailboxLoopConfig, MailboxPassReport,
+    ArtifactDigest, ConnectRequest, DeviceSignOut, IdentityVerifier, MailboxDeps, MailboxExit, MailboxLoopConfig, MailboxPassReport,
     MailboxStatus, MailboxSupervisor, OperatorReply, PassBudget, RestrictedExecutor, RestrictedOutcome,
     RestrictedTurn, TurnBoundary,
 };

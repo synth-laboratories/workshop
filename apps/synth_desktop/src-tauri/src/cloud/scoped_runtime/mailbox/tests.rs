@@ -460,7 +460,7 @@ impl RestrictedExecutor for ProbeExecutor {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             match self.probe {
-                Probe::Answer => Ok(RestrictedOutcome { answer: format!("answer to {}", turn.message_id), cost_usd_micros: 0 }),
+                Probe::Answer => Ok(RestrictedOutcome { answer: format!("answer to {}", turn.message_id), cost_usd_micros: 0, artifacts: Vec::new() }),
                 Probe::Overreach => {
                     let attempts = [
                         ToolRequest::Deploy,
@@ -474,13 +474,13 @@ impl RestrictedExecutor for ProbeExecutor {
                     ];
                     let refused = attempts.iter().filter(|attempt| gate.authorize(attempt).is_err()).count();
                     let allowed = gate.read_allowed_file(&self.inside, 64)?;
-                    Ok(RestrictedOutcome { answer: format!("refused={refused} read={allowed}"), cost_usd_micros: 0 })
+                    Ok(RestrictedOutcome { answer: format!("refused={refused} read={allowed}"), cost_usd_micros: 0, artifacts: Vec::new() })
                 }
                 Probe::Sleep => {
                     tokio::time::sleep(Duration::from_secs(20)).await;
-                    Ok(RestrictedOutcome { answer: "late".into(), cost_usd_micros: 0 })
+                    Ok(RestrictedOutcome { answer: "late".into(), cost_usd_micros: 0, artifacts: Vec::new() })
                 }
-                Probe::Cost(cost) => Ok(RestrictedOutcome { answer: "costly".into(), cost_usd_micros: cost }),
+                Probe::Cost(cost) => Ok(RestrictedOutcome { answer: "costly".into(), cost_usd_micros: cost, artifacts: Vec::new() }),
             }
         })
     }
@@ -971,6 +971,39 @@ async fn device_sign_out_revokes_the_enrollment_fences_writes_and_stops_the_supe
     // The signed-out (device, session) cannot be re-enrolled.
     let other = uuid::Uuid::new_v4().to_string();
     assert!(h.runtime.connect_mq_session_with(&h.deps, connect_request(&other, &h.session, Preset::Collaborate, ParticipantPolicy::default())).await.is_err());
+}
+
+/// An executor that can enforce only file reads, like the confined Codex one.
+struct FilesOnlyExecutor(AtomicUsize);
+impl RestrictedExecutor for FilesOnlyExecutor {
+    fn can_enforce(&self, policy: &ParticipantPolicy) -> std::result::Result<(), String> {
+        match policy.allowed_tools.iter().find(|tool| tool.as_str() != "read_allowed_file") {
+            Some(tool) => Err(format!("tool_not_available_in_confined_turn:{tool}")),
+            None => Ok(()),
+        }
+    }
+    fn run(&self, _turn: RestrictedTurn, _gate: Arc<ToolGate>) -> BoxFuture<'_, Result<RestrictedOutcome>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(RestrictedOutcome { answer: "ran".into(), cost_usd_micros: 0, artifacts: Vec::new() }) })
+    }
+}
+
+#[tokio::test]
+async fn requests_the_executor_cannot_enforce_are_declined_and_never_run() {
+    let executor = Arc::new(FilesOnlyExecutor(AtomicUsize::new(0)));
+    let mut policy = ParticipantPolicy::default();
+    policy.allowed_tools.insert("mailbox_status".into());
+    let h = harness(Preset::Respond, policy, Some(executor.clone())).await;
+    let request = h.fake.inject(&h.thread, "ask", "summarize", json!({}), Some("enf-1"));
+    let report = h.pass().await;
+    assert_eq!((report.declined, report.executor_runs), (1, 0));
+    assert_eq!(executor.0.load(Ordering::SeqCst), 0, "an unenforceable request never runs");
+    let snapshot = h.status().await;
+    assert_eq!(Harness::stage(&snapshot, &request), "declined");
+    assert!(snapshot.deliveries[0].disposition.as_ref().unwrap().to_string().contains("restriction_not_enforceable:tool_not_available_in_confined_turn:mailbox_status"));
+    h.pass().await;
+    let decline = h.fake.replies(&h.thread).into_iter().find(|r| r["correlation_id"] == json!("enf-1")).unwrap();
+    assert_eq!(decline["payload"]["disposition"], json!("decline"));
 }
 
 #[tokio::test]

@@ -69,6 +69,58 @@ pub fn configured_deps(core: &crate::core_runtime::CoreRuntime) -> Result<Mailbo
     })
 }
 
+/// [`configured_deps`] plus the production confined executor when it is
+/// available, so accepted Respond-preset requests the executor can enforce
+/// run confined; everything else still waits for an operator.
+pub async fn configured_deps_with_executor(core: &crate::core_runtime::CoreRuntime) -> Result<MailboxDeps> {
+    let mut deps = configured_deps(core)?;
+    deps.executor = confined_executor().await;
+    Ok(deps)
+}
+
+static CONFINED_EXECUTOR: tokio::sync::OnceCell<Option<Arc<dyn crate::cloud::scoped_runtime::RestrictedExecutor>>> =
+    tokio::sync::OnceCell::const_new();
+
+/// The production confined executor, built and self-checked once per
+/// process. It exists only when every precondition holds: macOS seatbelt,
+/// a native Codex binary (`SYNTH_CODEX_BIN` or `codex` on PATH), the local
+/// Laguna provider on loopback (`SYNTH_LAGUNA_BASE_URL`, default
+/// 127.0.0.1:7333) and a passing model-free confined boot check. Otherwise
+/// no executor is registered and requests wait for an operator answer.
+pub async fn confined_executor() -> Option<Arc<dyn crate::cloud::scoped_runtime::RestrictedExecutor>> {
+    CONFINED_EXECUTOR
+        .get_or_init(|| async {
+            match build_confined_executor().await {
+                Ok(executor) => Some(executor),
+                Err(error) => {
+                    crate::platform::logging::report("mailbox", "eprintln", format!("confined mailbox executor unavailable: {error:#}"));
+                    None
+                }
+            }
+        })
+        .await
+        .clone()
+}
+
+async fn build_confined_executor() -> Result<Arc<dyn crate::cloud::scoped_runtime::RestrictedExecutor>> {
+    use super::codex_executor::{ConfinedCodexExecutor, LoopbackProvider};
+    let launcher = std::env::var_os("SYNTH_CODEX_BIN").map(std::path::PathBuf::from).or_else(|| {
+        std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|dir| dir.join("codex")).find(|path| path.is_file()))
+    });
+    let binary = launcher.as_deref().and_then(ConfinedCodexExecutor::resolve_native).context("no native codex app-server binary")?;
+    let base = std::env::var("SYNTH_LAGUNA_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:7333".into());
+    let provider = LoopbackProvider {
+        name: "local-laguna".into(),
+        base_url: format!("{}/v1", base.trim_end_matches('/')),
+        model: crate::domain::LOCAL_LAGUNA_MODEL.into(),
+        env_key: "SYNTH_LAGUNA_API_KEY".into(),
+        api_key: SecretToken::new(std::env::var("SYNTH_LAGUNA_API_KEY").unwrap_or_else(|_| "local".into())),
+    };
+    let executor = ConfinedCodexExecutor::new(binary, vec![], provider, crate::storage::app_data_root().join("mailbox-turns"))?;
+    executor.verify_confined_boot().await?;
+    Ok(Arc::new(executor))
+}
+
 /// Explicit opt-in: install the registered, shape-verified store into the
 /// host runtime. Performs no identity or network request.
 pub async fn activate_store(core: &crate::core_runtime::CoreRuntime) -> Result<()> {

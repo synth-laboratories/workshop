@@ -598,7 +598,12 @@ async fn cloud_mailbox(core: &Arc<CoreRuntime>, action: &str, body: Value) -> Re
             Ok(json!({"participant": participant}))
         }
         "resume" => Ok(json!({"participant": runtime.resume_mq_session_with(&deps, &thread_id).await?})),
-        "pass" => Ok(json!({"report": runtime.mailbox_pass_with(&deps, &thread_id, PassBudget::default()).await?})),
+        "pass" => {
+            // Passes may deliver work requests; attach the confined executor
+            // (present only when every confinement precondition holds).
+            let deps = host::configured_deps_with_executor(core).await?;
+            Ok(json!({"report": runtime.mailbox_pass_with(&deps, &thread_id, PassBudget::default()).await?, "executor": deps.executor.is_some()}))
+        }
         "status" => Ok(json!({"status": runtime.mailbox_status_with(&deps, &thread_id).await?})),
         "disconnect" => Ok(json!({"participant": runtime.disconnect_mq_with(&deps, &thread_id).await?})),
         "publish" => {
