@@ -649,8 +649,12 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Serializes tests that set the process-wide binary override.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[tokio::test]
     async fn a_missing_binary_is_degraded_and_never_an_error() {
+        let _env = ENV_LOCK.lock().await;
         let dir = tempdir().unwrap();
         std::env::set_var(BINARY_ENV, dir.path().join("does-not-exist"));
         let sidecar = VictoriaLogsSidecar::new(SidecarConfig::for_root(dir.path()));
@@ -662,6 +666,7 @@ mod tests {
 
     #[tokio::test]
     async fn degraded_state_is_written_to_the_descriptor() {
+        let _env = ENV_LOCK.lock().await;
         let dir = tempdir().unwrap();
         std::env::set_var(BINARY_ENV, dir.path().join("absent"));
         let sidecar = VictoriaLogsSidecar::new(SidecarConfig::for_root(dir.path()));
@@ -809,6 +814,39 @@ mod tests {
         assert!(fetch.contains("checksum mismatch"));
         assert!(fetch.contains("v1.52.0/darwin/arm64) echo \"3157d4b6181d8a7e3e30918e2cbfcd4cc4cb66263e3ef21ea91e4f20f8980883\""));
         assert!(fetch.contains("install -m 0755 \"$BINARY\" \"$DEST\""));
+    }
+
+    /// With the pinned binary staged by `fetch-victorialogs.sh` (the packaging
+    /// hook), resolution finds it and the log store reaches `ready` instead of
+    /// `binary_missing`. Skips when nothing is staged. Loopback only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_staged_index_binary_brings_the_log_store_to_ready() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let checkout = manifest.parent().and_then(Path::parent).and_then(Path::parent).unwrap();
+        let staged = checkout.join(BUNDLED_RELATIVE_PATH);
+        if !is_executable(&staged) {
+            eprintln!("skipping: run scripts/diagnostics/fetch-victorialogs.sh --if-missing first");
+            return;
+        }
+        assert_eq!(
+            locate_binary_from(None, Some(manifest.join("target/debug/synth-desktop")), manifest),
+            Some(staged.clone()),
+            "an unpackaged build resolves the staged checkout binary"
+        );
+        let _env = ENV_LOCK.lock().await;
+        std::env::set_var(BINARY_ENV, &staged);
+        let dir = tempdir().unwrap();
+        let sidecar = VictoriaLogsSidecar::new(SidecarConfig::for_root(dir.path()));
+        let state = sidecar.start().await;
+        std::env::remove_var(BINARY_ENV);
+        assert_eq!(state, SidecarState::Ready, "the staged binary must not report binary_missing");
+        let descriptor = sidecar.read_descriptor().expect("descriptor");
+        assert_eq!(descriptor.state, "ready");
+        assert!(descriptor.reason.is_none());
+        assert!(descriptor.url.as_deref().is_some_and(|url| url.starts_with("http://127.0.0.1:")));
+        sidecar.stop().await.unwrap();
+        assert_eq!(sidecar.state().await, SidecarState::Stopped);
     }
 
     #[test]
