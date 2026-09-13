@@ -301,6 +301,44 @@ async fn core_session_events_before(
         .map_err(AppError::from)
 }
 
+/// Local manifest/provenance/rights preview of explicitly selected files.
+#[tauri::command]
+#[specta::specta]
+async fn index_export_preview(
+    request: crate::cloud::index::IndexExportRequest,
+) -> Result<crate::cloud::index::IndexExportPreview, AppError> {
+    tokio::task::spawn_blocking(move || crate::cloud::index::preview(&request))
+        .await
+        .map_err(|error| AppError::from(anyhow::anyhow!("preview task failed: {error}")))?
+        .map_err(AppError::from)
+}
+
+/// Create or resume a private Contribution draft and upload the selected bytes.
+#[tauri::command]
+#[specta::specta]
+async fn index_export_upload(
+    request: crate::cloud::index::IndexExportRequest,
+) -> Result<crate::cloud::index::IndexExportOutcome, AppError> {
+    crate::cloud::index::upload(request).await.map_err(AppError::from)
+}
+
+/// Explicit owner submission for independent review; never approval or release.
+#[tauri::command]
+#[specta::specta]
+async fn index_export_submit(
+    request: crate::cloud::index::IndexSubmitRequest,
+) -> Result<serde_json::Value, AppError> {
+    crate::cloud::index::submit(request).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn index_revision_status(
+    request: crate::cloud::index::IndexReference,
+) -> Result<serde_json::Value, AppError> {
+    crate::cloud::index::status(request).await.map_err(AppError::from)
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn intern_sessions_list(

@@ -20,6 +20,10 @@ impl Commands {
     pub const INTERN_SESSION_SEND: &'static str = "intern_session_send";
     pub const INTERN_SESSION_CONTROL: &'static str = "intern_session_control";
     pub const INTERN_SESSION_EVENTS_AFTER: &'static str = "intern_session_events_after";
+    pub const INDEX_EXPORT_PREVIEW: &'static str = "index_export_preview";
+    pub const INDEX_EXPORT_UPLOAD: &'static str = "index_export_upload";
+    pub const INDEX_EXPORT_SUBMIT: &'static str = "index_export_submit";
+    pub const INDEX_REVISION_STATUS: &'static str = "index_revision_status";
     pub const CODEX_DEFAULT_WORKSPACE: &'static str = "codex_default_workspace";
     pub const CODEX_SESSIONS_LIST: &'static str = "codex_sessions_list";
     pub const CODEX_SESSION_START: &'static str = "codex_session_start";

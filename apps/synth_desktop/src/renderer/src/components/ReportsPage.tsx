@@ -20,6 +20,7 @@ import type {
 import { Markdown } from "../documents/DocumentContent";
 import { toPublicError } from "../runtime/publicError";
 import { formatVisualAdmissionIdentity } from "../types/landing";
+import { IndexContributePanel } from "./IndexContributePanel";
 
 type Tab = "all" | "draft" | "sealed" | "archived";
 type AppendixView = "ledger" | "lineage" | "inspector";
@@ -202,6 +203,7 @@ function ReportTracePreview({ entry }: { entry: ReportTraceEntry }) {
 }
 
 export function ReportsPage({ onBack, initialReportId }: Props) {
+	const [contributeOpen, setContributeOpen] = useState(false);
 	const [tab, setTab] = useState<Tab>("all");
 	const [search, setSearch] = useState("");
 	const [reports, setReports] = useState<ReportRecord[]>([]);
@@ -777,6 +779,10 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 					<button type="button" className="ghost-button" onClick={onBack}>Back</button>
 					<h1>Reports</h1>
 					<p>Author, seal, and reopen a curated research synthesis offline.</p>
+					<button type="button" className="ghost-button" data-testid="reports-prepare-contribution" onClick={() => setContributeOpen((open) => !open)}>
+						Prepare Contribution
+					</button>
+					{contributeOpen ? <IndexContributePanel onClose={() => setContributeOpen(false)} /> : null}
 				</div>
 				<div className="visuals-page-actions">
 					<input
