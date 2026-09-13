@@ -973,6 +973,102 @@ async fn device_sign_out_revokes_the_enrollment_fences_writes_and_stops_the_supe
     assert!(h.runtime.connect_mq_session_with(&h.deps, connect_request(&other, &h.session, Preset::Collaborate, ParticipantPolicy::default())).await.is_err());
 }
 
+mod ipc_commands {
+    //! One test per renderer IPC command (cloud::mailbox::ipc), plus the
+    //! qualification gate every command applies first.
+    use super::*;
+    use crate::cloud::mailbox::ipc;
+
+    #[tokio::test]
+    async fn every_mailbox_command_refuses_while_the_host_is_qualification_gated() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        let refusals = [
+            ipc::connections_command(&core).await.err(),
+            ipc::status_command(&core, "thread").await.err(),
+            ipc::reply_command(&core, "thread", "message", OperatorReply::Answer("a".into())).await.err(),
+            ipc::reply_command(&core, "thread", "message", OperatorReply::Decline("d".into())).await.err(),
+            ipc::sign_out_command(&core).await.err(),
+        ];
+        for refusal in refusals {
+            assert!(refusal.unwrap().to_string().contains("qualification is required"));
+        }
+        assert_eq!(core.scoped_cloud().view().await.unwrap().availability, super::super::super::Availability::QualificationRequired);
+    }
+
+    #[tokio::test]
+    async fn cloud_mailbox_connections_lists_the_bound_session_without_secrets() {
+        let h = harness(Preset::Collaborate, ParticipantPolicy::default(), None).await;
+        let rows = ipc::connections(&h.core, &h.deps).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].thread_id.as_str(), rows[0].local_session_id.as_str(), rows[0].state.as_str()), (h.thread.as_str(), h.session.as_str(), "active"));
+        assert_eq!(rows[0].peers, vec!["actor:cloud-evaluator".to_owned()]);
+        let json = serde_json::to_string(&rows).unwrap();
+        assert!(!json.contains(API_KEY) && !json.contains("tok-"));
+    }
+
+    #[tokio::test]
+    async fn cloud_mailbox_status_shows_awaiting_requests_and_unknown_outcomes() {
+        let h = harness(Preset::Collaborate, ParticipantPolicy::default(), None).await;
+        h.fake.with(|state| state.publish_modes.push_back(PublishMode::DropBeforeCommit));
+        h.runtime.publish_mq_with(&h.deps, &h.thread, ask("ipc-unknown", "c")).await.unwrap();
+        let request = h.fake.inject(&h.thread, "ask", "Which seed failed?", json!({}), Some("ipc-q"));
+        h.fake.inject(&h.thread, "notice", "progress", json!({}), None);
+        h.pass().await;
+        let status = ipc::status(&h.core, &h.deps, &h.thread).await.unwrap();
+        assert_eq!(status.unknown_outcomes, 1);
+        assert!(status.outbox.iter().any(|row| row.unknown_outcome && row.status == "unknown"));
+        let awaiting: Vec<_> = status.inbox.iter().filter(|row| row.awaiting_operator).collect();
+        assert_eq!(awaiting.len(), 1);
+        assert_eq!((awaiting[0].message_id.as_str(), awaiting[0].body.as_str()), (request.as_str(), "Which seed failed?"));
+        assert!(status.inbox.iter().any(|row| row.kind == "notice" && !row.awaiting_operator));
+        assert_eq!(status.connection.unwrap().state, "active");
+        let json = serde_json::to_string(&ipc::status(&h.core, &h.deps, &h.thread).await.unwrap()).unwrap();
+        assert!(!json.contains(API_KEY) && !json.contains("tok-"));
+    }
+
+    #[tokio::test]
+    async fn cloud_mailbox_answer_queues_a_correlated_reply() {
+        let h = harness(Preset::Collaborate, ParticipantPolicy::default(), None).await;
+        let request = h.fake.inject(&h.thread, "ask", "Which seed failed?", json!({}), Some("ipc-a"));
+        h.pass().await;
+        let row = ipc::reply(&h.core, &h.deps, &h.thread, &request, OperatorReply::Answer("seed 18".into())).await.unwrap();
+        assert_eq!((row.status.as_str(), row.disposition.as_str(), row.correlation_id.as_deref()), ("queued", "answer", Some("ipc-a")));
+        assert!(ipc::reply(&h.core, &h.deps, &h.thread, &request, OperatorReply::Answer(" ".into())).await.is_err(), "empty replies refuse");
+        h.pass().await;
+        let reply = h.fake.replies(&h.thread).into_iter().find(|r| r["correlation_id"] == json!("ipc-a")).unwrap();
+        assert_eq!(reply["body"], json!("seed 18"));
+        let status = ipc::status(&h.core, &h.deps, &h.thread).await.unwrap();
+        assert!(status.inbox.iter().any(|row| row.message_id == request && row.stage == "answered" && !row.awaiting_operator));
+    }
+
+    #[tokio::test]
+    async fn cloud_mailbox_decline_queues_a_correlated_decline() {
+        let h = harness(Preset::Collaborate, ParticipantPolicy::default(), None).await;
+        let request = h.fake.inject(&h.thread, "ask", "Deploy please", json!({}), Some("ipc-d"));
+        h.pass().await;
+        let row = ipc::reply(&h.core, &h.deps, &h.thread, &request, OperatorReply::Decline("out of scope".into())).await.unwrap();
+        assert_eq!((row.disposition.as_str(), row.status.as_str()), ("decline", "queued"));
+        h.pass().await;
+        let decline = h.fake.replies(&h.thread).into_iter().find(|r| r["correlation_id"] == json!("ipc-d")).unwrap();
+        assert_eq!(decline["payload"]["disposition"], json!("decline"));
+    }
+
+    #[tokio::test]
+    async fn cloud_mailbox_sign_out_revokes_the_device_and_signs_out_locally() {
+        let h = harness(Preset::Collaborate, ParticipantPolicy::default(), None).await;
+        let view = ipc::sign_out(&h.core, Some(&h.deps)).await.unwrap();
+        assert_eq!((view.revoked_enrollments, view.unconfirmed_enrollments), (1, 0));
+        assert!(view.revocation_error.is_none());
+        assert_eq!(view.view.availability, super::super::super::Availability::SignedOut);
+        assert!(h.fake.with(|state| state.enrollments.iter().all(|e| e.revoked)));
+        // Without backend configuration the local sign-out still happens.
+        let offline = ipc::sign_out(&h.core, None).await.unwrap();
+        assert!(offline.revocation_error.is_some());
+        assert_eq!(offline.view.availability, super::super::super::Availability::SignedOut);
+    }
+}
+
 /// An executor that can enforce only file reads, like the confined Codex one.
 struct FilesOnlyExecutor(AtomicUsize);
 impl RestrictedExecutor for FilesOnlyExecutor {

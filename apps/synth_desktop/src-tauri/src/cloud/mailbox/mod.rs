@@ -7,5 +7,6 @@
 pub mod codex_executor;
 pub mod grant;
 pub mod host;
+pub mod ipc;
 pub mod policy;
 pub mod wire;

@@ -308,6 +308,12 @@ impl ScopedCloudRuntime {
         }).await
     }
 
+    /// Connected participants of the verified account (local read).
+    pub async fn mailbox_participants_with(&self, deps: &MailboxDeps) -> Result<Vec<ParticipantRecord>> {
+        let generation = self.revalidate_with(&deps.origin, || deps.verifier.verify()).await?.generation;
+        self.scoped_transaction(generation, |store, lease| store.mq_participants(&lease)).await
+    }
+
     /// Local status read: no model call and no MQ traffic.
     pub async fn mailbox_status_with(&self, deps: &MailboxDeps, thread_id: &str) -> Result<MailboxStatus> {
         let generation = self.revalidate_with(&deps.origin, || deps.verifier.verify()).await?.generation;

@@ -251,6 +251,59 @@ async fn cloud_scope_view(
     state.scoped_cloud().view().await.map_err(AppError::from)
 }
 
+// Native mailbox commands (WP7). Each refuses before any config, credential
+// or network access while the host is qualification-gated.
+#[tauri::command]
+#[specta::specta]
+async fn cloud_mailbox_connections(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<cloud::mailbox::ipc::MailboxConnectionView>, AppError> {
+    cloud::mailbox::ipc::connections_command(&state).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn cloud_mailbox_status(
+    state: State<'_, Arc<CoreRuntime>>,
+    thread_id: String,
+) -> Result<cloud::mailbox::ipc::MailboxStatusView, AppError> {
+    cloud::mailbox::ipc::status_command(&state, &thread_id).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn cloud_mailbox_answer(
+    state: State<'_, Arc<CoreRuntime>>,
+    thread_id: String,
+    message_id: String,
+    body: String,
+) -> Result<cloud::mailbox::ipc::MailboxOutboxRowView, AppError> {
+    cloud::mailbox::ipc::reply_command(&state, &thread_id, &message_id, cloud::scoped_runtime::OperatorReply::Answer(body))
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn cloud_mailbox_decline(
+    state: State<'_, Arc<CoreRuntime>>,
+    thread_id: String,
+    message_id: String,
+    reason: String,
+) -> Result<cloud::mailbox::ipc::MailboxOutboxRowView, AppError> {
+    cloud::mailbox::ipc::reply_command(&state, &thread_id, &message_id, cloud::scoped_runtime::OperatorReply::Decline(reason))
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn cloud_mailbox_sign_out(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<cloud::mailbox::ipc::MailboxSignOutView, AppError> {
+    cloud::mailbox::ipc::sign_out_command(&state).await.map_err(AppError::from)
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn cloud_scoped_history(
