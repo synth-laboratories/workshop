@@ -562,6 +562,22 @@ fn extract_usage(fields: &Value) -> Option<Map<String, Value>> {
                 usage.insert(key.into(), value.clone());
             }
         }
+        let rollout_calls = nested
+            .get("rollout_calls")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let proposer_calls = nested
+            .get("proposer_calls")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if rollout_calls > 0 || proposer_calls > 0 {
+            usage.insert(
+                "calls".into(),
+                json!(rollout_calls.saturating_add(proposer_calls)),
+            );
+        } else if let Some(value) = nested.get("calls") {
+            usage.insert("calls".into(), value.clone());
+        }
     }
     if usage.is_empty() {
         None
@@ -636,7 +652,8 @@ mod tests {
                 "rollout_count": 4,
                 "cost_usd": 0.02,
                 "wall_seconds": 2.5,
-                "usage": {"prompt_tokens": 2500, "completion_tokens": 25}
+                "usage": {"prompt_tokens": 2500, "completion_tokens": 25,
+                          "rollout_calls": 4, "proposer_calls": 1}
             }
         });
         let event = normalize_event(&raw, "fallback", "gepa").unwrap();
@@ -646,6 +663,7 @@ mod tests {
         assert_eq!(usage["rollouts"], json!(4));
         assert_eq!(usage["prompt_tokens"], json!(2500));
         assert_eq!(usage["completion_tokens"], json!(25));
+        assert_eq!(usage["calls"], json!(5));
         assert_eq!(usage["wall_time_ms"], json!(2500));
     }
 
@@ -661,7 +679,8 @@ mod tests {
                 "rollout_count": 4,
                 "cost_usd": 0.02,
                 "wall_seconds": 2.5,
-                "usage": {"prompt_tokens": 2500, "completion_tokens": 25}
+                "usage": {"prompt_tokens": 2500, "completion_tokens": 25,
+                          "rollout_calls": 4, "proposer_calls": 1}
             }
         });
         let event = normalize_event(&completed, "fallback", "gepa").unwrap();
@@ -669,6 +688,7 @@ mod tests {
         assert_eq!(usage["rollouts"], json!(4));
         assert_eq!(usage["prompt_tokens"], json!(2500));
         assert_eq!(usage["completion_tokens"], json!(25));
+        assert_eq!(usage["calls"], json!(5));
         assert_eq!(usage["wall_time_ms"], json!(2500));
     }
 
