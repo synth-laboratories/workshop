@@ -1591,24 +1591,31 @@ export function useAppController() {
 			if (!visualId) return;
 			const eventRevision = typeof event.payload?.revision === "number" ? event.payload.revision : -1;
 			if (event.kind === "visual.show") {
-				const owner =
-					typeof event.payload?.ownerSessionId === "string"
-						? event.payload.ownerSessionId
-						: typeof event.sessionId === "string"
-							? event.sessionId
+				// The event session is where this show request should be presented.
+				// ownerSessionId is provenance only: an older visual can be shown in
+				// the current chat without being adopted into that chat's Outputs.
+				const displaySessionId =
+					typeof event.sessionId === "string"
+						? event.sessionId
+						: typeof event.payload?.ownerSessionId === "string"
+							? event.payload.ownerSessionId
 							: null;
-				const ownerViewKey = owner ? `chat:${owner}` : viewKey;
-				openArtifactByViewRef.current[ownerViewKey] = visualId;
+				const displayViewKey = displaySessionId ? `chat:${displaySessionId}` : viewKey;
+				openArtifactByViewRef.current[displayViewKey] = visualId;
 				openArtifactByViewRef.current.window = visualId;
-				if (owner && owner !== activeSessionIdRef.current) {
+				if (displaySessionId && displaySessionId !== activeSessionIdRef.current) {
 					if (event.payload?.foregroundOwner !== true) return;
-					if (!sessionsRef.current.some((session) => session.id === owner)) {
-						showToast(`Cannot foreground unknown conversation ${owner}`);
+					if (!sessionsRef.current.some((session) => session.id === displaySessionId)) {
+						showToast(`Cannot foreground unknown conversation ${displaySessionId}`);
 						return;
 					}
-					setView({ kind: "chat", chatId: owner });
+					setView({ kind: "chat", chatId: displaySessionId });
 				}
 				reconcileOpenVisual(visualId, eventRevision, true);
+				if (view.kind === "chat") {
+					setSidePanelTab("visual");
+					setSidePanelOpen(true);
+				}
 			}
 			else if (event.kind === "visual.updated" && openArtifactIdRef.current === visualId) {
 				reconcileOpenVisual(visualId, eventRevision);
@@ -1623,7 +1630,7 @@ export function useAppController() {
 			unlisten();
 			window.removeEventListener("focus", reconcileSelected);
 		};
-	}, [reconcileOpenVisual, viewKey]);
+	}, [reconcileOpenVisual, setSidePanelOpen, setSidePanelTab, view.kind, viewKey]);
 
 	const ensureOpenRouterReady = useCallback(async (targetId: string): Promise<boolean> => {
 		if (!isOpenRouterCatalogTarget(targetId)) return true;

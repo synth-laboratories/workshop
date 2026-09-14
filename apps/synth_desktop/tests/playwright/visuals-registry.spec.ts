@@ -296,6 +296,81 @@ test("an owned visual.show does not steal another chat's right pane", async ({ p
 	await expect(page.getByTestId("visual-pane")).toContainText("HealthBench smoke");
 });
 
+test("showing an older visual opens it in the requesting chat without changing ownership", async ({ page }) => {
+	await page.addInitScript((base) => {
+		const currentSessionId = "chat-current";
+		const ownerSessionId = "chat-original-owner";
+		const visual = {
+			...base,
+			id: "vis_older_craftax",
+			title: "CRAFTAX-LUNA-010 · rewards & traces",
+			sessionId: ownerSessionId
+		};
+		const listeners = new Set<(event: Record<string, unknown>) => void>();
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId: currentSessionId,
+				threadId: "thread-current",
+				workspace: "/workspaces/default",
+				model: "gpt-5.6-luna",
+				providerName: "openai",
+				providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1",
+				status: "ready"
+			}],
+			start: async () => ({ sessionId: currentSessionId, threadId: "thread-current" }),
+			startTurn: async () => ({ sessionId: currentSessionId, threadId: "thread-current", turnId: "turn-current" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async () => [],
+			get: async (visualId: string) => {
+				if (visualId !== visual.id) throw new Error(`missing visual ${visualId}`);
+				return visual;
+			},
+			revisions: async () => [],
+			onEvent: (next: (event: Record<string, unknown>) => void, attached?: () => void) => {
+				listeners.add(next);
+				queueMicrotask(() => attached?.());
+				return () => { listeners.delete(next); };
+			}
+		};
+		(window as typeof window & { __olderVisual?: unknown }).__olderVisual = {
+			emitShow: () => listeners.forEach((listener) => listener({
+				schemaVersion: "synth.desktop-app-event.v1",
+				eventId: "evt-show-older-visual",
+				sequence: 42,
+				sessionSequence: 1,
+				sessionId: currentSessionId,
+				source: "visual",
+				kind: "visual.show",
+				payload: {
+					visualId: visual.id,
+					title: visual.title,
+					templateId: visual.templateId,
+					revision: visual.currentRevision,
+					ownerSessionId
+				},
+				createdAt: "2026-09-13T23:30:00Z"
+			}))
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("local-chat-chat-current").click();
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __olderVisual?: unknown }).__olderVisual !== undefined)).toBeTruthy();
+	await page.evaluate(() => (window as typeof window & { __olderVisual: { emitShow(): void } }).__olderVisual.emitShow());
+	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId)).toBe("vis_older_craftax");
+	const sidePanel = page.getByTestId("workbench-side-panel");
+	await expect(sidePanel).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toContainText("CRAFTAX-LUNA-010 · rewards & traces");
+	await sidePanel.getByRole("tab", { name: "Outputs" }).click();
+	await expect(sidePanel.getByTestId("resource-shelf-empty")).toContainText("No outputs yet");
+});
+
 test("an optimizer visual event appears immediately in its chat Outputs shelf", async ({ page }) => {
 	await page.addInitScript((base) => {
 		const sessionId = "visual-output-session";

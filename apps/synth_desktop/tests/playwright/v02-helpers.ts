@@ -94,7 +94,9 @@ export async function installVisuals(
 
 export async function openVisual(page: Page, visualId: string) {
 	await page.getByTestId("open-visuals").click();
-	await page.getByTestId(`visuals-card-${visualId}`).getByRole("button", { name: "Open" }).click();
+	const actions = page.getByTestId(`visuals-actions-${visualId}`);
+	await actions.locator("summary").click();
+	await actions.getByRole("menuitem", { name: "Open canvas" }).click();
 	return page.getByTestId("visual-pane");
 }
 
