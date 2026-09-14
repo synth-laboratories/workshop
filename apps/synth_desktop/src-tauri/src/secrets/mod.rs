@@ -2176,6 +2176,25 @@ mod tests {
     }
 
     #[test]
+    fn credential_probe_child_processes_are_time_bounded() {
+        let mut success = std::process::Command::new("/bin/sh");
+        success.args(["-c", "exit 0"]);
+        assert!(lease::command_succeeds_with_timeout(
+            &mut success,
+            std::time::Duration::from_secs(1)
+        ));
+
+        let mut slow = std::process::Command::new("/bin/sh");
+        slow.args(["-c", "sleep 2"]);
+        let started = std::time::Instant::now();
+        assert!(!lease::command_succeeds_with_timeout(
+            &mut slow,
+            std::time::Duration::from_millis(100)
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
     fn create_list_never_returns_plaintext() {
         let (_dir, service) = service();
         let canary = "sk-proj-SUPERSECRET7F2A";
