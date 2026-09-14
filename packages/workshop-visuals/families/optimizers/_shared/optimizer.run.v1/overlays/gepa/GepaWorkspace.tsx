@@ -525,13 +525,14 @@ export function GepaWorkspace({
         <section className="sv-panel" aria-label="Why this run failed" data-testid="gepa-failure">
           <div className="sv-panel-head">
             <h4>Why this search failed</h4>
-            <span className="sv-mono">no candidate was proposed</span>
+            <span className="sv-mono">{gepa.candidates.length ? `${gepa.candidates.length} candidates retained` : "no candidate was proposed"}</span>
           </div>
           <div className="sv-panel-body">
             <p className="sv-failure-detail">{optimizerFailureDetail(run.error) ?? gepa.failureDetail}</p>
             <p className="sv-empty">
-              The panels below are empty because the search was refused before it
-              began, not because it ran and found nothing.
+              {gepa.candidates.length
+                ? "The search stopped before completion. Retained candidates and partial evidence remain available below; failed attempts are not successful evaluations."
+                : "The panels below are empty because the search was refused before it began, not because it ran and found nothing."}
             </p>
           </div>
         </section>

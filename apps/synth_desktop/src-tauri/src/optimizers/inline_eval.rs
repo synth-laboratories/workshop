@@ -174,7 +174,7 @@ async fn discovery_context(
     let mut policy_source_code = None;
     let mut policy_material = None;
     let mut selected_base_url = None;
-    for (id, status, task_family, metadata_json, base_url) in rows {
+    for (id, _status, task_family, metadata_json, base_url) in rows {
         let metadata: Value = serde_json::from_str(&metadata_json)
             .with_context(|| format!("decode container declaration for `{id}`"))?;
         let spec_id = metadata.get("specId").and_then(Value::as_str);
@@ -194,12 +194,18 @@ async fn discovery_context(
         // Ensure registers liveness and launch provenance, not a hydrated eval
         // contract. Admission must observe the selected target itself instead
         // of requiring the user to press Probe first or trusting stale metadata.
-        let (status, _, metadata, observed_family) = crate::hydrate_container(
+        let (status, health, metadata, observed_family) = crate::hydrate_container(
             base_url.as_deref().context("registered container has no base URL")?,
             metadata,
             true,
         ).await;
         let task_family = observed_family.or(task_family);
+        // Dispatch resolves the same durable container row. Persist this probe
+        // through its normal audited writer so admission and execution cannot
+        // disagree on a stale family or capability snapshot.
+        crate::data::DataStore::new(service.database().clone(), service.content().clone())
+            .update_container_hydration(id.clone(), status.clone(), health, metadata.clone(), task_family.clone())
+            .await?;
         let policy_revision = metadata
             .pointer("/capabilities/revision")
             .or_else(|| metadata.get("gitRevision"))

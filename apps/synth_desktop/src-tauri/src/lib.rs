@@ -477,6 +477,19 @@ async fn data_containers_get(
         .map_err(AppError::from)
 }
 
+fn observed_benchmark_family(value: &serde_json::Value) -> Option<String> {
+    value.pointer("/liveEval/benchmarkFamily")
+        .or_else(|| value.pointer("/metadata/liveEval/benchmarkFamily"))
+        .or_else(|| value.get("env_family"))
+        .or_else(|| value.get("task_family"))
+        // `external` is an SDK execution adapter, not a benchmark identity.
+        .or_else(|| value.get("runtime_family").filter(|family| family.as_str() != Some("external")))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .or_else(|| crate::visuals::classify_live_eval_family(value, None)
+            .map(|family| family.as_str().to_string()))
+}
+
 async fn hydrate_container(
     base_url: &str,
     existing_metadata: serde_json::Value,
@@ -538,27 +551,7 @@ async fn hydrate_container(
     }
     let task_family = info
         .as_ref()
-        .and_then(|value| {
-            value
-                .pointer("/liveEval/benchmarkFamily")
-                .or_else(|| value.pointer("/metadata/liveEval/benchmarkFamily"))
-                .or_else(|| value.get("env_family"))
-                .or_else(|| value.get("task_family"))
-                // HealthBench publishes its explicit service family as
-                // `runtime_family`; preserve that observed contract so the
-                // selector can find the registered GEPA-v2 pool. A declared
-                // benchmarkFamily wins because Harbor is the visual/transport
-                // family, not the benchmark being evaluated.
-                .or_else(|| value.get("runtime_family"))
-                .and_then(|value| value.as_str())
-                .map(str::to_string)
-        })
-        .or_else(|| {
-            info.as_ref().and_then(|value| {
-                crate::visuals::classify_live_eval_family(value, None)
-                    .map(|family| family.as_str().to_string())
-            })
-        })
+        .and_then(observed_benchmark_family)
         .or_else(|| {
             // Packaged GEPA services identify their task through the immutable
             // runtime id rather than an optional top-level `task_family`.
@@ -1723,6 +1716,17 @@ fn optimizer_recipe_approval_parameters(recipe: &Value, recipe_id: &str, limits:
 #[cfg(test)]
 mod optimizer_recipe_credential_tests {
     use super::*;
+
+    #[test]
+    fn external_adapter_does_not_override_declared_craftax_target() {
+        assert_eq!(observed_benchmark_family(&serde_json::json!({
+            "runtime_family": "external", "target_id": "craftax_react"
+        })).as_deref(), Some("craftax"));
+        assert_eq!(observed_benchmark_family(&serde_json::json!({"runtime_family": "external"})), None);
+        assert_eq!(observed_benchmark_family(&serde_json::json!({
+            "runtime_family": "harbor", "liveEval": {"benchmarkFamily": "healthbench"}
+        })).as_deref(), Some("healthbench"));
+    }
 
     #[test]
     fn workspace_recipe_catalog_overrides_legacy_prefix_default() {
