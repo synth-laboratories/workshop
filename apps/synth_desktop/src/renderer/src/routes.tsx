@@ -504,10 +504,9 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	const inventoryOwnsVisualPane = (view.kind === "inventory" && inventoryVisualId === openArtifactId && inventoryVisualId != null)
 		|| (view.kind === "experiments" && experimentSectionOwnsVisualPane)
 		|| view.kind === "optimizers" || view.kind === "jesterky";
-	const visualPaneVisible = Boolean(openArtifact && (
-		(chatRoute && !showSidePanel)
-		|| inventoryOwnsVisualPane
-	));
+	// Chat visuals belong to the dock. Hiding it must not remount the same
+	// visual as a standalone pane, which made the Hide control ineffective.
+	const visualPaneVisible = Boolean(openArtifact && inventoryOwnsVisualPane);
 	const openArtifactInDock = (id: string | null) => {
 		if (id == null) {
 			toggleArtifact(null);

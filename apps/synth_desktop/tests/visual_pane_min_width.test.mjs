@@ -148,7 +148,8 @@ test("routes.tsx keeps the window host and tabbed dock visual hosts distinct", (
 	// inventory surfaces that own visuals; independent destinations never
 	// inherit a previously opened artifact.
 	assert.match(source, /const inventoryOwnsVisualPane = \(view\.kind === "inventory" && inventoryVisualId === openArtifactId && inventoryVisualId != null\)/);
-	assert.match(source, /const visualPaneVisible = Boolean\(openArtifact && \(\s*\(chatRoute && !showSidePanel\)\s*\|\| inventoryOwnsVisualPane\s*\)\)/);
+	assert.match(source, /const visualPaneVisible = Boolean\(openArtifact && inventoryOwnsVisualPane\)/);
+	assert.doesNotMatch(source, /\(chatRoute && !showSidePanel\)\s*\|\| inventoryOwnsVisualPane/);
 	assert.match(source, /id: `visual:\$\{artifact\.id\}`/);
 	assert.match(source, /activeTabId=\{sidePanelTab === "visual"/);
 	assert.match(source, /setSidePanelTab\("visual"\)/);

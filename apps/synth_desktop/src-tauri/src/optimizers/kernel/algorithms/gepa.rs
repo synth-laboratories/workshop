@@ -352,6 +352,18 @@ impl GepaProjection {
                     item.transition(WorkItemLifecycle::Queued)?;
                     item.transition(WorkItemLifecycle::Starting)?;
                     item.transition(WorkItemLifecycle::Running)?;
+                    // Streaming results can precede the allocation envelope.
+                    // Their later duplicate is intentionally not scored twice.
+                    if let Some(result) = self.evaluations.iter().find(|result|
+                        result.rollout_id.as_deref() == Some(item.work_item_id.as_str())
+                            || result.id == item.work_item_id)
+                    {
+                        item.seal_terminal(if result.reward.is_some() {
+                            TerminalKind::Completed
+                        } else {
+                            TerminalKind::Failed
+                        })?;
+                    }
                     self.work_items.push(item);
                 }
             }
@@ -875,9 +887,15 @@ mod tests {
             "rollout_id":"rollout-1", "evaluation_id":"alias", "reward":0.5});
         assert_eq!(evaluation_work_id(&allocated), evaluation_work_id(&result));
         let mut projection = GepaProjection::default();
-        projection.apply(&committed("optimizer.candidate_evaluation.allocated", allocated, 1)).unwrap();
-        projection.apply(&committed("optimizer.evaluation_result.received", result, 2)).unwrap();
+        projection.apply(&committed("optimizer.candidate_evaluation.allocated", allocated.clone(), 1)).unwrap();
+        projection.apply(&committed("optimizer.evaluation_result.received", result.clone(), 2)).unwrap();
         assert_eq!(projection.close_open_work().unwrap(), 0);
+        let mut early = GepaProjection::default();
+        early.apply(&committed("optimizer.evaluation_result.received", result.clone(), 1)).unwrap();
+        early.apply(&committed("optimizer.candidate_evaluation.allocated", allocated, 2)).unwrap();
+        early.apply(&committed("optimizer.evaluation_result.received", result, 3)).unwrap();
+        assert_eq!(early.rollouts_scored, 1);
+        assert_eq!(early.close_open_work().unwrap(), 0);
     }
 
     #[test]
