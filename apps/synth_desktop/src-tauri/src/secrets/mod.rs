@@ -2056,6 +2056,126 @@ mod tests {
     }
 
     #[test]
+    fn changed_configured_env_file_replaces_only_an_instance_preference() {
+        let (root, service) = locator_service("locator-configured-instance-change");
+        let first_file = root.path.join("first-instance.env");
+        let second_file = root.path.join("second-instance.env");
+        let external_file = root.path.join("external.env");
+        std::fs::write(&first_file, "OPENAI_API_KEY=sk-first-not-real\n").unwrap();
+        std::fs::write(&second_file, "OPENAI_API_KEY=sk-second-not-real\n").unwrap();
+        std::fs::write(&external_file, "OPENAI_API_KEY=sk-external-not-real\n").unwrap();
+
+        let (first_source, second_source) = service
+            .db
+            .transaction(|conn| {
+                let first = locator::upsert_instance(
+                    conn,
+                    &first_file,
+                    "openai",
+                    "OPENAI_API_KEY",
+                    "First instance",
+                )?;
+                let first_source = lease::upsert_env_source_descriptor(
+                    conn,
+                    "openai",
+                    "OPENAI_API_KEY",
+                    &first_file,
+                    Some(&first.id),
+                    None,
+                    false,
+                )?;
+                locator::prefer_configured_instance_source(
+                    conn,
+                    &first_source,
+                    &first.id,
+                    "openai",
+                    "OPENAI_API_KEY",
+                )?;
+
+                let second = locator::upsert_instance(
+                    conn,
+                    &second_file,
+                    "openai",
+                    "OPENAI_API_KEY",
+                    "Second instance",
+                )?;
+                let second_source = lease::upsert_env_source_descriptor(
+                    conn,
+                    "openai",
+                    "OPENAI_API_KEY",
+                    &second_file,
+                    Some(&second.id),
+                    None,
+                    false,
+                )?;
+                locator::prefer_configured_instance_source(
+                    conn,
+                    &second_source,
+                    &second.id,
+                    "openai",
+                    "OPENAI_API_KEY",
+                )?;
+                Ok((first_source, second_source))
+            })
+            .unwrap();
+        let preferred = service
+            .db
+            .with_conn(|conn| locator::preferred_source(conn, "openai", "OPENAI_API_KEY"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(preferred.0, second_source);
+        assert_ne!(preferred.0, first_source);
+
+        let external = service
+            .remember_external_locator(
+                &external_file,
+                "openai",
+                "OPENAI_API_KEY",
+                "External",
+            )
+            .unwrap();
+        let external = service.register_locator(&external.id).unwrap();
+        let external_source = external.source_id.unwrap();
+
+        service
+            .db
+            .transaction(|conn| {
+                let third_file = root.path.join("third-instance.env");
+                std::fs::write(&third_file, "OPENAI_API_KEY=sk-third-not-real\n")?;
+                let third = locator::upsert_instance(
+                    conn,
+                    &third_file,
+                    "openai",
+                    "OPENAI_API_KEY",
+                    "Third instance",
+                )?;
+                let third_source = lease::upsert_env_source_descriptor(
+                    conn,
+                    "openai",
+                    "OPENAI_API_KEY",
+                    &third_file,
+                    Some(&third.id),
+                    None,
+                    false,
+                )?;
+                locator::prefer_configured_instance_source(
+                    conn,
+                    &third_source,
+                    &third.id,
+                    "openai",
+                    "OPENAI_API_KEY",
+                )
+            })
+            .unwrap();
+        let preferred = service
+            .db
+            .with_conn(|conn| locator::preferred_source(conn, "openai", "OPENAI_API_KEY"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(preferred.0, external_source);
+    }
+
+    #[test]
     fn create_list_never_returns_plaintext() {
         let (_dir, service) = service();
         let canary = "sk-proj-SUPERSECRET7F2A";
