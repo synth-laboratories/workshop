@@ -56,6 +56,7 @@ mod runtime;
 mod secrets;
 mod services;
 mod session;
+mod stderr_sink;
 mod skills;
 pub mod storage;
 mod synth_config;
@@ -248,6 +249,59 @@ async fn cloud_scope_view(
     state: State<'_, Arc<CoreRuntime>>,
 ) -> Result<cloud::scoped_runtime::ScopeView, AppError> {
     state.scoped_cloud().view().await.map_err(AppError::from)
+}
+
+// Native mailbox commands (WP7). Each refuses before any config, credential
+// or network access while the host is qualification-gated.
+#[tauri::command]
+#[specta::specta]
+async fn cloud_mailbox_connections(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<cloud::mailbox::ipc::MailboxConnectionView>, AppError> {
+    cloud::mailbox::ipc::connections_command(&state).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn cloud_mailbox_status(
+    state: State<'_, Arc<CoreRuntime>>,
+    thread_id: String,
+) -> Result<cloud::mailbox::ipc::MailboxStatusView, AppError> {
+    cloud::mailbox::ipc::status_command(&state, &thread_id).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn cloud_mailbox_answer(
+    state: State<'_, Arc<CoreRuntime>>,
+    thread_id: String,
+    message_id: String,
+    body: String,
+) -> Result<cloud::mailbox::ipc::MailboxOutboxRowView, AppError> {
+    cloud::mailbox::ipc::reply_command(&state, &thread_id, &message_id, cloud::scoped_runtime::OperatorReply::Answer(body))
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn cloud_mailbox_decline(
+    state: State<'_, Arc<CoreRuntime>>,
+    thread_id: String,
+    message_id: String,
+    reason: String,
+) -> Result<cloud::mailbox::ipc::MailboxOutboxRowView, AppError> {
+    cloud::mailbox::ipc::reply_command(&state, &thread_id, &message_id, cloud::scoped_runtime::OperatorReply::Decline(reason))
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn cloud_mailbox_sign_out(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<cloud::mailbox::ipc::MailboxSignOutView, AppError> {
+    cloud::mailbox::ipc::sign_out_command(&state).await.map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -5503,6 +5557,31 @@ fn terminal_close(
 }
 
 pub fn run() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(stderr_sink::MODE)) {
+        let result = (|| -> std::io::Result<()> {
+            let path = std::env::args_os().nth(2).ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::InvalidInput, "stderr sink path missing"))?;
+            let mut options = std::fs::OpenOptions::new();
+            options.create(true).write(true).truncate(true);
+            #[cfg(unix)] {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let output = options.open(path)?;
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                output.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            stderr_sink::drain(std::io::stdin().lock(), output, |text| {
+                diagnostics::redact::redact_text(&codex_oauth::redact_text(text))
+            })
+        })();
+        if result.is_err() {
+            // Even a log-open failure must leave the persistent server a reader.
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+        }
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
     if crate::visuals::mermaid::hidden_mode_requested() {
         std::process::exit(crate::visuals::mermaid::run_hidden_mode());
     }

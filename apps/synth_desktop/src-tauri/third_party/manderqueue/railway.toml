@@ -1,0 +1,8 @@
+# Shared by mq-server. Worker startCommand is set per-service in Railway
+# (mq-server worker) — do not put healthcheck here or the worker fails.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"

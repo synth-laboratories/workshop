@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { SynthBackendSettings } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
 import { publicError } from "../runtime/publicError";
+import { CloudMailboxPanel } from "./CloudMailboxPanel";
 
 type PairState =
 	| { kind: "idle" }
@@ -217,6 +218,7 @@ export function BackendSettings() {
 				<div><span>OpenRouter</span><code>{settings?.openrouterApiKeyConfigured ? `${settings.openrouterApiKeyFingerprint} · ${settings.openrouterApiKeySource}` : "Set OPENROUTER_API_KEY in the secrets env file"}</code></div>
 			</div>
 			<div className="backend-settings-actions"><span role="status" className="finetune-meta">{status}</span><button type="button" className="settings-secondary-btn" disabled={saving || !backendUrl.trim() || !envFile.trim()} onClick={() => void save()}>{saving ? "Saving…" : "Save and reconnect"}</button></div>
+			<CloudMailboxPanel />
 		</div>
 	);
 }

@@ -84,6 +84,7 @@ test("allowlist matches the advertised sourced kit", () => {
     "react-dom",
     "@synth/visuals/chrome",
     "@synth/visuals/chrome/useLiveEvalStream",
+    "@synth/visuals/components/agent_trace.v1",
     "@synth/visuals/components/event_stream.v1",
     "@synth/visuals/components/detail_modal.v1",
     "@synth/visuals/components/metrics.v1",

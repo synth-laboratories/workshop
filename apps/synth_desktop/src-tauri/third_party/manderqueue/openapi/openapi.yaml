@@ -1,0 +1,669 @@
+openapi: 3.1.0
+info:
+  title: Manderqueue API
+  version: 0.1.0
+  description: Permissioned messaging fabric (threads, membership, publish/tail). Transport only.
+servers:
+  - url: http://127.0.0.1:8088
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      security: []
+      summary: Liveness
+      operationId: health
+      responses:
+        "200":
+          description: OK
+  /ready:
+    get:
+      security: []
+      summary: Readiness (Postgres ping when configured)
+      operationId: ready
+      responses:
+        "200":
+          description: Ready
+        "503":
+          description: Not ready
+  /v1/threads:
+    post:
+      summary: Create thread
+      operationId: createThread
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateThread"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Thread"
+        "401":
+          description: Unauthorized
+        "400":
+          description: Invalid
+    get:
+      summary: List threads in the caller's org workspace (membership-filtered)
+      operationId: listThreads
+      parameters:
+        - name: org_id
+          in: query
+          required: false
+          description: Deprecated. Must match credential org if set; otherwise ignored.
+          schema:
+            type: string
+        - name: scope_kind
+          in: query
+          schema:
+            $ref: "#/components/schemas/ScopeKind"
+        - name: scope_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Thread"
+        "403":
+          description: org_workspace_mismatch
+  /v1/threads/ensure:
+    post:
+      summary: Ensure thread (idempotent create; requires idempotency_key)
+      description: >
+        Safe for SMR/Intern binding races. Retries with the same org-scoped
+        idempotency_key return the same thread_id. Does not use scope=run —
+        callers own run_id→thread_id outside MQ.
+      operationId: ensureThread
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateThread"
+      responses:
+        "200":
+          description: Ensured (created or existing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Thread"
+        "400":
+          description: idempotency_key_required_for_ensure or invalid
+        "401":
+          description: Unauthorized
+        "403":
+          description: Forbidden
+  /v1/threads/{thread_id}:
+    get:
+      summary: Get thread
+      operationId: getThread
+      parameters:
+        - $ref: "#/components/parameters/ThreadId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Thread"
+        "403":
+          description: Forbidden
+        "404":
+          description: Not found
+  /v1/threads/{thread_id}/participants:
+    post:
+      summary: Invite participant (role required; caps derived)
+      operationId: addParticipant
+      parameters:
+        - $ref: "#/components/parameters/ThreadId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Participant"
+      responses:
+        "204":
+          description: Added
+        "403":
+          description: Forbidden
+  /v1/threads/{thread_id}/participants/{principal_kind}/{principal_id}:
+    patch:
+      summary: Change participant role (invite required; cannot set owner)
+      operationId: setParticipantRole
+      parameters:
+        - $ref: "#/components/parameters/ThreadId"
+        - name: principal_kind
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/PrincipalKind"
+        - name: principal_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetParticipantRole"
+      responses:
+        "204":
+          description: Updated
+        "403":
+          description: Forbidden
+        "404":
+          description: Not found
+  /v1/threads/{thread_id}/messages:
+    post:
+      summary: Publish message
+      operationId: publishMessage
+      parameters:
+        - $ref: "#/components/parameters/ThreadId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublishMessage"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+    get:
+      summary: Read messages after cursor
+      operationId: readMessages
+      parameters:
+        - $ref: "#/components/parameters/ThreadId"
+        - name: after_seq
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Message"
+  /v1/threads/{thread_id}/events:
+    get:
+      summary: SSE wake stream for a thread
+      description: >-
+        Revalidates token and thread read membership before events and every five
+        seconds while idle. Authorization failure emits revoked and closes.
+        Broadcast lag emits resync; clients must catch up from their durable
+        message cursor. Wakes are hints, not durable delivery receipts.
+      operationId: threadEvents
+      parameters:
+        - $ref: "#/components/parameters/ThreadId"
+      responses:
+        "200":
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /v1/threads/{thread_id}/history:
+    get:
+      summary: Cursor page with explicit grant-history skips
+      description: >-
+        Use for catch-up. effective_after_seq = max(after_seq, history_after_seq).
+        skipped is non-null only when the request asked for sequences hidden by
+        the grant; messages are contiguous from effective_after_seq + 1. Store
+        next_after_seq as the durable cursor. See docs/WORKSHOP_GRANT_CONTRACT.md §8.
+      operationId: readHistory
+      parameters:
+        - $ref: "#/components/parameters/ThreadId"
+        - name: after_seq
+          in: query
+          schema: { type: integer, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistoryPage"
+  /v1/enrollments:
+    post:
+      summary: Enroll a device session (advances incarnation on every call)
+      description: Unrestricted human owner credential only. Backend-called.
+      operationId: enroll
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_id, session_id]
+              properties:
+                device_id: { type: string, maxLength: 128 }
+                session_id: { type: string, maxLength: 128 }
+                label: { type: string, maxLength: 200 }
+      responses:
+        "201":
+          description: Enrollment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Enrollment" }
+    get:
+      summary: List the caller's enrollments
+      operationId: listEnrollments
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Enrollment" }
+  /v1/enrollments/{enrollment_id}:
+    get:
+      summary: Get one enrollment (owner only; others see 404)
+      operationId: getEnrollment
+      parameters:
+        - { name: enrollment_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Enrollment" }
+  /v1/grants:
+    post:
+      summary: Create a thread grant for an owned enrollment
+      description: >-
+        Caller must own the enrollment and hold invite on the thread. Adds the
+        enrollment principal as member/observer if absent. One grant per
+        (thread, enrollment). history_after_seq defaults to the current head.
+      operationId: createGrant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [thread_id, enrollment_id, operations, ttl_seconds]
+              properties:
+                thread_id: { type: string, format: uuid }
+                enrollment_id: { type: string, format: uuid }
+                operations: { type: array, items: { type: string, enum: [read, publish] } }
+                ttl_seconds: { type: integer, minimum: 60, maximum: 2592000 }
+                history_after_seq: { type: integer, minimum: 0 }
+      responses:
+        "201":
+          description: Grant
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Grant" }
+    get:
+      summary: List grants visible to the caller
+      operationId: listGrants
+      parameters:
+        - { name: enrollment_id, in: query, schema: { type: string, format: uuid } }
+        - { name: thread_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Grant" }
+  /v1/grants/{grant_id}:
+    get:
+      summary: Get a grant (enrollment owner or thread invite holder)
+      operationId: getGrant
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Grant" }
+  /v1/grants/{grant_id}/revoke:
+    post:
+      summary: Revoke (increments generation, dead-letters pending delivery)
+      operationId: revokeGrant
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Grant" }
+  /v1/grants/{grant_id}/restore:
+    post:
+      summary: Restore a revoked, unexpired grant (generation unchanged)
+      operationId: restoreGrant
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Grant" }
+  /v1/grants/{grant_id}/renew:
+    post:
+      summary: Extend grant expiry (refused after revoke)
+      operationId: renewGrant
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ttl_seconds]
+              properties:
+                ttl_seconds: { type: integer, minimum: 60, maximum: 2592000 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Grant" }
+  /v1/grants/{grant_id}/issuance:
+    post:
+      summary: Live issuance authority for the backend credential issuer
+      description: Enrollment owner only; incarnation must be current. Not a credential.
+      operationId: grantIssuance
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enrollment_id, incarnation]
+              properties:
+                enrollment_id: { type: string, format: uuid }
+                incarnation: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  grant: { $ref: "#/components/schemas/Grant" }
+                  not_after: { type: string, format: date-time }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "Dev: Bearer {kind}:{org_id}:{id}"
+  parameters:
+    ThreadId:
+      name: thread_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    GrantId:
+      name: grant_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    PrincipalRef:
+      type: object
+      required: [kind, id, org_id]
+      properties:
+        kind: { $ref: "#/components/schemas/PrincipalKind" }
+        id: { type: string }
+        org_id: { type: string }
+    Enrollment:
+      type: object
+      properties:
+        enrollment_id: { type: string, format: uuid }
+        org_id: { type: string }
+        owner: { $ref: "#/components/schemas/PrincipalRef" }
+        device_id: { type: string }
+        session_id: { type: string }
+        label: { type: string, nullable: true }
+        principal:
+          $ref: "#/components/schemas/PrincipalRef"
+          description: Server-derived actor enrollment:<enrollment_id>; never caller-chosen.
+        incarnation: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Grant:
+      type: object
+      properties:
+        grant_id: { type: string, format: uuid }
+        org_id: { type: string }
+        thread_id: { type: string, format: uuid }
+        enrollment_id: { type: string, format: uuid }
+        principal: { $ref: "#/components/schemas/PrincipalRef" }
+        operations: { type: array, items: { type: string, enum: [read, publish] } }
+        history_after_seq: { type: integer, minimum: 0 }
+        expires_at: { type: string, format: date-time }
+        incarnation: { type: integer, description: Current enrollment incarnation (live). }
+        generation: { type: integer, description: Increments on revoke; restore/renew never change it. }
+        status: { type: string, enum: [active, revoked] }
+        state: { type: string, enum: [active, revoked, expired] }
+        granted_by: { $ref: "#/components/schemas/PrincipalRef" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    HistoryPage:
+      type: object
+      properties:
+        thread_id: { type: string, format: uuid }
+        requested_after_seq: { type: integer }
+        history_after_seq: { type: integer }
+        effective_after_seq: { type: integer }
+        skipped:
+          type: object
+          nullable: true
+          properties:
+            after_seq: { type: integer }
+            through_seq: { type: integer }
+            reason: { type: string, enum: [before_grant_history] }
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/Message" }
+        next_after_seq: { type: integer }
+        has_more: { type: boolean }
+    ScopeKind:
+      type: string
+      description: Soft list/filter labels only. run is intentionally absent — SMR owns run_id→thread_id.
+      enum: [org, factory, effort, project, sync_session, async_runtime]
+    PrincipalKind:
+      type: string
+      enum: [human, intern_sync, intern_async, actor, system]
+    Cap:
+      type: string
+      enum: [read, publish, invite, close]
+    Role:
+      type: string
+      enum: [owner, moderator, member, agent, observer, revoked]
+    MessageKind:
+      type: string
+      enum: [ask, answer, steer, notice, actor_runtime, blocker, handoff_ping]
+    ScopeBinding:
+      type: object
+      required: [kind, id]
+      properties:
+        kind:
+          $ref: "#/components/schemas/ScopeKind"
+        id:
+          type: string
+    Principal:
+      type: object
+      required: [kind, id, org_id]
+      properties:
+        kind:
+          $ref: "#/components/schemas/PrincipalKind"
+        id:
+          type: string
+        org_id:
+          type: string
+    Participant:
+      type: object
+      required: [principal, role]
+      properties:
+        principal:
+          $ref: "#/components/schemas/Principal"
+        role:
+          $ref: "#/components/schemas/Role"
+        caps:
+          type: array
+          description: Derived from role; optional on write
+          items:
+            $ref: "#/components/schemas/Cap"
+        grant_generation:
+          type: integer
+          minimum: 0
+          readOnly: true
+          description: Server-owned revocation generation; supplied values are ignored
+    SetParticipantRole:
+      type: object
+      required: [role]
+      properties:
+        role:
+          $ref: "#/components/schemas/Role"
+    CreateThread:
+      type: object
+      required: [org_id, scope, participants]
+      properties:
+        org_id:
+          type: string
+        scope:
+          $ref: "#/components/schemas/ScopeBinding"
+        title:
+          type: string
+          nullable: true
+        participants:
+          type: array
+          items:
+            $ref: "#/components/schemas/Participant"
+        idempotency_key:
+          type: string
+          nullable: true
+          description: Org-scoped ensure key; retries return the same thread
+    Thread:
+      type: object
+      required: [thread_id, org_id, scope, created_at]
+      properties:
+        thread_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+        scope:
+          $ref: "#/components/schemas/ScopeBinding"
+        title:
+          type: string
+          nullable: true
+        idempotency_key:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    PublishMessage:
+      type: object
+      required: [kind, body]
+      properties:
+        kind:
+          $ref: "#/components/schemas/MessageKind"
+        body:
+          type: string
+        payload:
+          type: object
+        idempotency_key:
+          type: string
+          nullable: true
+        correlation_id:
+          type: string
+          nullable: true
+        parent_message_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Parent message for Intern reply trees
+        causation_id:
+          type: string
+          nullable: true
+          description: Opaque causation token (e.g. Intern interaction id)
+        recipients:
+          type: array
+          description: >
+            Directed delivery. If empty, fan-out to all other Read members.
+            If set, only listed members get delivery jobs (must be Read members).
+          items:
+            $ref: "#/components/schemas/Principal"
+    Message:
+      type: object
+      required: [message_id, thread_id, seq, kind, body, sender, created_at]
+      properties:
+        message_id:
+          type: string
+          format: uuid
+        thread_id:
+          type: string
+          format: uuid
+        seq:
+          type: integer
+        kind:
+          $ref: "#/components/schemas/MessageKind"
+        body:
+          type: string
+        payload:
+          type: object
+        sender:
+          $ref: "#/components/schemas/Principal"
+        idempotency_key:
+          type: string
+          nullable: true
+        correlation_id:
+          type: string
+          nullable: true
+        parent_message_id:
+          type: string
+          format: uuid
+          nullable: true
+        causation_id:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time

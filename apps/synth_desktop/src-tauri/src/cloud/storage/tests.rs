@@ -22,7 +22,7 @@ fn setup() -> (TempDir, Arc<Database>, CloudStore, ScopeLease, String) {
     let storage = Storage::open(dir.path()).unwrap();
     let db = storage.database().clone();
     db.transaction(|conn| {
-        conn.execute_batch(MIGRATION_CANDIDATE)?;
+        conn.execute_batch(SCHEMA)?;
         Ok(())
     })
     .unwrap();
@@ -54,19 +54,132 @@ fn event(id: &str, seq: u64) -> RemoteEvent {
 }
 
 #[test]
-fn schema_is_not_automatically_installed_and_upgrade_rolls_back() {
+fn local_mq_conversation_preserves_execution_identity_and_account_fencing() {
+    let (_dir, db, store, lease, _) = setup();
+    let target = crate::domain::RuntimeTarget::RemoteRuntime {
+        model: "fixture/model".into(), adapter: None, target_id: None,
+    };
+    let session = store.create_local_mq_conversation(&lease, "local-thread", "Local", &target).unwrap();
+    assert_eq!(store.create_local_mq_conversation(&lease, "local-thread", "Retry", &target).unwrap(), session);
+    db.transaction(|conn| {
+        let (kind, substrate, remote): (String, String, Option<String>) = conn.query_row(
+            "SELECT kind,runtime_target_kind,remote_id FROM sessions WHERE id=?1", [&session],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(kind, "codex");
+        assert_eq!(substrate, "remote");
+        assert_eq!(remote, None);
+        Ok(())
+    }).unwrap();
+    let mq = Stream { adapter: Adapter::Mq, external_id: "local-thread".into() };
+    let checkpoint = Checkpoint::Mq { subscription_id: "subscription".into(), sequence: 1 };
+    store.commit_page(&lease, &mq, None, &checkpoint, &[event("local-message", 1)]).unwrap();
+    store.accept_mq_input(&lease, &mq, "local-message").unwrap();
+    assert_eq!(store.mq_input_commands(&lease, &mq, 0, 10).unwrap().len(), 1);
+    assert!(store.create_local_mq_conversation(&lease, "local-thread", "Conflict", &crate::domain::RuntimeTarget::local_laguna()).is_err());
+    let other = store.activate_verified(&identity("b")).unwrap();
+    assert!(store.create_local_mq_conversation(&lease, "stale", "Stale", &target).is_err());
+    assert!(store.authorize_session(&other, &session).is_err());
+    let other_session = store.create_local_mq_conversation(&other, "local-thread", "Other", &target).unwrap();
+    assert_ne!(other_session, session);
+    assert!(store.pending_mq_inputs(&other, &mq, 10).unwrap().is_empty());
+    let intern = crate::domain::RuntimeTarget::InternRuntime { mode: crate::domain::InternMode::Sync, binding: None };
+    assert!(store.create_local_mq_conversation(&other, "wrong-kind", "Intern", &intern).is_err());
+    db.transaction(|conn| {
+        conn.execute_batch("CREATE TRIGGER fail_local_binding BEFORE INSERT ON cloud_session_bindings BEGIN SELECT RAISE(ABORT,'fixture binding failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    assert!(store.create_local_mq_conversation(&other, "failed-thread", "Rollback fixture", &target).is_err());
+    db.transaction(|conn| {
+        let count: i64 = conn.query_row("SELECT count(*) FROM sessions WHERE title='Rollback fixture'", [], |row| row.get(0))?;
+        assert_eq!(count, 0);
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
+fn mq_acceptance_retains_pending_inputs_atomically_across_restart_and_account_switch() {
+    let (_dir, db, store, lease, session) = setup();
+    let mq = Stream { adapter: Adapter::Mq, external_id: "thread".into() };
+    store.bind_session(&lease, &mq, &session).unwrap();
+    let checkpoint = Checkpoint::Mq { subscription_id: "subscription".into(), sequence: 1 };
+    store.commit_page(&lease, &mq, None, &checkpoint, &[event("message", 1)]).unwrap();
+    let pending = store.pending_mq_inputs(&lease, &mq, 200).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].message_id, "message");
+    store.commit_page(&lease, &mq, Some(&checkpoint), &checkpoint, &[event("message", 1)]).unwrap();
+    assert_eq!(store.pending_mq_inputs(&lease, &mq, 200).unwrap(), pending);
+    let invalid = Checkpoint::Mq { subscription_id: "subscription".into(), sequence: 3 };
+    assert!(store.commit_page(&lease, &mq, Some(&checkpoint), &invalid, &[event("gap", 3)]).is_err());
+    assert_eq!(store.checkpoint(&lease, &mq).unwrap(), Some(checkpoint.clone()));
+    assert_eq!(store.pending_mq_inputs(&lease, &mq, 200).unwrap(), pending);
+    db.transaction(|conn| {
+        conn.execute_batch("CREATE TRIGGER reject_mq_input BEFORE INSERT ON cloud_mq_pending_inputs BEGIN SELECT RAISE(ABORT,'fixture inbox disk failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    let second = Checkpoint::Mq { subscription_id: "subscription".into(), sequence: 2 };
+    assert!(store.commit_page(&lease, &mq, Some(&checkpoint), &second, &[event("second", 2)]).is_err());
+    assert_eq!(store.event_payloads(&lease, &mq, 200).unwrap().len(), 1);
+    assert_eq!(store.checkpoint(&lease, &mq).unwrap(), Some(checkpoint.clone()));
+    assert_eq!(store.pending_mq_inputs(&lease, &mq, 200).unwrap(), pending);
+    db.transaction(|conn| { conn.execute_batch("DROP TRIGGER reject_mq_input")?; Ok(()) }).unwrap();
+    let reopened = CloudStore::open(db.clone()).unwrap();
+    assert!(reopened.pending_mq_inputs(&lease, &mq, 200).is_err());
+    let renewed = reopened.activate_verified(&identity("a")).unwrap();
+    assert_eq!(reopened.pending_mq_inputs(&renewed, &mq, 200).unwrap(), pending);
+    db.transaction(|conn| {
+        conn.execute_batch("CREATE TRIGGER reject_mq_accept BEFORE UPDATE ON cloud_mq_pending_inputs BEGIN SELECT RAISE(ABORT,'fixture handoff failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    assert!(reopened.accept_mq_input(&renewed, &mq, "message").is_err());
+    db.with_conn(|conn| {
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM command_receipts WHERE kind='mq.input'", [], |row| row.get(0))?;
+        assert_eq!(count, 0);
+        Ok(())
+    }).unwrap();
+    assert_eq!(reopened.pending_mq_inputs(&renewed, &mq, 200).unwrap(), pending);
+    db.transaction(|conn| { conn.execute_batch("DROP TRIGGER reject_mq_accept")?; Ok(()) }).unwrap();
+    let accepted = reopened.accept_mq_input(&renewed, &mq, "message").unwrap();
+    assert!(accepted.event.is_some());
+    assert_eq!(accepted.value.kind, "mq.input");
+    let replay = reopened.accept_mq_input(&renewed, &mq, "message").unwrap();
+    assert_eq!(replay.value.command_id, accepted.value.command_id);
+    assert!(replay.event.is_none());
+    assert!(reopened.pending_mq_inputs(&renewed, &mq, 200).unwrap().is_empty());
+    let restarted = CloudStore::open(db.clone()).unwrap();
+    assert!(restarted.mq_input_commands(&renewed, &mq, 0, 200).is_err());
+    let recovery_lease = restarted.activate_verified(&identity("a")).unwrap();
+    let recovered = restarted.mq_input_commands(&recovery_lease, &mq, 0, 200).unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].0, 1);
+    assert_eq!(recovered[0].1.command_id, accepted.value.command_id);
+    assert_eq!(recovered[0].1.status, "accepted");
+    assert!(restarted.mq_input_commands(&recovery_lease, &mq, 1, 200).unwrap().is_empty());
+    assert!(restarted.mq_input_commands(&recovery_lease, &mq, 0, 201).is_err());
+    assert!(restarted.mq_input_commands(&recovery_lease, &mq, u64::MAX, 200).is_err());
+    let other = reopened.activate_verified(&identity("b")).unwrap();
+    assert!(reopened.pending_mq_inputs(&renewed, &mq, 200).is_err());
+    assert!(reopened.pending_mq_inputs(&other, &mq, 200).is_err());
+    assert!(reopened.accept_mq_input(&renewed, &mq, "message").is_err());
+    assert!(reopened.accept_mq_input(&other, &mq, "message").is_err());
+    assert!(restarted.mq_input_commands(&recovery_lease, &mq, 0, 200).is_err());
+    assert!(restarted.mq_input_commands(&other, &mq, 0, 200).is_err());
+}
+
+#[test]
+fn registered_schema_adopts_no_legacy_rows_and_replay_is_idempotent() {
     let dir = tempdir().unwrap();
     let db = Storage::open(dir.path()).unwrap().database().clone();
-    assert!(CloudStore::open(db.clone()).is_err());
     db.with_conn(|conn| { conn.execute("INSERT INTO sessions(id,title,target_json,status,created_at,updated_at) VALUES('legacy','legacy','{}','ready','now','now')",[])?;Ok(()) }).unwrap();
+    // A failed replay inside a transaction rolls back and leaves the
+    // registered schema intact; replaying the idempotent DDL is a no-op.
     let failed: Result<()> = db.transaction(|conn| {
-        conn.execute_batch(MIGRATION_CANDIDATE)?;
+        conn.execute_batch(SCHEMA)?;
         bail!("simulated upgrade failure")
     });
     assert!(failed.is_err());
-    assert!(CloudStore::open(db.clone()).is_err());
     db.transaction(|conn| {
-        conn.execute_batch(MIGRATION_CANDIDATE)?;
+        conn.execute_batch(SCHEMA)?;
         Ok(())
     })
     .unwrap();

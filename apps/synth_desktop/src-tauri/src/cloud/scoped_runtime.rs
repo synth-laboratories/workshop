@@ -17,6 +17,14 @@ use tokio::sync::{watch, Mutex};
 
 mod dispatch;
 pub use dispatch::ScopedCreation;
+#[cfg_attr(not(feature = "eval-driver"), allow(dead_code))]
+mod mailbox;
+#[cfg_attr(not(feature = "eval-driver"), allow(unused_imports))]
+pub use mailbox::{
+    ArtifactDigest, ConnectRequest, DeviceSignOut, IdentityVerifier, MailboxDeps, MailboxExit, MailboxLoopConfig, MailboxPassReport,
+    MailboxStatus, MailboxSupervisor, OperatorReply, PassBudget, RestrictedExecutor, RestrictedOutcome,
+    RestrictedTurn, TurnBoundary,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
@@ -47,6 +55,11 @@ pub struct ScopedCloudRuntime {
     state: Arc<Mutex<State>>,
     changes: watch::Sender<ScopeView>,
     verification_attempts: watch::Sender<u64>,
+    /// In-memory MQ grant credentials; dropped on every scope reset.
+    mailbox: Arc<Mutex<mailbox::MailboxCache>>,
+    /// Counts deliberate sign-outs (not expiry) so long-running mailbox
+    /// supervisors stop instead of re-verifying into a new session.
+    signouts: watch::Sender<u64>,
 }
 #[derive(Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +82,7 @@ impl ScopedCloudRuntime {
         };
         let (changes, _) = watch::channel(view);
         let (verification_attempts, _) = watch::channel(0);
+        let (signouts, _) = watch::channel(0);
         Self {
             state: Arc::new(Mutex::new(State {
                 store: None,
@@ -78,6 +92,8 @@ impl ScopedCloudRuntime {
             })),
             changes,
             verification_attempts,
+            mailbox: Arc::new(Mutex::new(mailbox::MailboxCache::default())),
+            signouts,
         }
     }
     pub fn subscribe(&self) -> watch::Receiver<ScopeView> {
@@ -88,26 +104,40 @@ impl ScopedCloudRuntime {
         self.expire(&mut state).await?;
         Ok(state.view)
     }
-    // There is intentionally no production activation entry point until the
-    // deployment/profile contract and registered migration are qualified.
+    // The schema is registered (migration 69). The runtime itself stays
+    // gated: only `activate_store` installs a store, and no default boot
+    // path calls it until the deployment/profile contract is qualified.
     #[cfg(test)]
     pub async fn install_fixture(&self, store: CloudStore) -> Result<()> {
+        self.activate_store(store).await
+    }
+    /// Install the registered, schema-verified store. Only an explicitly
+    /// qualified profile (or the eval-driver fixture path) calls this; the
+    /// default CoreRuntime stays `QualificationRequired`. Installing does not
+    /// verify identity, issue grants or start any network task.
+    pub(crate) async fn activate_store(&self, store: CloudStore) -> Result<()> {
         let mut state = self.state.lock().await;
         state.store = Some(store);
-        self.reset(&mut state).await?;
+        self.reset(&mut state, false).await?;
         Ok(())
     }
+    /// Deliberate sign-out: cancels network work, drops credentials and
+    /// permanently fences this account's queued MQ writes.
     pub async fn invalidate(&self) -> Result<ScopeView> {
         let mut state = self.state.lock().await;
-        self.reset(&mut state).await?;
+        self.reset(&mut state, true).await?;
         Ok(state.view)
     }
-    async fn reset(&self, state: &mut State) -> Result<()> {
+    async fn reset(&self, state: &mut State, explicit: bool) -> Result<()> {
         state.attempt = state
             .attempt
             .checked_add(1)
             .context("identity attempt exhausted")?;
         state.active = None;
+        self.mailbox.lock().await.clear();
+        if explicit {
+            self.signouts.send_modify(|count| *count = count.wrapping_add(1));
+        }
         self.verification_attempts.send_replace(state.attempt);
         state.view.generation = state
             .view
@@ -123,9 +153,15 @@ impl ScopedCloudRuntime {
         // coordinator will no longer authorize reads from the old scope.
         self.changes.send_replace(state.view);
         if let Some(store) = state.store.clone() {
-            tokio::task::spawn_blocking(move || store.sign_out())
-                .await
-                .context("join scope invalidation")??;
+            tokio::task::spawn_blocking(move || {
+                if explicit {
+                    store.sign_out_explicit()
+                } else {
+                    store.sign_out()
+                }
+            })
+            .await
+            .context("join scope invalidation")??;
         }
         Ok(())
     }
@@ -135,7 +171,7 @@ impl ScopedCloudRuntime {
             .as_ref()
             .is_some_and(|active| active.until <= Utc::now())
         {
-            self.reset(state).await?;
+            self.reset(state, false).await?;
         }
         Ok(())
     }
@@ -188,7 +224,7 @@ impl ScopedCloudRuntime {
         let (identity, until) = match observed {
             Ok(value) => value,
             Err(_) => {
-                self.reset(&mut state).await?;
+                self.reset(&mut state, false).await?;
                 bail!("cloud identity authority unavailable");
             }
         };
@@ -216,7 +252,7 @@ impl ScopedCloudRuntime {
         let lease = match result {
             Ok(lease) => lease,
             Err(_) => {
-                self.reset(&mut state).await?;
+                self.reset(&mut state, false).await?;
                 bail!("cloud identity activation failed");
             }
         };
@@ -265,7 +301,7 @@ impl ScopedCloudRuntime {
                 match tokio::task::spawn_blocking(move || store.bound_sessions(&lease)).await {
                     Ok(Ok(ids)) => ids.into_iter().collect::<HashSet<_>>(),
                     _ => {
-                        let _ = self.reset(&mut state).await;
+                        let _ = self.reset(&mut state, false).await;
                         HashSet::new()
                     }
                 }
@@ -347,7 +383,7 @@ async fn authorize(store: CloudStore, lease: ScopeLease, session_id: String) -> 
 mod tests {
     use super::*;
     use crate::{
-        cloud::storage::{Adapter, Stream, MIGRATION_CANDIDATE},
+        cloud::storage::{Adapter, Stream, SCHEMA},
         core_runtime::CoreRuntime,
         domain::{RuntimeTarget, SessionCreate, SessionKind, SessionStatus},
         storage::{EventAppend, EventSource},
@@ -362,7 +398,7 @@ mod tests {
         let core = CoreRuntime::open(dir.path()).unwrap();
         let db = core.storage().database().clone();
         db.transaction(|conn| {
-            conn.execute_batch(MIGRATION_CANDIDATE)?;
+            conn.execute_batch(SCHEMA)?;
             Ok(())
         })
         .unwrap();
@@ -395,6 +431,143 @@ mod tests {
             .await
             .unwrap();
         id
+    }
+
+    #[tokio::test]
+    async fn signout_cancels_stalled_mq_http_without_advancing_inbox() {
+        use tokio::io::AsyncReadExt;
+        let (_dir, core, store) = setup().await;
+        let runtime = core.scoped_cloud();
+        let thread = mq_core::ThreadId::new();
+        runtime.create_local_mq_with("https://fixture.invalid", thread.0.to_string(), "MQ".into(),
+            RuntimeTarget::local_laguna(), || async { Ok(observation(2)) }).await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (arrived_tx, arrived_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            assert!(socket.read(&mut buffer).await.unwrap() > 0);
+            arrived_tx.send(()).unwrap();
+            // Keep the peer open until the test tears down the fixture.
+            std::future::pending::<()>().await;
+        });
+        let client = mq_sdk::MqClient::new(format!("http://{address}"), "fixture");
+        let worker = runtime.clone();
+        let request = tokio::spawn(async move {
+            worker.catch_up_mq_with("https://fixture.invalid", thread, "subscription".into(), &client, 1,
+                || async { Ok(observation(2)) }).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), arrived_rx).await.unwrap().unwrap();
+        assert!(!request.is_finished(), "fixture request must still be waiting for HTTP");
+        runtime.invalidate().await.unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), request).await.unwrap().unwrap();
+        assert!(result.is_err());
+        assert_eq!(runtime.view().await.unwrap().availability, Availability::SignedOut);
+        let rows = runtime.pending_mq_with("https://fixture.invalid", thread.0.to_string(), 10,
+            || async { Ok(observation(2)) }).await.unwrap().1;
+        assert!(rows.is_empty());
+        let lease = runtime.state.lock().await.active.as_ref().unwrap().lease.clone();
+        assert!(store.checkpoint(&lease, &Stream { adapter: Adapter::Mq, external_id: thread.0.to_string() }).unwrap().is_none());
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn mq_http_authorization_failure_invalidates_host_scope() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_dir, core, _) = setup().await;
+        let runtime = core.scoped_cloud();
+        let thread = mq_core::ThreadId::new();
+        runtime.create_local_mq_with("https://fixture.invalid", thread.0.to_string(), "MQ".into(),
+            RuntimeTarget::local_laguna(), || async { Ok(observation(2)) }).await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            socket.read(&mut buffer).await.unwrap();
+            socket.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+        });
+        let client = mq_sdk::MqClient::new(format!("http://{address}"), "fixture");
+        assert!(runtime.catch_up_mq_with("https://fixture.invalid", thread, "subscription".into(), &client, 1,
+            || async { Ok(observation(2)) }).await.is_err());
+        server.await.unwrap();
+        assert_eq!(runtime.view().await.unwrap().availability, Availability::SignedOut);
+        assert!(runtime.pending_mq_with("https://fixture.invalid", thread.0.to_string(), 10,
+            || async { Ok(observation(2)) }).await.unwrap().1.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mq_http_catchup_commits_native_inbox_before_advancing() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_dir, core, _) = setup().await;
+        let runtime = core.scoped_cloud();
+        let thread = mq_core::ThreadId::new();
+        runtime.create_local_mq_with("https://fixture.invalid", thread.0.to_string(), "MQ".into(),
+            RuntimeTarget::local_laguna(), || async { Ok(observation(2)) }).await.unwrap();
+        let message = json!({"message_id":uuid::Uuid::new_v4(),"thread_id":thread.0,"seq":1,"kind":"ask",
+            "body":"hello","payload":{},"sender":{"kind":"actor","org_id":uuid::Uuid::from_u128(3),"id":"sender"},
+            "idempotency_key":null,"correlation_id":null,"parent_message_id":null,"causation_id":null,"created_at":Utc::now()});
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut foreign = message.clone();
+            foreign["seq"] = json!(2);
+            foreign["message_id"] = json!(uuid::Uuid::new_v4());
+            foreign["sender"]["org_id"] = json!(uuid::Uuid::from_u128(99));
+            for (cursor, response) in [(0, json!([message]).to_string()), (1, "[]".into()), (1, json!([foreign]).to_string())] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 4096];
+                let count = socket.read(&mut buffer).await.unwrap();
+                let request = std::str::from_utf8(&buffer[..count]).unwrap();
+                assert!(request.contains(&format!("after_seq={cursor}")));
+                assert!(request.to_lowercase().contains("authorization: bearer fixture"));
+                let wire = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response);
+                socket.write_all(wire.as_bytes()).await.unwrap();
+            }
+        });
+        let client = mq_sdk::MqClient::new(format!("http://{address}"), "fixture");
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), runtime.catch_up_mq_with(
+            "https://fixture.invalid", thread, "subscription".into(), &client, 2,
+            || async { Ok(observation(2)) })).await.unwrap().unwrap();
+        assert_eq!(outcome, mq_sdk::CatchUpOutcome::CaughtUp);
+        assert!(runtime.catch_up_mq_with("https://fixture.invalid", thread, "subscription".into(), &client, 1,
+            || async { Ok(observation(2)) }).await.is_err());
+        server.await.unwrap();
+        let rows = runtime.pending_mq_with("https://fixture.invalid", thread.0.to_string(), 10,
+            || async { Ok(observation(2)) }).await.unwrap().1;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].sequence, 1);
+    }
+
+    #[tokio::test]
+    async fn local_mq_binding_requires_fresh_identity_and_separates_accounts() {
+        let (_dir, core, store) = setup().await;
+        let runtime = core.scoped_cloud();
+        let (_, first) = runtime.create_local_mq_with("https://fixture.invalid", "thread".into(),
+            "A".into(), RuntimeTarget::local_laguna(), || async { Ok(observation(2)) }).await.unwrap();
+        let (_, replay) = runtime.create_local_mq_with("https://fixture.invalid", "thread".into(),
+            "A".into(), RuntimeTarget::local_laguna(), || async { Ok(observation(2)) }).await.unwrap();
+        assert_eq!(first, replay);
+        let lease = runtime.state.lock().await.active.as_ref().unwrap().lease.clone();
+        let stream = Stream { adapter: Adapter::Mq, external_id: "thread".into() };
+        store.commit_page(&lease, &stream, None,
+            &crate::cloud::storage::Checkpoint::Mq { subscription_id: "subscription".into(), sequence: 1 },
+            &[crate::cloud::storage::RemoteEvent { id: "message".into(), kind: "agent_message".into(), payload: json!({"body":"hello"}), sequence: Some(1), generation: None }]).unwrap();
+        assert_eq!(runtime.pending_mq_with("https://fixture.invalid", "thread".into(), 10,
+            || async { Ok(observation(2)) }).await.unwrap().1.len(), 1);
+        assert!(runtime.accept_mq_with("https://fixture.invalid", "thread".into(), "message".into(),
+            || async { Ok(observation(5)) }).await.is_err());
+        runtime.accept_mq_with("https://fixture.invalid", "thread".into(), "message".into(),
+            || async { Ok(observation(2)) }).await.unwrap();
+        assert!(runtime.pending_mq_with("https://fixture.invalid", "thread".into(), 10,
+            || async { Ok(observation(2)) }).await.unwrap().1.is_empty());
+        assert!(runtime.create_local_mq_with("https://fixture.invalid", "denied".into(),
+            "Denied".into(), RuntimeTarget::local_laguna(), || async { anyhow::bail!("revoked identity") }).await.is_err());
+        let (_, other) = runtime.create_local_mq_with("https://fixture.invalid", "thread".into(),
+            "B".into(), RuntimeTarget::local_laguna(), || async { Ok(observation(5)) }).await.unwrap();
+        assert_ne!(first, other);
     }
 
     fn creation_plan() -> crate::cloud::storage::CreationIntent {
@@ -740,7 +913,13 @@ mod tests {
             core.scoped_cloud().view().await.unwrap().availability,
             Availability::QualificationRequired
         );
-        assert!(CloudStore::open(core.storage().database().clone()).is_err());
+        // The schema is a registered migration now, so the store opens; the
+        // host runtime still stays gated until a store is explicitly installed.
+        assert!(CloudStore::open(core.storage().database().clone()).is_ok());
+        assert_eq!(
+            core.scoped_cloud().view().await.unwrap().availability,
+            Availability::QualificationRequired
+        );
     }
     #[tokio::test]
     async fn legacy_cloud_rows_cannot_crowd_local_history_out_before_filtering() {

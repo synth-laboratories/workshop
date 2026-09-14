@@ -1,0 +1,1 @@
+{"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "T5inKc6MRzxZ3hFf7pJZcHEDuaw0amxX3LRCafV1HW8", "kid": "fixture-k1", "alg": "EdDSA", "use": "sig"}]}

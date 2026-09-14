@@ -918,7 +918,7 @@ fn transition_run(
     })
 }
 
-fn accept_command(
+pub(crate) fn accept_command(
     conn: &Connection,
     input: CommandReceiptInput,
 ) -> Result<DomainMutation<CommandReceiptRecord>> {
@@ -1064,7 +1064,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {
     })
 }
 
-fn load_receipt(conn: &Connection, id: &str) -> rusqlite::Result<CommandReceiptRecord> {
+pub(crate) fn load_receipt(conn: &Connection, id: &str) -> rusqlite::Result<CommandReceiptRecord> {
     conn.query_row(
         "SELECT command_id, session_id, run_id, source, kind, status, request_json,
                 response_json, remote_cursor, created_at, updated_at

@@ -131,6 +131,8 @@ impl SidecarConfig {
 #[derive(Default)]
 struct Inner {
     child: Option<Child>,
+    #[cfg(feature = "eval-driver")]
+    binary_proof: Option<serde_json::Value>,
     state: Option<SidecarState>,
     url: Option<String>,
     attempt: usize,
@@ -164,6 +166,45 @@ impl VictoriaLogsSidecar {
 
     pub async fn url(&self) -> Option<String> {
         self.inner.lock().await.url.clone()
+    }
+
+    /// Read-only acceptance evidence from the supervised child, not a fresh
+    /// binary lookup that could report a different executable after launch.
+    #[cfg(feature = "eval-driver")]
+    pub async fn acceptance_status(&self) -> serde_json::Value {
+        let (state, pid, url, proof) = {
+            let mut inner = self.inner.lock().await;
+            let pid = inner.child.as_mut().and_then(|child| match child.try_wait() {
+                Ok(None) => child.id(),
+                _ => None,
+            });
+            (inner.state.clone().unwrap_or(SidecarState::Stopped), pid,
+                inner.url.clone(), inner.binary_proof.clone())
+        };
+        let healthy = if pid.is_some() && matches!(state, SidecarState::Ready) {
+            match url.clone().and_then(|url| super::victorialogs::VictoriaLogsClient::new(url).ok()) {
+                Some(client) => client.healthy().await,
+                None => false,
+            }
+        } else { false };
+        // A stop/restart may race the asynchronous probe. Never combine an old
+        // launch identity with a replacement listener's successful health.
+        let healthy = if healthy {
+            let mut inner = self.inner.lock().await;
+            let current_pid = inner.child.as_mut().and_then(|child| match child.try_wait() {
+                Ok(None) => child.id(),
+                _ => None,
+            });
+            current_pid == pid && inner.url == url && inner.binary_proof == proof
+                && matches!(inner.state, Some(SidecarState::Ready))
+        } else { false };
+        let mut result = proof.unwrap_or_else(|| json!({
+            "source": null, "executableDigest": null, "dataRootDigest": null
+        }));
+        result["ready"] = json!(healthy);
+        result["state"] = json!(state.label());
+        result["processId"] = json!(pid);
+        result
     }
 
     /// Start the sidecar, or record precisely why it is degraded.
@@ -213,6 +254,13 @@ impl VictoriaLogsSidecar {
             },
         };
         let url = format!("http://127.0.0.1:{port}");
+        #[cfg(feature = "eval-driver")]
+        let binary_proof = {
+            let binary = binary.clone();
+            let root = self.config.root.clone();
+            tokio::task::spawn_blocking(move || binary_acceptance_proof(&binary, &root))
+                .await.ok().and_then(Result::ok)
+        };
         let child = match self.spawn_process(&binary, port).await {
             Ok(child) => child,
             Err(error) => {
@@ -228,6 +276,8 @@ impl VictoriaLogsSidecar {
         {
             let mut inner = self.inner.lock().await;
             inner.child = Some(child);
+            #[cfg(feature = "eval-driver")]
+            { inner.binary_proof = binary_proof; }
             inner.url = Some(url.clone());
         }
 
@@ -455,25 +505,69 @@ impl crate::services::ManagedService for VictoriaLogsSidecar {
 /// Find the bundled executable.
 ///
 /// Order: explicit override, then the packaged `Contents/Resources` layout,
-/// then the development checkout. A missing binary is not an error here — the
-/// caller turns `None` into `degraded`.
+/// then (unpackaged builds only) the development checkout. A missing binary
+/// is not an error here — the caller turns `None` into `degraded`.
 pub fn locate_binary() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os(BINARY_ENV) {
-        let path = PathBuf::from(path);
-        return is_executable(&path).then_some(path);
-    }
-    for root in resource_roots() {
-        let candidate = root.join(BUNDLED_RELATIVE_PATH);
-        if is_executable(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
+    locate_binary_from(
+        std::env::var_os(BINARY_ENV).map(PathBuf::from),
+        std::env::current_exe().ok(),
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    )
 }
 
-fn resource_roots() -> Vec<PathBuf> {
+#[cfg(feature = "eval-driver")]
+fn binary_acceptance_proof(binary: &Path, root: &Path) -> Result<serde_json::Value> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(binary)?;
+    let mut digest = Sha256::new();
+    std::io::copy(&mut file, &mut digest)?;
+    let executable = std::env::current_exe()?;
+    let source = if std::env::var_os(BINARY_ENV).is_some() {
+        "override"
+    } else if is_packaged_bundle(&executable) {
+        let expected = executable.parent().and_then(Path::parent)
+            .context("packaged executable parent")?
+            .join("Resources").join(BUNDLED_RELATIVE_PATH);
+        if binary.canonicalize()? == expected.canonicalize()? { "bundled" } else { "development" }
+    } else { "development" };
+    Ok(json!({
+        "source": source,
+        "executableDigest": format!("{:x}", digest.finalize()),
+        "dataRootDigest": format!("{:x}", Sha256::digest(root.canonicalize()?.as_os_str().as_encoded_bytes())),
+    }))
+}
+
+/// Resolution without process state, so the packaged layout is testable.
+pub(crate) fn locate_binary_from(
+    override_path: Option<PathBuf>,
+    executable: Option<PathBuf>,
+    manifest_dir: &Path,
+) -> Option<PathBuf> {
+    if let Some(path) = override_path {
+        return is_executable(&path).then_some(path);
+    }
+    resource_roots(executable.as_deref(), manifest_dir)
+        .into_iter()
+        .map(|root| root.join(BUNDLED_RELATIVE_PATH))
+        .find(|candidate| is_executable(candidate))
+}
+
+/// `…/X.app/Contents/MacOS/<exe>`: a packaged bundle must carry its own
+/// index binary. The compile-time checkout path is never consulted there, so
+/// a bundle missing the resource fails the same way on every machine instead
+/// of only working on the machine that built it.
+fn is_packaged_bundle(executable: &Path) -> bool {
+    let dir = executable.parent();
+    dir.and_then(Path::file_name).is_some_and(|name| name == "MacOS")
+        && dir
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "Contents")
+}
+
+fn resource_roots(executable: Option<&Path>, manifest_dir: &Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    if let Ok(executable) = std::env::current_exe() {
+    if let Some(executable) = executable {
         if let Some(dir) = executable.parent() {
             roots.push(dir.to_owned());
             roots.push(dir.join("Resources"));
@@ -483,10 +577,12 @@ fn resource_roots() -> Vec<PathBuf> {
                 roots.push(parent.join("resources"));
             }
         }
+        if is_packaged_bundle(executable) {
+            return roots;
+        }
     }
     // Development checkout: src-tauri -> synth_desktop -> apps -> workshop.
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if let Some(workshop) = manifest
+    if let Some(workshop) = manifest_dir
         .parent()
         .and_then(Path::parent)
         .and_then(Path::parent)
@@ -625,8 +721,12 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Serializes tests that set the process-wide binary override.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[tokio::test]
     async fn a_missing_binary_is_degraded_and_never_an_error() {
+        let _env = ENV_LOCK.lock().await;
         let dir = tempdir().unwrap();
         std::env::set_var(BINARY_ENV, dir.path().join("does-not-exist"));
         let sidecar = VictoriaLogsSidecar::new(SidecarConfig::for_root(dir.path()));
@@ -638,6 +738,7 @@ mod tests {
 
     #[tokio::test]
     async fn degraded_state_is_written_to_the_descriptor() {
+        let _env = ENV_LOCK.lock().await;
         let dir = tempdir().unwrap();
         std::env::set_var(BINARY_ENV, dir.path().join("absent"));
         let sidecar = VictoriaLogsSidecar::new(SidecarConfig::for_root(dir.path()));
@@ -719,10 +820,158 @@ mod tests {
         assert!(RESTART_BACKOFF.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
+    #[cfg(feature = "eval-driver")]
+    #[tokio::test]
+    async fn acceptance_never_reports_ready_without_a_supervised_live_child() {
+        let dir = tempdir().unwrap();
+        let sidecar = VictoriaLogsSidecar::new(SidecarConfig::for_root(dir.path()));
+        let stopped = sidecar.acceptance_status().await;
+        assert_eq!(stopped["ready"], false);
+        assert!(stopped["executableDigest"].is_null());
+        sidecar.inner.lock().await.state = Some(SidecarState::Ready);
+        assert_eq!(sidecar.acceptance_status().await["ready"], false);
+    }
+
+    #[cfg(feature = "eval-driver")]
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn acceptance_rechecks_child_after_the_health_probe() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempdir().unwrap();
+        let sidecar = VictoriaLogsSidecar::new(SidecarConfig::for_root(dir.path()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        {
+            let mut inner = sidecar.inner.lock().await;
+            let mut child = Command::new("/bin/sleep");
+            isolate_process_group(&mut child);
+            inner.child = Some(child.arg("30").kill_on_drop(true).spawn().unwrap());
+            inner.state = Some(SidecarState::Ready);
+            inner.url = Some(format!("http://{}", listener.local_addr().unwrap()));
+        }
+        let observing = sidecar.clone();
+        let observation = tokio::spawn(async move { observing.acceptance_status().await });
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
+        let mut request = [0u8; 4096];
+        socket.read(&mut request).await.unwrap();
+        sidecar.stop().await.unwrap();
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+        assert_eq!(observation.await.unwrap()["ready"], false);
+    }
+
+    #[cfg(feature = "eval-driver")]
+    #[test]
+    fn acceptance_identity_is_content_bound_and_does_not_expose_paths() {
+        use sha2::{Digest, Sha256};
+        let dir = tempdir().unwrap();
+        let binary = dir.path().join("binary");
+        std::fs::write(&binary, b"fixture binary bytes").unwrap();
+        let proof = binary_acceptance_proof(&binary, dir.path()).unwrap();
+        assert_eq!(proof["executableDigest"], format!("{:x}", Sha256::digest(b"fixture binary bytes")));
+        assert_eq!(proof["dataRootDigest"], format!("{:x}", Sha256::digest(dir.path().canonicalize().unwrap().as_os_str().as_encoded_bytes())));
+        assert!(!proof.to_string().contains(dir.path().to_str().unwrap()));
+        std::fs::write(&binary, b"changed").unwrap();
+        assert_ne!(proof["executableDigest"], binary_acceptance_proof(&binary, dir.path()).unwrap()["executableDigest"]);
+    }
+
     #[tokio::test]
     async fn reserved_ports_are_loopback_only() {
         let port = reserve_port().await.unwrap();
         assert!(port > 0);
+    }
+
+    #[cfg(unix)]
+    fn executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn packaged_bundle_resolves_its_resource_and_never_the_build_checkout() {
+        let dir = tempdir().unwrap();
+        let app = dir.path().join("Synth Workshop.app/Contents");
+        let exe = app.join("MacOS/synth-desktop");
+        let manifest = dir.path().join("checkout/apps/synth_desktop/src-tauri");
+        // The build machine's checkout has a staged binary...
+        executable(&dir.path().join("checkout").join(BUNDLED_RELATIVE_PATH));
+        // ...but a bundle that shipped without the resource must still report
+        // binary_missing rather than borrow it.
+        assert_eq!(locate_binary_from(None, Some(exe.clone()), &manifest), None);
+        let bundled = app.join("Resources").join(BUNDLED_RELATIVE_PATH);
+        executable(&bundled);
+        assert_eq!(locate_binary_from(None, Some(exe), &manifest), Some(bundled));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn development_builds_use_the_staged_checkout_binary_and_reject_non_executables() {
+        let dir = tempdir().unwrap();
+        let manifest = dir.path().join("checkout/apps/synth_desktop/src-tauri");
+        let exe = manifest.join("target/debug/synth-desktop");
+        assert_eq!(locate_binary_from(None, Some(exe.clone()), &manifest), None);
+        let staged = dir.path().join("checkout").join(BUNDLED_RELATIVE_PATH);
+        executable(&staged);
+        assert_eq!(locate_binary_from(None, Some(exe.clone()), &manifest), Some(staged));
+        let plain = dir.path().join("plain");
+        std::fs::write(&plain, b"not executable").unwrap();
+        assert_eq!(locate_binary_from(Some(plain), Some(exe), &manifest), None);
+    }
+
+    /// Root cause of the packaged `binary_missing`: the bundle mapped an
+    /// unstaged directory and no packaged build path fetched the executable.
+    #[test]
+    fn packaging_bundles_the_index_directory_and_stages_the_pinned_binary_first() {
+        let package: serde_json::Value = serde_json::from_str(include_str!("../../tauri.package.json")).unwrap();
+        let resources = package["bundle"]["resources"].as_object().unwrap();
+        let bundled_dir = Path::new(BUNDLED_RELATIVE_PATH).parent().unwrap().to_str().unwrap();
+        assert!(resources.iter().any(|(source, target)| source.ends_with("services/victoria-logs") && target == bundled_dir));
+        let before = package["build"]["beforeBuildCommand"].as_str().unwrap();
+        assert!(before.contains("package:prepare") && before.contains("package:stage-diagnostics"));
+        let scripts: serde_json::Value = serde_json::from_str(include_str!("../../../package.json")).unwrap();
+        assert_eq!(
+            scripts["scripts"]["package:stage-diagnostics"].as_str(),
+            Some("../../scripts/diagnostics/fetch-victorialogs.sh --if-missing")
+        );
+        let fetch = include_str!("../../../../../scripts/diagnostics/fetch-victorialogs.sh");
+        assert!(fetch.contains("--if-missing"));
+        assert!(fetch.contains("checksum mismatch"));
+        assert!(fetch.contains("v1.52.0/darwin/arm64) echo \"3157d4b6181d8a7e3e30918e2cbfcd4cc4cb66263e3ef21ea91e4f20f8980883\""));
+        assert!(fetch.contains("install -m 0755 \"$BINARY\" \"$DEST\""));
+    }
+
+    /// With the pinned binary staged by `fetch-victorialogs.sh` (the packaging
+    /// hook), resolution finds it and the log store reaches `ready` instead of
+    /// `binary_missing`. Skips when nothing is staged. Loopback only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_staged_index_binary_brings_the_log_store_to_ready() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let checkout = manifest.parent().and_then(Path::parent).and_then(Path::parent).unwrap();
+        let staged = checkout.join(BUNDLED_RELATIVE_PATH);
+        if !is_executable(&staged) {
+            eprintln!("skipping: run scripts/diagnostics/fetch-victorialogs.sh --if-missing first");
+            return;
+        }
+        assert_eq!(
+            locate_binary_from(None, Some(manifest.join("target/debug/synth-desktop")), manifest),
+            Some(staged.clone()),
+            "an unpackaged build resolves the staged checkout binary"
+        );
+        let _env = ENV_LOCK.lock().await;
+        std::env::set_var(BINARY_ENV, &staged);
+        let dir = tempdir().unwrap();
+        let sidecar = VictoriaLogsSidecar::new(SidecarConfig::for_root(dir.path()));
+        let state = sidecar.start().await;
+        std::env::remove_var(BINARY_ENV);
+        assert_eq!(state, SidecarState::Ready, "the staged binary must not report binary_missing");
+        let descriptor = sidecar.read_descriptor().expect("descriptor");
+        assert_eq!(descriptor.state, "ready");
+        assert!(descriptor.reason.is_none());
+        assert!(descriptor.url.as_deref().is_some_and(|url| url.starts_with("http://127.0.0.1:")));
+        sidecar.stop().await.unwrap();
+        assert_eq!(sidecar.state().await, SidecarState::Stopped);
     }
 
     #[test]

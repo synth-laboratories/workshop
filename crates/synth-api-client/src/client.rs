@@ -140,26 +140,6 @@ impl InternClient {
         self.fresh_json(url).await
     }
 
-    /// Source-qualified read contract only. This fetch does not activate a
-    /// profile, authorize a mutation, or reuse a stop-time receipt snapshot.
-    pub async fn resource_settlement(
-        &self,
-        run_id: &str,
-    ) -> Result<crate::settlement::ResourceSettlement, InternClientError> {
-        if run_id.trim().is_empty() || matches!(run_id, "." | "..") || run_id.len() > 512 {
-            return Err(protocol("invalid settlement run ID"));
-        }
-        let mut url = self.base_url.join("smr/runs/").map_err(protocol)?;
-        url.path_segments_mut()
-            .map_err(|_| protocol("invalid settlement URL"))?
-            .pop_if_empty()
-            .push(run_id)
-            .push("resource-settlement");
-        let observation: crate::settlement::ResourceSettlement = self.fresh_json(url).await?;
-        observation.validate_for_run(run_id).map_err(protocol)?;
-        Ok(observation)
-    }
-
     async fn fresh_json<R: DeserializeOwned>(&self, url: Url) -> Result<R, InternClientError> {
         let mut response = self
             .http

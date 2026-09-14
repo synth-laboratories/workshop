@@ -13,7 +13,106 @@ pub struct ScopedCreation {
 }
 
 impl ScopedCloudRuntime {
-    async fn scoped_transaction<T, F>(&self, generation: u32, operation: F) -> Result<T>
+    /// Host-only transport composition; callers must bind the client credential
+    /// to the verified identity. See cloud/storage/README.md for activation gates.
+    pub async fn catch_up_mq_with<V, VF>(
+        &self, origin: &str, thread_id: mq_core::ThreadId, subscription_id: String,
+        client: &mq_sdk::MqClient, max_pages: usize, verify: V,
+    ) -> Result<mq_sdk::CatchUpOutcome>
+    where V: FnOnce() -> VF, VF: Future<Output = Result<IdentityObservation>>,
+    {
+        use crate::cloud::storage::{Adapter, Checkpoint, RemoteEvent};
+        if subscription_id.trim().is_empty() || !(1..=100).contains(&max_pages) {
+            bail!("invalid MQ catch-up request");
+        }
+        let generation = self.revalidate_with(origin, verify).await?.generation;
+        let org_id = {
+            let state = self.state.lock().await;
+            if state.view.generation != generation { bail!("cloud operation was superseded"); }
+            state.active.as_ref().context("cloud identity unavailable")?.identity.org_id.clone()
+        };
+        let stream = Stream { adapter: Adapter::Mq, external_id: thread_id.0.to_string() };
+        let query = stream.clone();
+        let mut expected = self.scoped_transaction(generation, move |store, lease| store.checkpoint(&lease, &query)).await?;
+        let cursor = match &expected {
+            None => 0,
+            Some(Checkpoint::Mq { subscription_id: stored, sequence }) if stored == &subscription_id => *sequence,
+            _ => bail!("MQ subscription checkpoint mismatch"),
+        };
+        let mut supervisor = mq_sdk::CatchUpSupervisor::new(thread_id, cursor);
+        self.await_scoped(generation, || async {
+            supervisor.catch_up(client, max_pages, |messages, sequence| {
+                let org_id = org_id.clone();
+                let previous = expected.clone();
+                let next = Checkpoint::Mq { subscription_id: subscription_id.clone(), sequence };
+                expected = Some(next.clone());
+                let stream = stream.clone();
+                async move {
+                    if messages.iter().any(|message| message.sender.org_id != org_id) {
+                        return Err(mq_sdk::SdkError::Decode("MQ message organization mismatch".into()));
+                    }
+                    let events = messages.into_iter().map(|message| Ok(RemoteEvent {
+                        id: message.message_id.0.to_string(), kind: "mq.message".into(),
+                        sequence: Some(message.seq), generation: None,
+                        payload: serde_json::to_value(message).map_err(|error| mq_sdk::SdkError::Decode(error.to_string()))?,
+                    })).collect::<std::result::Result<Vec<_>, mq_sdk::SdkError>>()?;
+                    self.scoped_transaction(generation, move |store, lease| {
+                        store.commit_page(&lease, &stream, previous.as_ref(), &next, &events)
+                    }).await.map_err(|error| mq_sdk::SdkError::Decode(error.to_string()))?;
+                    Ok(())
+                }
+            }).await.map_err(anyhow::Error::from)
+        }).await
+    }
+
+    /// Read only the currently verified account's durable MQ inbox.
+    pub async fn pending_mq_with<V, VF>(
+        &self, origin: &str, thread_id: String, limit: usize, verify: V,
+    ) -> Result<(u32, Vec<crate::cloud::storage::PendingMqInput>)>
+    where V: FnOnce() -> VF, VF: Future<Output = Result<IdentityObservation>>,
+    {
+        let generation = self.revalidate_with(origin, verify).await?.generation;
+        let rows = self.scoped_transaction(generation, move |store, lease| {
+            store.pending_mq_inputs(&lease, &Stream { adapter: crate::cloud::storage::Adapter::Mq, external_id: thread_id }, limit)
+        }).await?;
+        Ok((generation, rows))
+    }
+
+    /// Accept a persisted MQ message under fresh identity; never starts a turn.
+    pub async fn accept_mq_with<V, VF>(
+        &self, origin: &str, thread_id: String, message_id: String, verify: V,
+    ) -> Result<(u32, crate::domain::DomainMutation<crate::storage::CommandReceiptRecord>)>
+    where V: FnOnce() -> VF, VF: Future<Output = Result<IdentityObservation>>,
+    {
+        let generation = self.revalidate_with(origin, verify).await?.generation;
+        let receipt = self.scoped_transaction(generation, move |store, lease| {
+            store.accept_mq_input(&lease, &Stream { adapter: crate::cloud::storage::Adapter::Mq, external_id: thread_id }, &message_id)
+        }).await?;
+        Ok((generation, receipt))
+    }
+
+    /// Create an explicit local MQ binding after fresh identity verification.
+    /// Does not activate grants or message execution; see cloud/storage/README.md.
+    pub async fn create_local_mq_with<V, VF>(
+        &self,
+        origin: &str,
+        thread_id: String,
+        title: String,
+        target: crate::domain::RuntimeTarget,
+        verify: V,
+    ) -> Result<(u32, String)>
+    where
+        V: FnOnce() -> VF,
+        VF: Future<Output = Result<IdentityObservation>>,
+    {
+        let generation = self.revalidate_with(origin, verify).await?.generation;
+        let session = self.scoped_transaction(generation, move |store, lease| {
+            store.create_local_mq_conversation(&lease, &thread_id, &title, &target)
+        }).await?;
+        Ok((generation, session))
+    }
+
+    pub(super) async fn scoped_transaction<T, F>(&self, generation: u32, operation: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(CloudStore, ScopeLease) -> Result<T> + Send + 'static,
@@ -73,6 +172,9 @@ impl ScopedCloudRuntime {
                 changed = changes.changed() => { changed.context("cloud scope observer closed")?; }
                 result = &mut response => {
                     if result.as_ref().err().is_some_and(|error| {
+                        if matches!(error.downcast_ref::<mq_sdk::SdkError>(), Some(mq_sdk::SdkError::Api { status, .. }) if status.as_u16() == 401 || status.as_u16() == 403) {
+                            return true;
+                        }
                         error.downcast_ref::<crate::cloud::intern::InternClientError>()
                             .is_some_and(|cause| cause.is_auth_failure())
                     }) {

@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mq-core",
+    "crates/mq-server",
+    "crates/mq-sdk",
+]
+default-members = ["crates/mq-server"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+repository = "https://github.com/synth-laboratories/manderqueue"
+
+[workspace.dependencies]
+mq-core = { path = "crates/mq-core" }
+mq-sdk = { path = "crates/mq-sdk" }
+
+async-trait = "0.1"
+axum = { version = "0.8", features = ["macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+http-body-util = "0.1"
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tower = { version = "0.5", features = ["util"] }
+utoipa = { version = "5", features = ["chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }

@@ -1020,7 +1020,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_entrypoints_refuse_scoped_sessions_after_signout() {
-        use crate::cloud::storage::{Adapter, CloudScopeIdentity, CloudStore, Stream, MIGRATION_CANDIDATE};
+        use crate::cloud::storage::{Adapter, CloudScopeIdentity, CloudStore, Stream, SCHEMA};
         use std::sync::atomic::{AtomicUsize, Ordering};
         let attempts = Arc::new(AtomicUsize::new(0));
         let observed = attempts.clone();
@@ -1033,7 +1033,7 @@ mod tests {
         // An ordinary installation remains usable without the candidate schema.
         core.require_legacy_intern_session("legacy").await.unwrap();
         let db = core.storage.database().clone();
-        db.transaction(|conn| { conn.execute_batch(MIGRATION_CANDIDATE)?; Ok(()) }).unwrap();
+        db.transaction(|conn| { conn.execute_batch(SCHEMA)?; Ok(()) }).unwrap();
         let store = CloudStore::open(db).unwrap();
         let lease = store.activate_verified(&CloudScopeIdentity {
             backend_origin: "https://fixture.invalid".into(), backend_id: "backend".into(),
@@ -1091,7 +1091,14 @@ mod tests {
         ).await;
         assert!(result.is_err());
         assert_eq!(attempts.load(Ordering::SeqCst), 0);
-        assert!(crate::cloud::storage::CloudStore::open(core.storage.database().clone()).is_err());
+        // The schema is registered (migration 69), but the host stays gated:
+        // no store is installed and nothing scoped was created.
+        assert!(crate::cloud::storage::CloudStore::open(core.storage.database().clone()).is_ok());
+        assert_eq!(
+            core.scoped_cloud().view().await.unwrap().availability,
+            crate::cloud::scoped_runtime::Availability::QualificationRequired
+        );
+        assert!(core.scoped_session_history().await.unwrap().sessions.is_empty());
     }
 
     #[tokio::test]

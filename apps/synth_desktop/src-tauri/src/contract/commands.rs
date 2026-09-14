@@ -11,6 +11,11 @@ pub struct Commands;
 impl Commands {
     pub const CLOUD_SCOPE_VIEW: &'static str = "cloud_scope_view";
     pub const CLOUD_SCOPED_HISTORY: &'static str = "cloud_scoped_history";
+    pub const CLOUD_MAILBOX_CONNECTIONS: &'static str = "cloud_mailbox_connections";
+    pub const CLOUD_MAILBOX_STATUS: &'static str = "cloud_mailbox_status";
+    pub const CLOUD_MAILBOX_ANSWER: &'static str = "cloud_mailbox_answer";
+    pub const CLOUD_MAILBOX_DECLINE: &'static str = "cloud_mailbox_decline";
+    pub const CLOUD_MAILBOX_SIGN_OUT: &'static str = "cloud_mailbox_sign_out";
     pub const CLOUD_SCOPED_EVENTS_AFTER: &'static str = "cloud_scoped_events_after";
     pub const CORE_DIAGNOSTICS: &'static str = "core_diagnostics";
     pub const CORE_EVENTS_AFTER: &'static str = "core_events_after";

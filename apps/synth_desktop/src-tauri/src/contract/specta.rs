@@ -102,6 +102,11 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::core_events_after,
             crate::core_session_events_after,
             crate::cloud_scope_view,
+            crate::cloud_mailbox_connections,
+            crate::cloud_mailbox_status,
+            crate::cloud_mailbox_answer,
+            crate::cloud_mailbox_decline,
+            crate::cloud_mailbox_sign_out,
             crate::cloud_scoped_history,
             crate::cloud_scoped_events_after,
             crate::core_session_events_tail,
@@ -582,8 +587,11 @@ mod tests {
         // The existing generated graph already contained 329 commands; the
         // old 323 assertion had not followed those additions. Three scoped
         // read-only Cloud commands bring the reviewed graph to 332.
+        // 332 → 337: the qualification-gated native mailbox commands
+        // (connections, status, answer, decline, device sign-out). None
+        // returns a credential; all refuse while the host is gated.
         assert_eq!(
-            exported, 332,
+            exported, 337,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

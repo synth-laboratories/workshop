@@ -21,6 +21,11 @@ export const commands = {
 	coreEventsAfter: (afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("core_events_after", { afterSequence, limit })),
 	coreSessionEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("core_session_events_after", { sessionId, afterSequence, limit })),
 	cloudScopeView: () => typedError<ScopeView, AppError_Serialize>(__TAURI_INVOKE("cloud_scope_view")),
+	cloudMailboxConnections: () => typedError<MailboxConnectionView[], AppError_Serialize>(__TAURI_INVOKE("cloud_mailbox_connections")),
+	cloudMailboxStatus: (threadId: string) => typedError<MailboxStatusView, AppError_Serialize>(__TAURI_INVOKE("cloud_mailbox_status", { threadId })),
+	cloudMailboxAnswer: (threadId: string, messageId: string, body: string) => typedError<MailboxOutboxRowView, AppError_Serialize>(__TAURI_INVOKE("cloud_mailbox_answer", { threadId, messageId, body })),
+	cloudMailboxDecline: (threadId: string, messageId: string, reason: string) => typedError<MailboxOutboxRowView, AppError_Serialize>(__TAURI_INVOKE("cloud_mailbox_decline", { threadId, messageId, reason })),
+	cloudMailboxSignOut: () => typedError<MailboxSignOutView, AppError_Serialize>(__TAURI_INVOKE("cloud_mailbox_sign_out")),
 	cloudScopedHistory: () => typedError<ScopedSessions, AppError_Serialize>(__TAURI_INVOKE("cloud_scoped_history")),
 	cloudScopedEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<ScopedEvents, AppError_Serialize>(__TAURI_INVOKE("cloud_scoped_events_after", { sessionId, afterSequence, limit })),
 	coreSessionEventsTail: (sessionId: string, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("core_session_events_tail", { sessionId, limit })),
@@ -2504,6 +2509,74 @@ export type LogView = {
 	operationId: string | null,
 	failureId: string | null,
 	at: string,
+};
+
+export type MailboxConnectionView = {
+	threadId: string,
+	localSessionId: string,
+	preset: string,
+	/**  awaiting_grant | active | revoked | expired | fenced */
+	state: string,
+	stateReason: string | null,
+	grantOperations: string[],
+	grantExpiresAt: string | null,
+	peers: string[],
+};
+
+export type MailboxGapView = {
+	afterSeq: number | null,
+	throughSeq: number | null,
+	reason: string,
+};
+
+export type MailboxInboxRowView = {
+	messageId: string,
+	sequence: number | null,
+	kind: string,
+	sender: string,
+	body: string,
+	correlationId: string | null,
+	/**  delivered | observed | acting | answered | declined | expired | fenced */
+	stage: string,
+	deadlineAt: string | null,
+	/**  An observed request that waits for an operator answer or decline. */
+	awaitingOperator: boolean,
+};
+
+export type MailboxOutboxRowView = {
+	commandId: string,
+	kind: string,
+	disposition: string,
+	/**  queued | unknown | accepted | answered | refused | conflict | fenced */
+	status: string,
+	/**  The send may or may not have been accepted. It is never resent. */
+	unknownOutcome: boolean,
+	fencedReason: string | null,
+	correlationId: string | null,
+	replyToMessageId: string | null,
+	mqMessageId: string | null,
+	createdAt: string,
+};
+
+export type MailboxSignOutView = {
+	revokedEnrollments: number,
+	unconfirmedEnrollments: number,
+	/**
+	 *  Why the server-side revocation could not run (the local sign-out
+	 *  happens regardless).
+	 */
+	revocationError: string | null,
+	view: ScopeView,
+};
+
+export type MailboxStatusView = {
+	generation: number,
+	threadId: string,
+	connection: MailboxConnectionView | null,
+	inbox: MailboxInboxRowView[],
+	outbox: MailboxOutboxRowView[],
+	unknownOutcomes: number,
+	gaps: MailboxGapView[],
 };
 
 export type MaskedImportCandidate = {

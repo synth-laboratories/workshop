@@ -58,11 +58,15 @@ impl IdentityObservation {
             bail!("unsupported cloud identity authority contract");
         }
         let origin = reqwest::Url::parse(&self.backend_origin)?;
-        if origin.scheme() != "https"
+        // A plain-http loopback origin with an explicit port is the backend's
+        // APP_ENVIRONMENT=local-only form (grant contract v2 §9); it must also
+        // equal the configured expected origin below. Everything else is https.
+        let local_slot = crate::cloud::mailbox::grant::local_loopback_origin(&self.backend_origin).is_some();
+        let https = origin.scheme() == "https" && origin.port().is_none();
+        if !(https || local_slot)
             || origin.host_str().is_none()
             || !origin.username().is_empty()
             || origin.password().is_some()
-            || origin.port().is_some()
             || origin.query().is_some()
             || origin.fragment().is_some()
             || origin.path() != "/"
@@ -139,6 +143,20 @@ mod tests {
             )
             .is_err());
     }
+    #[test]
+    fn only_the_backend_local_loopback_form_may_be_http() {
+        let mut observation = fixture();
+        let now = observation.verified_at;
+        observation.backend_origin = "http://127.0.0.1:8000".into();
+        assert!(observation.validate("http://127.0.0.1:8000", now).is_ok());
+        // It must still equal the configured origin.
+        assert!(observation.validate("http://127.0.0.1:8001", now).is_err());
+        for refused in ["http://127.0.0.1", "http://10.0.0.5:8000", "http://127.0.0.2:8000", "http://cloud.example.test", "https://cloud.example.test:8443"] {
+            observation.backend_origin = refused.into();
+            assert!(observation.validate(refused, now).is_err(), "{refused}");
+        }
+    }
+
     #[test]
     fn authority_contract_cannot_be_downgraded() {
         let mut observation = fixture();

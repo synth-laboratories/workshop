@@ -111,6 +111,7 @@ pub(crate) struct SpawnServerRequest<'a> {
 /// Shared pump state cloned into the stdout reader task.
 #[derive(Clone)]
 pub(crate) struct EventPumpState {
+    pub notification_closed: Arc<Mutex<bool>>,
     pub records: Arc<RwLock<HashMap<String, CodexSessionRecord>>>,
     pub state_path: PathBuf,
     pub persistence: SessionPersistence,
@@ -267,7 +268,7 @@ async fn spawn_persistent_server<R: tauri::Runtime>(
                 .env("CODEX_HOME", home)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::from(open_stderr_log(&stderr_log)?))
+                .stderr(detached_stderr_sink(&stderr_log)?)
                 .kill_on_drop(false);
             if let Some(path) = codex_child_path(binary, std::env::var_os("PATH").as_deref())? {
                 command.env("PATH", path);
@@ -449,6 +450,7 @@ fn redact_stderr_line(line: &str) -> String {
     crate::diagnostics::redact::redact_text(&crate::codex_oauth::redact_text(line))
 }
 
+#[cfg(test)]
 fn open_stderr_log(path: &Path) -> Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.create(true).write(true).truncate(true);
@@ -460,6 +462,28 @@ fn open_stderr_log(path: &Path) -> Result<std::fs::File> {
     options
         .open(path)
         .with_context(|| format!("open app-server stderr log {}", path.display()))
+}
+
+/// The sink survives UI exit alongside the persistent server; its input closes
+/// when the server exits. No unredacted bytes are written to the log file.
+fn detached_stderr_sink(path: &Path) -> Result<Stdio> {
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command.arg(crate::stderr_sink::MODE).arg(path)
+        .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(unix)] {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().context("spawn bounded Codex stderr sink")?;
+    let input = child.stdin.take().context("capture Codex stderr sink input")?;
+    std::thread::spawn(move || {
+        match child.wait() {
+            Ok(status) if !status.success() => eprintln!("Codex stderr sink exited unsuccessfully: {status}"),
+            Err(error) => eprintln!("Codex stderr sink wait failed: {error}"),
+            _ => {},
+        }
+    });
+    Ok(Stdio::from(input))
 }
 
 /// Last `max_bytes` of `path`, starting at a whole line.
@@ -748,6 +772,10 @@ async fn read_stdout<R: tauri::Runtime, T: AsyncRead + Unpin>(
             }
             continue;
         }
+        let notification_guard = persistence.notification_closed.lock().await;
+        if *notification_guard {
+            continue;
+        }
         let raw_method = message["method"].as_str().unwrap_or_default();
         let mut params = message.get("params").cloned().unwrap_or(Value::Null);
         crate::codex_oauth::redact_event_value(&mut params);
@@ -975,7 +1003,8 @@ async fn read_stdout<R: tauri::Runtime, T: AsyncRead + Unpin>(
             .await;
         }
     }
-    if settlement.ready_for_eof_completion() {
+    let notification_guard = persistence.notification_closed.lock().await;
+    if !*notification_guard && settlement.ready_for_eof_completion() {
         // The child closed stdout after tools settled and an assistant item
         // completed, without `turn/completed` or `phase: final_answer`. That
         // is process-exit evidence, not a mid-turn commentary gap.
@@ -989,6 +1018,7 @@ async fn read_stdout<R: tauri::Runtime, T: AsyncRead + Unpin>(
             .await;
         apply_codex_terminal(&app, &session_id, &persistence, "turn/completed", params).await;
     }
+    drop(notification_guard);
     let owned_attachment = {
         let mut sessions = persistence.sessions.write().await;
         let owns_current = sessions
@@ -1519,6 +1549,11 @@ pub(crate) fn normalized_turn_method<'a>(method: &'a str, params: &Value) -> &'a
         return method;
     }
     let turn = params.get("turn").unwrap_or(params);
+    if turn.get("status").and_then(Value::as_str).is_some_and(|status| {
+        matches!(status.to_ascii_lowercase().as_str(), "interrupted" | "cancelled" | "canceled")
+    }) {
+        return "turn/interrupted";
+    }
     let status_is_failure = turn
         .get("status")
         .and_then(Value::as_str)

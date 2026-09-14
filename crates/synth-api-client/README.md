@@ -4,7 +4,17 @@ Extracted Workshop Intern transport. `publish = false`. Caller supplies keys,
 endpoint and optionally a configured reqwest client; this crate never reads
 configuration, environment variables, credentials stores or the filesystem.
 
+The client tracks the consolidated backend Research contract exactly. Removed
+runtime-inventory and run-settlement endpoints are not retained as Workshop-only
+compatibility calls; callers use the current Sync/Async runtime, usage, checkpoint,
+approval and presence surfaces instead.
+
 Run `cargo test --manifest-path crates/synth-api-client/Cargo.toml --offline`.
+Run `python3 scripts/check-research-contract.py` from the repository root to
+verify the pinned schema digest and operation identities. Supply
+`--backend /path/to/backend` to compare the schema bytes against the exact
+committed backend Git object as well. CI performs the local pin check.
+This guard verifies source provenance, not Rust DTO parity or a served profile.
 Existing fixture routes reflect the Workshop base, not a newly qualified live
 contract. See `docs/handoffs/2026-09-11-workshop-cloud-foundations.md` at repo root.
 

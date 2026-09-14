@@ -1027,6 +1027,16 @@
             "title": "Idempotency Key",
             "type": "string"
           },
+          "index_draft_enabled": {
+            "default": false,
+            "title": "Index Draft Enabled",
+            "type": "boolean"
+          },
+          "index_enabled": {
+            "default": false,
+            "title": "Index Enabled",
+            "type": "boolean"
+          },
           "metadata": {
             "additionalProperties": true,
             "title": "Metadata",
@@ -5135,6 +5145,77 @@
         "title": "ImageReleaseUploadResponse",
         "type": "object"
       },
+      "IndexAccessPolicy": {
+        "additionalProperties": false,
+        "description": "Shared across every agent of one Swarm run or one Intern turn/cycle.\n\nDefaults follow the frozen fast-MVP integration plan: public-only, 10 searches,\n20 contents reads and 8,000 Index context tokens. Private access needs selected\ncollections and an explicit spend cap; enabling Index never enables charges.",
+        "properties": {
+          "allow_draft_preparation": {
+            "default": false,
+            "title": "Allow Draft Preparation",
+            "type": "boolean"
+          },
+          "collection_ids": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Collection Ids",
+            "type": "array"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_contents": {
+            "default": 20,
+            "maximum": 200.0,
+            "minimum": 0.0,
+            "title": "Max Contents",
+            "type": "integer"
+          },
+          "max_context_tokens": {
+            "default": 8000,
+            "maximum": 64000.0,
+            "minimum": 0.0,
+            "title": "Max Context Tokens",
+            "type": "integer"
+          },
+          "max_searches": {
+            "default": 10,
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Max Searches",
+            "type": "integer"
+          },
+          "private_spend_cap_cents": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Private Spend Cap Cents"
+          },
+          "visibility": {
+            "default": "public",
+            "enum": [
+              "public",
+              "private"
+            ],
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "title": "IndexAccessPolicy",
+        "type": "object"
+      },
       "InternAcceptanceFixtureReceipt": {
         "additionalProperties": false,
         "description": "Durable, validator-readable evidence for one acceptance fixture.",
@@ -8670,122 +8751,6 @@
         "title": "InternRuntimeEventStreamEnvelope",
         "type": "object"
       },
-      "InternSessionUsageResponse": {
-        "additionalProperties": false,
-        "description": "Usage receipt for one Intern runtime: its direct inference plus the runs it launched.",
-        "properties": {
-          "billing": {
-            "$ref": "#/components/schemas/InternUsageBillingState"
-          },
-          "bindings": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Bindings",
-            "type": "array"
-          },
-          "metadata": {
-            "additionalProperties": true,
-            "title": "Metadata",
-            "type": "object"
-          },
-          "org_id": {
-            "title": "Org Id",
-            "type": "string"
-          },
-          "origin_runtime_id": {
-            "title": "Origin Runtime Id",
-            "type": "string"
-          },
-          "origin_runtime_kind": {
-            "enum": [
-              "sync",
-              "async"
-            ],
-            "title": "Origin Runtime Kind",
-            "type": "string"
-          },
-          "run_count": {
-            "title": "Run Count",
-            "type": "integer"
-          },
-          "spend_cents": {
-            "title": "Spend Cents",
-            "type": "integer"
-          },
-          "token_count": {
-            "title": "Token Count",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "origin_runtime_kind",
-          "origin_runtime_id",
-          "org_id",
-          "spend_cents",
-          "token_count",
-          "run_count",
-          "billing",
-          "bindings",
-          "metadata"
-        ],
-        "title": "InternSessionUsageResponse",
-        "type": "object"
-      },
-      "InternUsageBillingState": {
-        "additionalProperties": false,
-        "properties": {
-          "billing_failed_row_count": {
-            "title": "Billing Failed Row Count",
-            "type": "integer"
-          },
-          "billing_state": {
-            "enum": [
-              "settled",
-              "pending",
-              "stalled",
-              "failed",
-              "observability_only",
-              "not_applicable"
-            ],
-            "title": "Billing State",
-            "type": "string"
-          },
-          "message": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Message"
-          },
-          "show_stalled_banner": {
-            "title": "Show Stalled Banner",
-            "type": "boolean"
-          },
-          "stalled_row_count": {
-            "title": "Stalled Row Count",
-            "type": "integer"
-          },
-          "stalled_spend_cents": {
-            "title": "Stalled Spend Cents",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "billing_state",
-          "stalled_row_count",
-          "stalled_spend_cents",
-          "billing_failed_row_count",
-          "show_stalled_banner"
-        ],
-        "title": "InternUsageBillingState",
-        "type": "object"
-      },
       "JsonValue": {},
       "MagiActuationStatus": {
         "enum": [
@@ -10240,14 +10205,6 @@
         ],
         "title": "OeqResolutionResponse",
         "type": "object"
-      },
-      "OriginRuntimeKind": {
-        "enum": [
-          "sync",
-          "async"
-        ],
-        "title": "OriginRuntimeKind",
-        "type": "string"
       },
       "ParentObjectiveKind": {
         "enum": [
@@ -12859,6 +12816,7 @@
           "synth_ai",
           "cursor",
           "deepseek",
+          "xai",
           "modal",
           "openai_chatgpt",
           "baseten"
@@ -13123,146 +13081,6 @@
         ],
         "title": "RunLifecycleEnqueueStatus",
         "type": "string"
-      },
-      "RunResourceSettlementResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "confirmed": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Confirmed"
-          },
-          "coverage": {
-            "enum": [
-              "untracked",
-              "explicit-v1"
-            ],
-            "title": "Coverage",
-            "type": "string"
-          },
-          "coverage_complete": {
-            "default": false,
-            "title": "Coverage Complete",
-            "type": "boolean"
-          },
-          "edge_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Edge Id"
-          },
-          "excluded": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Excluded"
-          },
-          "observed_at": {
-            "format": "date-time",
-            "title": "Observed At",
-            "type": "string"
-          },
-          "pending": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pending"
-          },
-          "registered_tree_settled": {
-            "default": false,
-            "title": "Registered Tree Settled",
-            "type": "boolean"
-          },
-          "root_confirmed": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Root Confirmed"
-          },
-          "root_run_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Root Run Id"
-          },
-          "run_id": {
-            "title": "Run Id",
-            "type": "string"
-          },
-          "scope_kind": {
-            "anyOf": [
-              {
-                "enum": [
-                  "root_tree",
-                  "owned_subtree"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Scope Kind"
-          },
-          "settled": {
-            "title": "Settled",
-            "type": "boolean"
-          },
-          "unknown": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Unknown"
-          }
-        },
-        "required": [
-          "run_id",
-          "observed_at",
-          "coverage",
-          "settled"
-        ],
-        "title": "RunResourceSettlementResponse",
-        "type": "object"
       },
       "RunbookKind": {
         "enum": [
@@ -13734,6 +13552,7 @@
           "gpt-5.6-luna",
           "gpt-5.6-sol",
           "gpt-5.6-terra",
+          "cursor/grok-4.5",
           "gpt-5.4",
           "gpt-5.4-mini",
           "nemotron-super",
@@ -13742,6 +13561,8 @@
           "cursor/composer-2.5",
           "cursor/gpt-5",
           "cursor/sonnet-4",
+          "x-ai/grok-4.3",
+          "x-ai/grok-build",
           "moonshotai/kimi-k2.6",
           "baseten/moonshotai/Kimi-K3",
           "modal/moonshotai/Kimi-K3",
@@ -14977,6 +14798,7 @@
           "openrouter",
           "poolside",
           "synth_internal",
+          "xai",
           "tinker"
         ],
         "title": "SmrCredentialProvider",
@@ -20776,7 +20598,8 @@
           "openrouter",
           "poolside",
           "synth",
-          "synth_internal"
+          "synth_internal",
+          "xai"
         ],
         "title": "SmrInferenceProvider",
         "type": "string"
@@ -22422,7 +22245,7 @@
                 "type": "null"
               }
             ],
-            "description": "Override one shared agent model for this run. Shared top-level values are 'baseten/moonshotai/Kimi-K3', 'baseten/zai-org/GLM-5.2', 'cursor/composer-2.5', 'deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4-flash-direct', 'deepseek/deepseek-v4-pro', 'deepseek/deepseek-v4-pro-direct', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-luna', 'modal/moonshotai/Kimi-K3', 'openrouter/openai/gpt-5.6-luna', 'openrouter/poolside/laguna-s-2.1', 'poolside/laguna-s-2.1', 'synth_internal/laguna-s-2.1-nvfp4'. Use actor_model_overrides for actor-specific model selection."
+            "description": "Override one shared agent model for this run. Shared top-level values are 'baseten/moonshotai/Kimi-K3', 'baseten/zai-org/GLM-5.2', 'cursor/composer-2.5', 'deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4-flash-direct', 'deepseek/deepseek-v4-pro', 'deepseek/deepseek-v4-pro-direct', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-luna', 'modal/moonshotai/Kimi-K3', 'openrouter/openai/gpt-5.6-luna', 'openrouter/poolside/laguna-s-2.1', 'poolside/laguna-s-2.1', 'synth_internal/laguna-s-2.1-nvfp4', 'x-ai/grok-4.3', 'x-ai/grok-build'. Use actor_model_overrides for actor-specific model selection."
           },
           "agent_model_params": {
             "anyOf": [
@@ -22774,7 +22597,7 @@
                 "type": "null"
               }
             ],
-            "description": "Declarative provider routing preferences. Use agent_inference for agent actor traffic and experiment_inference for benchmark/eval model traffic. Defaults require ZDR and US domicile/region for OpenAI, Baseten, and Gemini providers."
+            "description": "Declarative provider routing preferences. Use agent_inference for agent actor traffic and experiment_inference for benchmark/eval model traffic. Defaults require ZDR and US domicile/region for OpenAI, Baseten, Gemini, and Grok-family providers."
           },
           "providers": {
             "description": "Run-scoped resource bindings. This is independent from the inference provider selector.",
@@ -24674,18 +24497,6 @@
               }
             ],
             "title": "Requested State"
-          },
-          "resource_settlement": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Resource Settlement"
           },
           "run_id": {
             "title": "Run Id",
@@ -26838,6 +26649,16 @@
               }
             ]
           },
+          "index": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IndexAccessPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "limits": {
             "anyOf": [
               {
@@ -27209,28 +27030,6 @@
           "org_id": {
             "title": "Org Id",
             "type": "string"
-          },
-          "origin_runtime_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Origin Runtime Id"
-          },
-          "origin_runtime_kind": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Origin Runtime Kind"
           },
           "output_obligations": {
             "items": {
@@ -33296,170 +33095,6 @@
         "title": "SwarmNotebookResponse",
         "type": "object"
       },
-      "SwarmRolloutPage": {
-        "additionalProperties": false,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/SwarmRolloutSummary"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "limit": {
-            "title": "Limit",
-            "type": "integer"
-          },
-          "run_id": {
-            "title": "Run Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "run_id",
-          "items",
-          "limit"
-        ],
-        "title": "SwarmRolloutPage",
-        "type": "object"
-      },
-      "SwarmRolloutSummary": {
-        "additionalProperties": false,
-        "description": "One pool rollout whose verified budget parent is the swarm.\n\nBuilt field by field from the rollout row, never from the stored request,\nso task-provided environment and transport credentials cannot leak.",
-        "properties": {
-          "adapter": {
-            "title": "Adapter",
-            "type": "string"
-          },
-          "budget_parent_run_id": {
-            "title": "Budget Parent Run Id",
-            "type": "string"
-          },
-          "cancelled_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cancelled At"
-          },
-          "completed_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Completed At"
-          },
-          "created_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Created At"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "pool_id": {
-            "title": "Pool Id",
-            "type": "string"
-          },
-          "rollout_id": {
-            "title": "Rollout Id",
-            "type": "string"
-          },
-          "score": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Score"
-          },
-          "seed": {
-            "title": "Seed",
-            "type": "integer"
-          },
-          "started_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Started At"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "success": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Success"
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Id"
-          },
-          "trace_correlation_id": {
-            "title": "Trace Correlation Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "rollout_id",
-          "pool_id",
-          "adapter",
-          "status",
-          "seed",
-          "trace_correlation_id",
-          "budget_parent_run_id"
-        ],
-        "title": "SwarmRolloutSummary",
-        "type": "object"
-      },
       "SyncApprovalActionV1": {
         "additionalProperties": false,
         "properties": {
@@ -34374,6 +34009,16 @@
             "minLength": 1,
             "title": "Idempotency Key",
             "type": "string"
+          },
+          "index_draft_enabled": {
+            "default": false,
+            "title": "Index Draft Enabled",
+            "type": "boolean"
+          },
+          "index_enabled": {
+            "default": false,
+            "title": "Index Enabled",
+            "type": "boolean"
           },
           "metadata": {
             "additionalProperties": true,
@@ -43214,42 +42859,6 @@
               "description": "Opaque pagination cursor. Accepted forms: '<created_at_iso>', '<created_at_iso>|<run_id>', or '<run_id>'.",
               "title": "Cursor"
             }
-          },
-          {
-            "description": "Intern runtime kind that launched the run; requires origin_runtime_id.",
-            "in": "query",
-            "name": "origin_runtime_kind",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/OriginRuntimeKind"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Intern runtime kind that launched the run; requires origin_runtime_id.",
-              "title": "Origin Runtime Kind"
-            }
-          },
-          {
-            "description": "Intern Sync session or Async assignment id that launched the run.",
-            "in": "query",
-            "name": "origin_runtime_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Intern Sync session or Async assignment id that launched the run.",
-              "title": "Origin Runtime Id"
-            }
           }
         ],
         "responses": {
@@ -45002,49 +44611,6 @@
           }
         },
         "summary": "Command Intern Async Assignment",
-        "tags": [
-          "smr",
-          "research-intern"
-        ]
-      }
-    },
-    "/smr/research-intern/async-assignments/{assignment_id}/usage": {
-      "get": {
-        "operationId": "get_intern_async_assignment_usage",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "assignment_id",
-            "required": true,
-            "schema": {
-              "title": "Assignment Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InternSessionUsageResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Intern Async Assignment Usage",
         "tags": [
           "smr",
           "research-intern"
@@ -48171,50 +47737,6 @@
         ]
       }
     },
-    "/smr/research-intern/sync-sessions/{sync_session_id}/usage": {
-      "get": {
-        "description": "Session resource/usage panel projection (receipts only).",
-        "operationId": "get_intern_sync_session_usage",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "sync_session_id",
-            "required": true,
-            "schema": {
-              "title": "Sync Session Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InternSessionUsageResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Intern Sync Session Usage",
-        "tags": [
-          "smr",
-          "research-intern"
-        ]
-      }
-    },
     "/smr/research-intern/tasks/{intern_task_id}": {
       "patch": {
         "operationId": "patch_intern_effort_task",
@@ -48389,42 +47911,6 @@
               ],
               "description": "Opaque pagination cursor. Accepted forms: '<created_at_iso>', '<created_at_iso>|<run_id>', or '<run_id>'.",
               "title": "Cursor"
-            }
-          },
-          {
-            "description": "Intern runtime kind that launched the run; requires origin_runtime_id.",
-            "in": "query",
-            "name": "origin_runtime_kind",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/OriginRuntimeKind"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Intern runtime kind that launched the run; requires origin_runtime_id.",
-              "title": "Origin Runtime Kind"
-            }
-          },
-          {
-            "description": "Intern Sync session or Async assignment id that launched the run.",
-            "in": "query",
-            "name": "origin_runtime_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Intern Sync session or Async assignment id that launched the run.",
-              "title": "Origin Runtime Id"
             }
           }
         ],
@@ -48931,48 +48417,6 @@
         ]
       }
     },
-    "/smr/runs/{run_id}/resource-settlement": {
-      "get": {
-        "operationId": "get_run_resource_settlement",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RunResourceSettlementResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Run Resource Settlement",
-        "tags": [
-          "smr"
-        ]
-      }
-    },
     "/smr/runs/{run_id}/resume": {
       "post": {
         "operationId": "resume_run",
@@ -49010,60 +48454,6 @@
           }
         },
         "summary": "Resume Run",
-        "tags": [
-          "smr"
-        ]
-      }
-    },
-    "/smr/runs/{run_id}/rollouts": {
-      "get": {
-        "operationId": "list_swarm_rollouts",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 100,
-              "maximum": 500,
-              "minimum": 1,
-              "title": "Limit",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SwarmRolloutPage"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List the container-pool rollouts a swarm launched",
         "tags": [
           "smr"
         ]

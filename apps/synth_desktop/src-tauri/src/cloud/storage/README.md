@@ -1,9 +1,46 @@
 # Scoped cloud storage
 
-Native SQLite service for WI-233/234/236/237. The SQL migration candidate is
-compiled into Workshop but is deliberately absent from the migration registry.
-`CloudStore::open` fails when the candidate has not been explicitly installed.
-Only isolated native tests install it today; CoreRuntime does not activate it.
+Native SQLite service for WI-233/234/236/237 and the WP6 native mailbox.
+
+## Registration status (v0.11)
+
+`schema.sql` is registered as desktop migration 69 after qualification:
+clean install, an existing v68 profile (no row modified or adopted, schema
+identical to a clean install), a failed upgrade (whole-migration rollback,
+version not stamped, next launch retries), a lane that collided on version 69
+(`heal_missing_tables` recreates every table from idempotent DDL), restart and
+account isolation. `CloudStore::open` verifies the column shape and refuses a
+same-named table with another shape; local Workshop keeps working.
+
+Registration activates storage only. `ScopedCloudRuntime` stays
+`QualificationRequired` until `activate_store` installs a store; no default
+boot path calls it. Grant issuance, polling and message handling remain off
+until a qualified deployment/profile opts in.
+
+## Native MQ mailbox (WP6)
+
+Contract: manderqueue `docs/WORKSHOP_GRANT_CONTRACT.md` version 2 (committed at
+02db5d4, sha256 `9a442993…`), vendored MQ snapshot 02db5d4. Device sign-out
+revokes the enrollment (all grants and incarnations) before the local sign-out.
+`mailbox.rs` persists: an explicitly selected existing Local session bound to
+one thread as the server-derived `enrollment:<id>` principal (never a legacy,
+remote-linked or other-account session); the server incarnation and grant
+generation; granted-history pages with their authorized skip recorded in
+`cloud_mq_history_gaps`; the delivery ladder delivered → observed → acting →
+answered/declined/expired (or fenced); and outbound publications whose exact
+body/key/correlation/causation live immutably in `cloud_command_outbox`.
+
+Fences: native acceptance requires the exact session, incarnation and grant
+generation; input delivered under an older generation is fenced, never run.
+Queued writes fence permanently on explicit sign-out or account switch
+(`cloud_mq_scope_fences`) and on a grant-generation change or revocation, and
+survive identity-observation expiry/sleep for the same account and grant.
+An uncertain send stays `outcome_unknown`; only our own publication observed
+in authoritative history (same key and semantics) settles it, otherwise the
+lookup is recorded and nothing is resent. See `cloud/scoped_runtime/mailbox.rs`
+for the host pass, restricted delivery and supervisor.
+
+The remainder of this file documents the earlier candidate slices.
 
 The service owns scopes, a global monotonic auth epoch, explicit new conversation
 ownership, external stream/run bindings, outbox requests and checkpoints. It reuses
@@ -18,8 +55,42 @@ local shape, not remote truth. The unlimited helper exists only in unit tests.
 The live authority adapter is still gated. Opening the service, switching identity and signing out invalidate
 old leases. Old outbox requests survive; they cannot silently flush under a new
 auth epoch. Scoped reads fail for stale leases. Legacy sessions are never adopted:
-only `create_conversation` can allocate a new scope-owned conversation, and all
+only explicit conversation creation can allocate a new scope-owned conversation, and all
 additional stream bindings must reference such a conversation.
+
+`create_local_mq_conversation` explicitly allocates a fresh Codex conversation
+and an MQ thread binding in one transaction. Its inference target may be local,
+remote or gateway-backed; session execution stays Local. The thread ID never
+becomes a Codex runtime ID. Same-target retries reuse the binding, while a
+different target or an Intern-bound thread refuses. Account epochs fence both
+creation and inbox reads. This does not adopt existing local/legacy sessions,
+issue device grants or start a turn; explicit existing-session connection and
+the restricted dispatcher remain required for the complete product flow.
+
+`ScopedCloudRuntime::create_local_mq_with` composes this creation with fresh
+identity verification and the host generation fence. Persistence runs on a
+blocking database worker while the host scope lock is retained; superseded or
+expired operations refuse. Production qualification remains closed.
+`pending_mq_with` and `accept_mq_with` use the same fresh verification and host
+fence for inbox reads and durable command handoff. Account switching cannot
+accept another account's stored input. These methods do not grant tool authority
+or dispatch execution; the restricted dispatcher must consume the command later.
+
+`catch_up_mq_with` composes the existing SDK supervisor with scoped native
+checkpoint reads and atomic inbox/page commits. It refuses a changed subscription
+identity, cancels network work on host scope changes and invalidates cached
+identity on MQ 401/403. Each bounded pass resumes from the stored cursor; SSE
+hints never enter this commit path. The host must supply a client whose endpoint
+and credential belong to the verified identity. Verified grant/client issuance,
+automatic polling and restricted execution remain activation prerequisites.
+Each fetched page also requires every sender organization to match the verified
+host account organization before committing any row or advancing its checkpoint.
+An HTTP authorization refusal invalidates cached identity; it is not an empty
+successful catch-up. These checks do not replace verified client issuance.
+The scoped-runtime HTTP cancellation test holds a real request pending, signs
+out, and requires completion before the normal transport timeout. Fresh identity
+verification then confirms both inbox and checkpoint remain empty. Native actor
+execution and device-grant revocation are separate qualification requirements.
 
 `dispatch_once` persists the exact body, key and generation; atomically changes a
 pending request to outcome_unknown before invoking an injected transport; checks
@@ -46,6 +117,30 @@ handling, global renderer history filtering and epoch-aware view reset still nee
 host integration after the identity contract is qualified. Do not call the existing
 unscoped Intern reload path as a substitute. No new route/DTO selection or live
 cloud authorization is implied by this implementation.
+
+MQ page commits also insert `cloud_mq_pending_inputs` in the event/checkpoint
+transaction. Pending inputs remain separate from message execution or answered
+receipts and survive restart. Reads require the current scope lease and exact
+session binding; replay does not duplicate the queue entry. `accept_mq_input`
+atomically creates an idempotent `mq.input` command receipt from the persisted
+message and records its command ID on the queue entry. A failed transaction
+leaves the message pending and creates no command. Repeated acceptance returns
+the same command, and the original message remains stored for recovery/audit.
+`mq_input_commands` recovers those command receipts in bounded sequence pages
+under a freshly verified scope lease after restart. It preserves command status
+and performs no acceptance or execution. The dispatcher must reconcile uncertain
+execution rather than resubmit simply because a receipt exists.
+This is durable handoff, not execution or an answered receipt. The schema remains
+an unregistered migration candidate. Turn-boundary dispatch, restricted tool
+policy, grant validation and the network adapter are still required before
+activating this path in the product.
+
+The desktop now depends on the existing `mq-sdk` and `mq-core` through the
+immutable `third_party/manderqueue` Git snapshot. `VENDOR_PROVENANCE.json` records
+the source commit and per-file hashes; run `python3 scripts/check-mq-vendor.py`
+from the repository root to verify them. Update the snapshot from a reviewed MQ
+Git commit rather than editing vendored source. This establishes the dependency,
+not network activation or a second HTTP client implementation.
 
 Run from the repository root:
 

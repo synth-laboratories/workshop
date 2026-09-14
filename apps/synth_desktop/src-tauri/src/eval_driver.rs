@@ -336,6 +336,9 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
             "schemaVersion": PROTOCOL_VERSION,
             "instance": crate::instance::diagnostics(),
         })),
+        ("GET", "/v1/diagnostics/log-store") => {
+            Ok(core.diagnostics_service().sidecar().acceptance_status().await)
+        }
         ("POST", "/v1/sessions") | ("POST", "/v1/create_session") => {
             create_session(deps, body).await
         }
@@ -521,7 +524,145 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
         }
         ("POST", "/v1/traces/ingest") => ingest_trace_bundle(core, body).await,
         ("POST", "/v1/policy_preflight") => policy_preflight(deps, body).await,
+        ("POST", path) if path.starts_with("/v1/cloud/mailbox/") => {
+            cloud_mailbox(core, path.trim_start_matches("/v1/cloud/mailbox/"), body).await
+        }
         _ => bail!("unsupported eval driver route {method} {path}"),
+    }
+}
+
+/// E02/E03 journey entry points over the native mailbox host methods. The
+/// only way this build installs the scoped store is `activate`; every other
+/// action performs fresh identity verification and uses the configured
+/// backend grant authority. No route here calls a model.
+async fn cloud_mailbox(core: &Arc<CoreRuntime>, action: &str, body: Value) -> Result<Value> {
+    use crate::cloud::mailbox::{host, policy::{ParticipantPolicy, Preset}};
+    use crate::cloud::scoped_runtime::{ConnectRequest, OperatorReply, PassBudget};
+    use crate::cloud::storage::{OutboundDisposition, OutboundDraft, PeerRef};
+    let runtime = core.scoped_cloud().clone();
+    match action {
+        "activate" => {
+            host::activate_store(core).await?;
+            return Ok(json!({"view": runtime.view().await?}));
+        }
+        "signout" => {
+            // Device sign-out revokes the enrollments first when the backend
+            // is reachable; the local sign-out happens in every case.
+            let revocation = match host::configured_deps(core) {
+                Ok(deps) => match runtime.sign_out_device_with(&deps).await {
+                    Ok(outcome) => json!(outcome),
+                    Err(error) => json!({"error": format!("{error:#}")}),
+                },
+                Err(error) => json!({"error": format!("{error:#}")}),
+            };
+            return Ok(json!({"deviceSignOut": revocation, "view": runtime.invalidate().await?}));
+        }
+        "sleep" => {
+            runtime.fence_mailbox_for_sleep().await;
+            return Ok(json!({"credentialsDropped": true}));
+        }
+        _ => {}
+    }
+    let deps = host::configured_deps(core)?;
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Thread {
+        thread_id: String,
+    }
+    let Thread { thread_id } = serde_json::from_value(body.clone()).context("threadId is required")?;
+    match action {
+        "connect" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Connect {
+                thread_id: String,
+                session_id: String,
+                peers: Vec<PeerRef>,
+                preset: Preset,
+                #[serde(default)]
+                policy: ParticipantPolicy,
+                grant_ttl_seconds: u64,
+                history_after_seq: Option<u64>,
+                label: Option<String>,
+            }
+            let request: Connect = serde_json::from_value(body)?;
+            let participant = runtime
+                .connect_mq_session_with(&deps, ConnectRequest {
+                    thread_id: request.thread_id,
+                    local_session_id: request.session_id,
+                    peers: request.peers,
+                    preset: request.preset,
+                    policy: request.policy,
+                    grant_ttl_seconds: request.grant_ttl_seconds,
+                    history_after_seq: request.history_after_seq,
+                    label: request.label,
+                })
+                .await?;
+            Ok(json!({"participant": participant}))
+        }
+        "resume" => Ok(json!({"participant": runtime.resume_mq_session_with(&deps, &thread_id).await?})),
+        "pass" => {
+            // Passes may deliver work requests; attach the confined executor
+            // (present only when every confinement precondition holds).
+            let deps = host::configured_deps_with_executor(core).await?;
+            Ok(json!({"report": runtime.mailbox_pass_with(&deps, &thread_id, PassBudget::default()).await?, "executor": deps.executor.is_some()}))
+        }
+        "status" => Ok(json!({"status": runtime.mailbox_status_with(&deps, &thread_id).await?})),
+        "disconnect" => Ok(json!({"participant": runtime.disconnect_mq_with(&deps, &thread_id).await?})),
+        "publish" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Publish {
+                #[allow(dead_code)]
+                thread_id: String,
+                local_message_id: String,
+                kind: mq_core::MessageKind,
+                body: String,
+                #[serde(default)]
+                payload: Value,
+                correlation_id: Option<String>,
+                causation_id: Option<String>,
+                parent_message_id: Option<String>,
+                #[serde(default)]
+                recipients: Vec<PeerRef>,
+            }
+            let request: Publish = serde_json::from_value(body)?;
+            let entry = runtime
+                .publish_mq_with(&deps, &thread_id, OutboundDraft {
+                    local_message_id: request.local_message_id,
+                    kind: request.kind,
+                    body: request.body,
+                    payload: request.payload,
+                    correlation_id: request.correlation_id,
+                    causation_id: request.causation_id,
+                    parent_message_id: request.parent_message_id,
+                    recipients: request.recipients,
+                    disposition: OutboundDisposition::Message,
+                    reply_to_message_id: None,
+                    causal_depth: 0,
+                })
+                .await?;
+            Ok(json!({"outbox": entry}))
+        }
+        "answer" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Answer {
+                #[allow(dead_code)]
+                thread_id: String,
+                message_id: String,
+                answer: Option<String>,
+                decline: Option<String>,
+            }
+            let request: Answer = serde_json::from_value(body)?;
+            let reply = match (request.answer, request.decline) {
+                (Some(answer), None) => OperatorReply::Answer(answer),
+                (None, Some(reason)) => OperatorReply::Decline(reason),
+                _ => bail!("exactly one of answer or decline is required"),
+            };
+            Ok(json!({"outbox": runtime.answer_mq_with(&deps, &thread_id, &request.message_id, reply).await?}))
+        }
+        _ => bail!("unsupported mailbox action {action}"),
     }
 }
 

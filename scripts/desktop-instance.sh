@@ -1577,6 +1577,10 @@ dev_instance() {
     fi
     export SYNTH_MLX_RL_PROJECT_ROOT
     "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
+    # The bundle maps services/victoria-logs as a resource. cua-live-build
+    # clears beforeBuildCommand, so stage the pinned index binary explicitly;
+    # a bundle without it reports the instance log store as binary_missing.
+    "$ROOT/scripts/diagnostics/fetch-victorialogs.sh" --if-missing
     local tauri_configs=(--config "$PACKAGE_CONFIG" --config "$CONFIG")
     if [[ "$COMMAND" == "cua-live-build" ]]; then
       tauri_configs+=(--config "$LIVE_CONFIG")
@@ -1616,6 +1620,9 @@ dev_instance() {
     print_runtime_identity
     return
   fi
+  # The dev executable resolves the index binary from this checkout.
+  "$ROOT/scripts/diagnostics/fetch-victorialogs.sh" --if-missing || \
+    echo "[desktop:$NAME] diagnostics index binary unavailable; diagnostics will report degraded" >&2
   release_operation_lock_before_exec
   exec npx tauri dev --features eval-driver --config "$PACKAGE_CONFIG" --config "$CONFIG"
 }

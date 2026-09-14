@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mq
+      POSTGRES_PASSWORD: mq
+      POSTGRES_DB: manderqueue
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mq -d manderqueue"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  manderqueue:
+    build: .
+    profiles: ["app"]
+    environment:
+      DATABASE_URL: postgres://mq:mq@postgres:5432/manderqueue
+      REDIS_URL: redis://redis:6379
+      MQ_BIND: 0.0.0.0:8088
+    ports:
+      - "8088:8088"
+    command: ["mq-server", "serve"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  manderqueue-worker:
+    build: .
+    profiles: ["app"]
+    environment:
+      DATABASE_URL: postgres://mq:mq@postgres:5432/manderqueue
+      REDIS_URL: redis://redis:6379
+      MQ_WORKER_POLL_MS: "500"
+    command: ["mq-server", "worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

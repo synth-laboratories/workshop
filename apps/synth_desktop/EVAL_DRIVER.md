@@ -49,9 +49,22 @@ bearer → `401`.
 
 ## Endpoints
 
+The log-store endpoint returns `ready`, `state`, `processId`, `source`,
+`executableDigest`, and `dataRootDigest`. Readiness requires an existing supervised
+child plus a fresh local health response (at most 1.5 seconds); stale supervisor
+state alone cannot pass. Binary SHA-256 and source are captured immediately before
+spawn, not inferred from whichever binary happens to resolve at query time. The
+root digest hashes the canonical diagnostics-directory path bytes; no new paths,
+tokens, or log contents are returned. Missing capture is null and must fail closed
+in packaged acceptance. This is launch-file evidence, not OS-level executable
+attestation against hostile local file replacement. `source=bundled` requires the
+packaged app's own Resources binary and no override. It does not prove that the
+diagnostics journal has been fully indexed, nor does it run a model turn.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` / `/v1/health` | Liveness + protocol + instance diagnostics |
+| `GET` | `/v1/diagnostics/log-store` | Read-only supervised log-store readiness and spawn identity |
 | `POST` | `/v1/sessions` | Create Codex session (`create_session`) |
 | `POST` | `/v1/sessions/{id}/messages` | Send turn (`send_message`) |
 | `POST` | `/v1/sessions/{id}/wait_terminal` | Poll journal until terminal run event |

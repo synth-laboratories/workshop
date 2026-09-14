@@ -20,6 +20,8 @@
     "./components/metrics.v1": "./components/metrics.v1/Metrics.tsx",
     "./components/scrubber.v1": "./components/scrubber.v1/Scrubber.tsx",
     "./components/candidate_inspector.v1": "./components/candidate_inspector.v1/CandidateInspector.tsx",
+    "./components/agent_trace.v1": "./components/agent_trace.v1/AgentTraceInspector.tsx",
+    "./components/agent_trace.v1/citationNavigation": "./components/agent_trace.v1/citationNavigation.ts",
     "./families/*": "./families/*",
     "./mcp/tools.json": "./mcp/tools.json",
     "./fixtures/*": "./fixtures/*"
