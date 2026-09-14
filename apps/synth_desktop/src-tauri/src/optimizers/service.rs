@@ -986,11 +986,14 @@ impl OptimizerService {
         if let Some(typed) = visual_render_receipt_from(&optimizer_run_id, &receipt) {
             self.record_visual_render_receipt(typed).await?;
         }
-        let mut run = self.get(optimizer_run_id.clone()).await?;
-        let mut summary = run.summary.as_object().cloned().unwrap_or_default();
-        summary.insert("visualReadyReceipt".into(), receipt.clone());
-        run.summary = Value::Object(summary);
-        self.persist_run(run).await?;
+        let stored_receipt = receipt.clone();
+        self.patch_run(optimizer_run_id, move |run| {
+            let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+            summary.insert("visualReadyReceipt".into(), stored_receipt);
+            run.summary = Value::Object(summary);
+            Ok(())
+        })
+        .await?;
         Ok(receipt)
     }
 
@@ -5349,6 +5352,16 @@ fn preserve_durable_authority(conn: &Connection, run: &mut OptimizerRunRecord) -
     if durable.cursor_seq > run.cursor_seq {
         run.cursor_seq = durable.cursor_seq;
         run.status = durable.status.clone();
+        // An older caller snapshot cannot erase measurements committed by
+        // newer events (including the authoritative provider receipt).
+        run.usage = durable.usage.clone();
+        if let (Some(summary), Some(current)) =
+            (run.summary.as_object_mut(), durable.summary.as_object())
+        {
+            for (key, value) in current {
+                summary.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
     } else if is_terminal_status(&durable.status) && !is_terminal_status(&run.status) {
         run.status = durable.status.clone();
     }
@@ -8079,10 +8092,21 @@ pub(in crate::optimizers) mod tests {
 
         let mut writeback = stale.clone();
         writeback.summary = json!({ "recipeId": "eval.probe.v1", "policyPin": "pinned" });
+        let settled = svc.get(stale.id.clone()).await.unwrap();
         let persisted = svc.persist_run(writeback).await.unwrap();
         assert_eq!(persisted.cursor_seq, 5, "cursor must not rewind");
         assert_eq!(persisted.status, "completed", "a settled run stays settled");
         assert_eq!(persisted.summary["policyPin"], json!("pinned"));
+        assert_eq!(serde_json::to_value(&persisted.usage).unwrap(), serde_json::to_value(&settled.usage).unwrap());
+        assert_eq!(persisted.summary["terminalManifest"], settled.summary["terminalManifest"]);
+        assert!(persisted.summary.get("terminalManifest").is_some());
+
+        svc.record_visual_ready(stale.id.clone(), json!({"visualId": "vis-late-ready"}))
+            .await
+            .unwrap();
+        let after_ready = svc.get(stale.id.clone()).await.unwrap();
+        assert_eq!(serde_json::to_value(&after_ready.usage).unwrap(), serde_json::to_value(&settled.usage).unwrap());
+        assert_eq!(after_ready.summary["terminalManifest"], settled.summary["terminalManifest"]);
 
         // And a non-amendment cannot land beyond the sealed terminal cursor.
         let error = svc
