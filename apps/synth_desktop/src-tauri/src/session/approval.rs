@@ -1041,6 +1041,40 @@ impl ApprovalBroker {
         session_id: Option<&str>,
         kind: ApprovalKind,
     ) -> Result<(String, ApprovalDecision)> {
+        if let Some(profile) = crate::qa_policy::active()? {
+            if let ApprovalKind::PaidCompute { requested_cap, recipe_id, preparation_digest, operation, .. } = &kind {
+                let ceiling = requested_cap.max_cost_usd_micros
+                    .ok_or_else(|| anyhow!("qa_policy_requires_dollar_cap"))?;
+                let provider = paid_compute_provider(&kind)
+                    .ok_or_else(|| anyhow!("qa_policy_requires_provider"))?;
+                if let Some(recipe) = recipe_id {
+                    profile.require_compute(Some(recipe), &provider, ceiling, requested_cap.max_rollouts)?;
+                    profile.require_recipe_source(recipe)?;
+                } else {
+                    anyhow::ensure!(operation == "optimizer.evaluation.inline.start"
+                        && preparation_digest.as_ref().is_some_and(|d| profile.inline_evaluation_digests.contains(d))
+                        && profile.providers.contains(&provider)
+                        && ceiling > 0 && ceiling <= profile.max_request_usd_micros
+                        && requested_cap.max_rollouts.is_some_and(|r| r > 0 && r <= profile.max_rollouts),
+                        "qa_policy_inline_evaluation_out_of_scope");
+                }
+                let database = self.persistence.database()
+                    .ok_or_else(|| anyhow!("qa_policy_requires_durable_database"))?;
+                let approval_id = format!("approval-qa-{}", uuid::Uuid::new_v4().simple());
+                let reserved_id = approval_id.clone();
+                let reserved_profile = profile.clone();
+                database.run_transaction(move |conn| reserved_profile.reserve(conn, &reserved_id, ceiling)).await?;
+                let decision = ApprovalDecision::ApproveWithCap { cap: requested_cap.clone() };
+                // Failed receipt writes retain the ceiling: uncertainty never
+                // restores authorization. This is policy evidence, not a click.
+                self.write_auto_grant(app, session_id.unwrap_or("qa-policy"), &approval_id,
+                    &kind, &decision, "qa_policy", Some(serde_json::json!({
+                        "qaPolicyId": profile.id, "expiresAt": profile.expires_at,
+                        "reservedUsdMicros": ceiling, "aggregateCapUsdMicros": profile.max_total_usd_micros
+                    }))).await?;
+                return Ok((approval_id, decision));
+            }
+        }
         // The session's sealed profile is the authority. Machine config is
         // consulted only for host approvals arriving with no session context
         // (operator-driven mutations) or for sessions started before the

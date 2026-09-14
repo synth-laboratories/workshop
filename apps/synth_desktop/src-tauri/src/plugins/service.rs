@@ -358,6 +358,13 @@ impl PluginService {
         kind: ApprovalKind,
         active_runs: u64,
     ) -> Result<Authorization> {
+        if crate::qa_policy::active()?.is_some() && matches!(&kind, ApprovalKind::PaidCompute { .. }) {
+            let (approval_id, decision) = broker.authorize_host_outcome(app, session_id, kind).await?;
+            return Ok(Authorization {
+                approval_id,
+                rejected: matches!(decision, ApprovalDecision::Reject),
+            });
+        }
         let policy = synth_config::desktop_permission_settings()
             .map(|settings| settings.approval_policy)
             .unwrap_or_else(|_| "untrusted".into());
