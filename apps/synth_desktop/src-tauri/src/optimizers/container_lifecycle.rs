@@ -227,15 +227,7 @@ pub fn resolve_declared_spec(
         )
     })?;
     crate::project_sources::require_manifest(&stored.manifest_path, crate::project_sources::Capability::Containers)?;
-    workspace_recipe::load_container_specs_from_manifest(&stored.manifest_path)?
-        .into_iter()
-        .find(|candidate| candidate.id == spec_id)
-        .ok_or_else(|| {
-            anyhow!(
-                "container spec `{spec_id}` is not declared in persisted manifest {}",
-                stored.manifest_path.display()
-            )
-        })
+    workspace_recipe::find_container_spec_in_manifest(&stored.manifest_path, &spec_id)
 }
 
 pub fn resolve_spec_for_session(
