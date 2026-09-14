@@ -1325,16 +1325,18 @@ export function useAppController() {
 		view.kind === "reports" ||
 		(view.kind === "settings" && Boolean(openArtifactId));
 	const viewKey =
-		windowPane
-			? "window"
-			: view.kind === "sync"
+		view.kind === "chat"
+			? `chat:${activeChat?.id ?? "none"}`
+			: windowPane
+				? "window"
+				: view.kind === "sync"
 				? `sync:${view.sessionId}`
 				: view.kind === "async"
 					? `async:${view.sessionId}`
 					: view.kind;
 
 	useEffect(() => {
-		if (windowPane && openArtifactIdRef.current) {
+		if (windowPane && view.kind !== "chat" && openArtifactIdRef.current) {
 			openArtifactByViewRef.current[viewKey] = openArtifactIdRef.current;
 			return;
 		}
@@ -1353,6 +1355,9 @@ export function useAppController() {
 			if (persistedId) {
 				remembered = persistedId;
 				openArtifactByViewRef.current[viewKey] = persistedId;
+				// Restore the content tab as well as its identity. Keep the user's
+				// explicit open/closed preference; selecting a tab does not reopen it.
+				setSidePanelTab("visual");
 			}
 		}
 		setOpenArtifactId(remembered);

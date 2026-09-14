@@ -8,6 +8,14 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src"
 const visualHost = readFileSync(join(root, "components/VisualHost.tsx"), "utf8");
 const visualChrome = readFileSync(join(root, "components/VisualPaneChrome.tsx"), "utf8");
 const css = readFileSync(join(root, "styles/app.css"), "utf8");
+const controller = readFileSync(join(root, "hooks/useAppController.ts"), "utf8");
+
+test("chat visual restoration is scoped and restores the content tab without forcing the panel open", () => {
+  const restoration = controller.slice(controller.indexOf("const viewKey ="), controller.indexOf("if (!openArtifactId) return;"));
+  assert.match(restoration, /`chat:\$\{activeChat\?\.id/);
+  assert.match(restoration, /if \(persistedId\) \{[\s\S]*?setSidePanelTab\("visual"\)/);
+  assert.doesNotMatch(restoration, /setSidePanelOpen\(true\)/);
+});
 const paneSource = visualHost.includes("export function VisualPane")
   ? visualHost.slice(visualHost.indexOf("const SHARED_URL_INVALID"))
   : visualHost;
