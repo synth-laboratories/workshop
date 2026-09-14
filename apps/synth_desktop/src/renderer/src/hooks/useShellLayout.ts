@@ -49,6 +49,10 @@ export function useShellLayout(
 		return runtimeStorage.getItem("synth.inferenceRailOpen") !== "0";
 	});
 	const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>("inference");
+	useEffect(() => {
+		// Persist tool-driven opens as well as toolbar toggles.
+		runtimeStorage.setItem("synth.inferenceRailOpen", sidePanelOpen ? "1" : "0");
+	}, [sidePanelOpen]);
     useEffect(() => {
         const refresh = () => {
             setSidePanelOpen(runtimeStorage.getItem("synth.inferenceRailOpen") !== "0");
