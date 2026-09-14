@@ -207,6 +207,17 @@ fn bind_native_caller_session(tools: &Value, name: &str, arguments: &Value, sess
     };
     let schema = tools["tools"].as_array().into_iter().flatten()
         .find(|tool| tool["name"] == name).map(|tool| &tool["inputSchema"]);
+    if schema.and_then(|schema| schema.get("x-workshop-caller-session-path"))
+        .and_then(Value::as_str) == Some("/session_id") {
+        for key in ["session_id", "sessionId"] {
+            if let Some(supplied) = arguments.get(key).and_then(Value::as_str).filter(|value| !value.is_empty()) {
+                anyhow::ensure!(supplied == session, "session_id does not match the native MCP caller session");
+            }
+        }
+        arguments.as_object_mut().context("tool arguments must be an object")?
+            .insert("session_id".into(), json!(session));
+        return Ok(arguments);
+    }
     let nested = schema.and_then(|schema| schema.get("x-workshop-caller-session-path"))
         .and_then(Value::as_str) == Some("/arguments/session_ref");
     let caller_scoped = nested || schema.and_then(|schema| schema.pointer("/properties/session_ref")).is_some();

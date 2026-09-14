@@ -42,6 +42,7 @@ pub(crate) fn public_tools() -> Value {
     let tool = &mut catalogue["tools"][0];
     tool["inputSchema"]["properties"]["session_id"] = json!({"type":"string","description":"Existing Workshop task to present."});
     tool["inputSchema"]["required"] = json!(["session_id"]);
+    tool["inputSchema"]["x-workshop-caller-session-path"] = json!("/session_id");
     catalogue
 }
 pub(crate) fn call_public(name: &str, args: &Value) -> Result<Value, String> {
@@ -104,5 +105,6 @@ mod tests {
         assert!(encoded.contains("success"));
         assert!(encoded.contains("seven"));
         assert!(!encoded.contains("session_id"));
+        assert_eq!(public_tools()["tools"][0]["inputSchema"]["x-workshop-caller-session-path"], "/session_id");
     }
 }
