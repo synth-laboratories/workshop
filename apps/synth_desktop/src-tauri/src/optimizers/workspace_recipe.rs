@@ -767,6 +767,13 @@ pub fn load_container_specs_from_root(source_root: &Path) -> Result<Vec<Containe
 }
 
 pub fn load_container_specs_from_manifest(manifest_path: &Path) -> Result<Vec<ContainerSpec>> {
+    load_selected_container_specs(manifest_path, None)
+}
+
+fn load_selected_container_specs(
+    manifest_path: &Path,
+    spec_id: Option<&str>,
+) -> Result<Vec<ContainerSpec>> {
     let source_root = manifest_path.parent().ok_or_else(|| {
         anyhow!(
             "container manifest {} has no parent",
@@ -780,11 +787,15 @@ pub fn load_container_specs_from_manifest(manifest_path: &Path) -> Result<Vec<Co
         }
         .into_anyhow()
     })?;
-    parse_containers(source_root, manifest_path, &text)
+    parse_selected_containers(source_root, manifest_path, &text, spec_id)
 }
 
 pub fn find_container_spec(workspace: &Path, spec_id: &str) -> Result<ContainerSpec> {
-    load_container_specs_from_root(workspace)?
+    find_container_spec_in_manifest(&workspace.join(CONTAINERS_FILE), spec_id)
+}
+
+pub fn find_container_spec_in_manifest(manifest_path: &Path, spec_id: &str) -> Result<ContainerSpec> {
+    load_selected_container_specs(manifest_path, Some(spec_id))?
         .into_iter()
         .find(|spec| spec.id == spec_id)
         .ok_or_else(|| anyhow!("container spec `{spec_id}` is not declared in {CONTAINERS_FILE}"))
@@ -924,7 +935,7 @@ pub fn find_container_spec_in_roots(
 ) -> Result<ContainerSpec> {
     let mut matches = Vec::new();
     for manifest in discover_container_manifests(search_roots)? {
-        for spec in load_container_specs_from_manifest(&manifest)? {
+        for spec in load_selected_container_specs(&manifest, Some(spec_id))? {
             if spec.id == spec_id {
                 matches.push(spec);
             }
@@ -1526,10 +1537,11 @@ const PRODUCT_MAX_FRAME_BYTES: u64 = 32 * 1024 * 1024;
 /// physically in the content store, so this bounds what one episode can add.
 const PRODUCT_MAX_TOTAL_FRAME_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-fn parse_containers(
+fn parse_selected_containers(
     source_root: &Path,
     manifest_path: &Path,
     text: &str,
+    spec_id: Option<&str>,
 ) -> Result<Vec<ContainerSpec>> {
     let parsed: ContainersFile = toml::from_str(text).context("parse workshop.containers.toml")?;
     let mut specs = Vec::new();
@@ -1540,6 +1552,11 @@ fn parse_containers(
         .canonicalize()
         .unwrap_or_else(|_| manifest_path.to_path_buf());
     for item in parsed.container {
+        // Exact-target admission must not inspect unrelated launch inputs.
+        // The selected declaration still receives every provenance check.
+        if spec_id.is_some_and(|id| item.id != id) {
+            continue;
+        }
         let launch_file = item.launch.context(format!(
             "launch_declaration_missing: container `{}` must declare [container.launch]",
             item.id
@@ -2742,6 +2759,21 @@ include = ["svc/serve.py"]
             spec.environment["SYNTH_ANNOTATION_USD_PER_MILLION_TOKENS"],
             "2"
         );
+        let manifest = workspace.join(CONTAINERS_FILE);
+        let original = fs::read_to_string(&manifest).unwrap();
+        fs::write(&manifest, format!("{original}\n[[container]]\nid = \"unrelated-legacy\"\nurl = \"http://127.0.0.1:8199\"\nlocality = \"host\"\n")).unwrap();
+        assert_eq!(
+            find_container_spec_in_manifest(&manifest, "classify").unwrap().id,
+            "classify"
+        );
+        assert_eq!(
+            find_container_spec_in_roots(&[workspace.clone()], "classify").unwrap().id,
+            "classify"
+        );
+        assert!(load_container_specs_from_manifest(&manifest)
+            .unwrap_err().to_string().contains("launch_declaration_missing"));
+        assert!(find_container_spec_in_manifest(&manifest, "unrelated-legacy")
+            .unwrap_err().to_string().contains("launch_declaration_missing"));
     }
 
     #[test]

@@ -2714,17 +2714,10 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .or_else(|| body.get("spec_id"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("specId required"))?;
-            let spec = crate::optimizers::workspace_recipe::load_container_specs_from_manifest(
+            let spec = crate::optimizers::workspace_recipe::find_container_spec_in_manifest(
                 &manifest_path,
-            )?
-            .into_iter()
-            .find(|candidate| candidate.id == spec_id)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "container spec `{spec_id}` is not declared in {}",
-                    manifest_path.display()
-                )
-            })?;
+                spec_id,
+            )?;
             let origin = spec.origin.to_json();
             let ensured = crate::optimizers::container_lifecycle::ensure_spec(
                 core.storage().database(),
