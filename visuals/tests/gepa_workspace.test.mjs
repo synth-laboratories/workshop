@@ -106,6 +106,11 @@ test("live run view exposes durable setup and measured concurrency", () => {
   assert.equal(projected.gepa.runtime.configuredRolloutWorkers, 50);
   assert.equal(projected.gepa.runtime.estimatedEffectiveConcurrency, 17.5);
   assert.equal(projected.gepa.runtime.rolloutsPerMinute, 600);
+  view.header.lifecycle = "terminal";
+  view.header.terminal = { kind: "failed", finalSequence: 51, sealedAt: "2026-09-14T17:10:48Z" };
+  const failed = projectRunViewV2({ ...RUN, status: "failed" }, view);
+  assert.equal(failed.gepa.activity.label, "Search failed");
+  assert.equal(failed.gepa.stages.find(stage => stage.id === "complete").status, "failed");
 });
 
 function solEvents() {

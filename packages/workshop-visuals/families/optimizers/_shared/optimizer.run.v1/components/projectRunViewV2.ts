@@ -272,11 +272,12 @@ function gepaProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
   });
   const phase = typeof projection.phase === "string" ? projection.phase : "selection";
   const terminal = view.header.lifecycle === "terminal";
+  const failed = terminal && view.header.terminal?.kind === "failed";
   const stages = Object.entries(GEPA_STAGE_LABELS).map(([id, label]) => ({
     id,
     label,
     status: id === "complete"
-      ? terminal ? "completed" : "pending"
+      ? terminal ? failed ? "failed" : "completed" : "pending"
       : id === phase ? "active" : "pending"
   })) as GepaStage[];
   const incumbentId = typeof projection.incumbentId === "string"
@@ -395,7 +396,7 @@ function gepaProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
     })),
     activity: {
       phase,
-      label: terminal ? "Search complete" : GEPA_STAGE_LABELS[phase] ?? phase,
+      label: terminal ? failed ? "Search failed" : "Search complete" : GEPA_STAGE_LABELS[phase] ?? phase,
       proposalActive: phase === "proposal" && !terminal,
       evaluationActive: ["minibatch", "full_train", "heldout"].includes(phase) && !terminal,
       activeCandidateIds: [],
