@@ -618,9 +618,13 @@ impl SecretsService {
                     None,
                     false,
                 )?;
-                if super::locator::preferred_source(conn, provider, &variable)?.is_none() {
-                    super::locator::mark_preferred(conn, &source_id, provider, &variable)?;
-                }
+                super::locator::prefer_configured_instance_source(
+                    conn,
+                    &source_id,
+                    &locator.id,
+                    provider,
+                    &variable,
+                )?;
                 Ok(locator.id)
             })?;
             instance_locator_ids.push(locator_id);

@@ -547,6 +547,28 @@ pub fn mark_preferred(
     Ok(())
 }
 
+/// Keep the config-declared instance source current without overriding an
+/// explicit workspace or external source selection.
+pub fn prefer_configured_instance_source(
+    conn: &Connection,
+    source_id: &str,
+    locator_id: &str,
+    provider: &str,
+    variable: &str,
+) -> Result<()> {
+    let preferred = preferred_source(conn, provider, variable)?;
+    let should_prefer = match preferred {
+        None => true,
+        Some((_, preferred_locator_id)) if preferred_locator_id == locator_id => false,
+        Some((_, preferred_locator_id)) => get(conn, &preferred_locator_id)?
+            .is_some_and(|record| record.kind == CredentialLocatorKind::InstanceEnvFile),
+    };
+    if should_prefer {
+        mark_preferred(conn, source_id, provider, variable)?;
+    }
+    Ok(())
+}
+
 pub fn preferred_instance_source(
     conn: &Connection,
     provider: &str,
