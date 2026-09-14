@@ -73,7 +73,7 @@ test("Intern/CloudDesk are listed unsupported; Laguna is not a plugin", () => {
 	const catalog = read("runtime/capabilityManifest.ts");
 	const nav = read("runtime/pluginNav.ts");
 	assert.match(catalog, /intern \/ CloudDesk/);
-	assert.match(catalog, /Unsupported in v0\.9 \(v0\.1 removal\)/);
+	assert.match(catalog, /Unsupported in this build \(removed in v0\.1\)/);
 	assert.match(catalog, /parallel LagunaStatus, not a plugin/);
 	assert.match(catalog, /Local sidecar/);
 	assert.doesNotMatch(nav, /id: "laguna"/);
@@ -140,7 +140,7 @@ test("Laguna this-build is a local sidecar phase, not a plugin row", () => {
 test("Intern/CloudDesk stay unsupported in this build", () => {
 	const intern = v09CapabilityRows().find((row) => row.id === "intern / CloudDesk");
 	assert.equal(intern.kind, "unmounted");
-	assert.equal(intern.thisBuild, "Unsupported in v0.9 (v0.1 removal)");
+	assert.equal(intern.thisBuild, "Unsupported in this build (removed in v0.1)");
 });
 
 test("About receives existing pluginStatuses while Diagnostics invents no manifest IPC", () => {

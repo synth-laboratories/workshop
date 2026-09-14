@@ -20,7 +20,7 @@ const RECIPE_NOT_READY = "GEPA/SFT recipe runner is not ready";
 const RECIPE_AVAILABLE = "GEPA/SFT recipe runner is available";
 const NEVER_AGENT_INSTALLABLE = "never agent-installable";
 const LOCAL_SIDECAR = "Local sidecar";
-const UNSUPPORTED_V09 = "Unsupported in v0.9 (v0.1 removal)";
+const UNSUPPORTED_V09 = "Unsupported in this build (removed in v0.1)";
 const BUNDLED_SOURCE_FAMILIES = "Bundled (source families)";
 
 const LAGUNA_PHASE_LABELS: Record<string, string> = {

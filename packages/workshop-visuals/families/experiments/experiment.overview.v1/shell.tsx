@@ -540,7 +540,11 @@ function liveOverlay(props: ShellProps): { status?: string; progress?: Progress 
     phase: text(agreement?.phaseLabel),
     completed: finiteNumber(agreement?.completed),
     total: finiteNumber(agreement?.total),
-    cost: costUsd != null ? `$${costUsd.toFixed(2)}` : undefined,
+    cost: costUsd != null
+      ? costUsd > 0 && costUsd < 0.000001
+        ? "<$0.000001"
+        : `$${costUsd.toFixed(costUsd > 0 && costUsd < 0.01 ? 6 : 2)}`
+      : undefined,
     ...(Object.keys(stateCounts).length ? { stateCounts } : {})
   };
   const hasProgress = Object.values(progress).some((value) => value != null);

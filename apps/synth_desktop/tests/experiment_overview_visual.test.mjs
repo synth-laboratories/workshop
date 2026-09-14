@@ -141,6 +141,18 @@ test("experiment overview renders optional evidence modules only when supplied",
 	assert.doesNotMatch(minimal, /Results &amp; assessment|Traces|Run context|Artifacts|Method &amp; caveats/);
 });
 
+test("live overview distinguishes missing, zero, and sub-cent provider charges", () => {
+	const renderCost = (costUsd) => renderToStaticMarkup(createElement(Shell, {
+		run: { status: "completed" },
+		runProgress: { status: "completed", completed: 4, total: 4, costUsd },
+		experiment: { progress: { cost: "$9.99" } }
+	}));
+	assert.match(renderCost(0.000697), /\$0\.000697/);
+	assert.match(renderCost(0), /\$0\.00/);
+	assert.match(renderCost(0.0000001), /&lt;\$0\.000001/);
+	assert.doesNotMatch(renderCost(null), /\$0\.00|\$9\.99/);
+});
+
 test("experiment overview does not offer a dead inspector action for lite seals", () => {
 	const html = renderToStaticMarkup(createElement(Shell, { experiment: {
 		title: "Lite trace",
