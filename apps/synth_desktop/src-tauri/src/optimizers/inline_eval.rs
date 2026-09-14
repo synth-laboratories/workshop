@@ -47,10 +47,16 @@ pub async fn admit_inline(
     let (context, normalized) = discovery_context(service, request).await?;
     let recipe =
         admission::pipeline::draft_inline(&normalized, &context).map_err(anyhow::Error::new)?;
-    admission::materialize(RecipeSource::Inline(recipe), &context)
+    let admissible = admission::materialize(RecipeSource::Inline(recipe), &context)
         .and_then(|draft| draft.validate())
         .and_then(|validated| validated.admit())
-        .map_err(anyhow::Error::new)
+        .map_err(anyhow::Error::new)?;
+    container_eval::preflight_inline_provenance(
+        service,
+        admissible.spec().recipe.container.container_id.as_str(),
+    )
+    .await?;
+    Ok(admissible)
 }
 
 /// Bind the host approval receipt to the exact admitted specification.
