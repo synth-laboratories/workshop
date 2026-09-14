@@ -1331,13 +1331,12 @@ fn probe_container_via_docker(container_base_url: &str, handle: &str) -> Result<
         )
         .anyhow()
     })?;
-    let docker_ok = Command::new("docker")
+    let mut docker_version = Command::new("docker");
+    docker_version
         .args(["version", "--format", "{{.Server.Version}}"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false);
+        .stderr(Stdio::null());
+    let docker_ok = command_succeeds_with_timeout(&mut docker_version, Duration::from_secs(8));
     if !docker_ok {
         return Err(CredentialError::new(
             PROXY_CONTAINER_UNREACHABLE,
@@ -1384,12 +1383,34 @@ fn docker_wget(image: &str, handle: &str, url: &str, pull_never: bool) -> bool {
         .arg("--header")
         .arg(format!("Authorization: Bearer {handle}"))
         .arg(url)
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::null());
-    command
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    command_succeeds_with_timeout(&mut command, Duration::from_secs(12))
+}
+
+pub(super) fn command_succeeds_with_timeout(command: &mut Command, timeout: Duration) -> bool {
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 pub fn write_runtime_lease(path: &Path, lease: &OptimizerRuntimeLease) -> Result<()> {
