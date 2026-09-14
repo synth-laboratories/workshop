@@ -63,7 +63,7 @@ export function slugify(text: string): string {
 		.slice(0, 80);
 }
 
-function inlineText(nodes: InlineNode[]): string {
+export function inlineText(nodes: InlineNode[]): string {
 	return nodes
 		.map((node) => {
 			switch (node.type) {
@@ -316,7 +316,7 @@ function parseList(lines: string[], start: number): [Block, number] {
 }
 
 const AUTOLINK = /^<((?:https?|mailto):[^>\s]+)>/;
-const LINK = /^\[([^\]]*)\]\(([^)\s]*)(?:\s+"[^"]*")?\)/;
+const LINK = /^\[([^\]]*)\]\((<[^>\n]*>|[^)\n]*?)(?:\s+"[^"]*")?\)/;
 const IMAGE = /^!\[([^\]]*)\]\(([^)\s]*)(?:\s+"[^"]*")?\)/;
 const BARE_URL = /^https?:\/\/[^\s<>()]+[^\s<>().,;:!?]/;
 
@@ -382,7 +382,7 @@ export function parseInline(source: string): InlineNode[] {
 		const link = LINK.exec(rest);
 		if (link) {
 			pushText();
-			nodes.push({ type: "link", href: link[2], children: parseInline(link[1]) });
+			nodes.push({ type: "link", href: link[2].trim().replace(/^<|>$/g, ""), children: parseInline(link[1]) });
 			index += link[0].length;
 			continue;
 		}

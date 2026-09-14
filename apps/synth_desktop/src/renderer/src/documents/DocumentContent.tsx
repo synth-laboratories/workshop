@@ -8,7 +8,7 @@
  * `<script>` — structurally, not because a sanitizer caught it.
  */
 
-import { useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import { openPath } from "@tauri-apps/plugin-opener";
 
 // The `.document-*` rules this module's output depends on. Imported here rather
@@ -19,10 +19,12 @@ import "./DocumentPane.css";
 
 import { formatBytes, type WorkspaceDocument } from "./bridge.ts";
 import { highlight, isHighlightable, type Token } from "./highlight.ts";
-import { outline, parseMarkdown, type Block, type InlineNode } from "./markdown.ts";
+import { inlineText, outline, parseMarkdown, type Block, type InlineNode } from "./markdown.ts";
 
 /** How a link inside a document is followed. */
 export type DocumentLinkHandler = (path: string) => void;
+type LinkRenderer = (href: string, children: ReactNode, label: string) => ReactNode;
+const LinkRendererContext = createContext<LinkRenderer | undefined>(undefined);
 
 function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
 	const [copied, setCopied] = useState(false);
@@ -93,6 +95,7 @@ function isExternal(href: string): boolean {
 }
 
 function Inline({ nodes, onOpenLink }: { nodes: InlineNode[]; onOpenLink?: DocumentLinkHandler }) {
+	const renderLink = useContext(LinkRendererContext);
 	return (
 		<>
 			{nodes.map((node, index): ReactNode => {
@@ -117,6 +120,7 @@ function Inline({ nodes, onOpenLink }: { nodes: InlineNode[]; onOpenLink?: Docum
 							</span>
 						);
 					case "link": {
+						if (renderLink) return <span key={index}>{renderLink(node.href, <Inline nodes={node.children} onOpenLink={onOpenLink} />, inlineText(node.children))}</span>;
 						const external = isExternal(node.href);
 						const anchor = node.href.startsWith("#");
 						return (
@@ -224,9 +228,9 @@ function Blocks({ blocks, onOpenLink }: { blocks: Block[]; onOpenLink?: Document
 
 /** Markdown, typeset. Exported so reports can render `report.prose.v1` blocks
  *  through the same renderer instead of growing a second one. */
-export function Markdown({ source, onOpenLink }: { source: string; onOpenLink?: DocumentLinkHandler }) {
+export function Markdown({ source, onOpenLink, renderLink }: { source: string; onOpenLink?: DocumentLinkHandler; renderLink?: LinkRenderer }) {
 	const blocks = useMemo(() => parseMarkdown(source), [source]);
-	return <div className="document-prose"><Blocks blocks={blocks} onOpenLink={onOpenLink} /></div>;
+	return <LinkRendererContext.Provider value={renderLink}><div className="document-prose"><Blocks blocks={blocks} onOpenLink={onOpenLink} /></div></LinkRendererContext.Provider>;
 }
 
 export function DocumentOutline({ source, onJump }: { source: string; onJump: (slug: string) => void }) {
