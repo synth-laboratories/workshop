@@ -1594,32 +1594,37 @@ export function useAppController() {
 			const eventRevision = typeof payload?.revision === "number" ? payload.revision : -1;
 			if (event.kind === "visual.show") {
 				// `ownerSessionId` is the conversation that owns the visual. The
-				// event's own `sessionId` is whoever *opened* it, which the
-				// registry sets even for a workspace visual nobody owns.
-				// Falling back to it classified every workspace visual as
-				// chat-owned, and the branch below then returned without opening
-				// anything whenever that conversation was not the active view --
-				// leaving the library, the one surface that renders a workspace
-				// visual, never told. `show` became a silent no-op: no session,
-				// no controls, no error, and only a review capture could still
-				// bring the pane round.
+				// event session is where the show request should be presented.
+				// Keep those identities separate so an older visual can open in the
+				// requesting chat without being adopted into that chat's Outputs.
 				const owner =
 					typeof payload?.ownerSessionId === "string" && payload.ownerSessionId
 						? payload.ownerSessionId
 						: null;
-				if(!owner){presentWorkspaceVisual(visualId);return;}
-				const ownerViewKey = `chat:${owner}`;
-				openArtifactByViewRef.current[ownerViewKey] = visualId;
+				if (!owner) {
+					presentWorkspaceVisual(visualId);
+					return;
+				}
+				const displaySessionId =
+					typeof event.sessionId === "string"
+						? event.sessionId
+						: owner;
+				const displayViewKey = `chat:${displaySessionId}`;
+				openArtifactByViewRef.current[displayViewKey] = visualId;
 				openArtifactByViewRef.current.window = visualId;
-				if (owner && owner !== activeSessionIdRef.current) {
+				if (displaySessionId !== activeSessionIdRef.current) {
 					if (payload?.foregroundOwner !== true) return;
-					if (!sessionsRef.current.some((session) => session.id === owner)) {
-						showToast(`Cannot foreground unknown conversation ${owner}`);
+					if (!sessionsRef.current.some((session) => session.id === displaySessionId)) {
+						showToast(`Cannot foreground unknown conversation ${displaySessionId}`);
 						return;
 					}
-					setView({ kind: "chat", chatId: owner });
+					setView({ kind: "chat", chatId: displaySessionId });
 				}
 				reconcileOpenVisual(visualId, eventRevision, true);
+				if (view.kind === "chat") {
+					setSidePanelTab("visual");
+					setSidePanelOpen(true);
+				}
 			}
 			else if (event.kind === "visual.updated" && openArtifactIdRef.current === visualId) {
 				reconcileOpenVisual(visualId, eventRevision);
@@ -1634,7 +1639,7 @@ export function useAppController() {
 			unlisten();
 			window.removeEventListener("focus", reconcileSelected);
 		};
-	}, [reconcileOpenVisual, viewKey]);
+	}, [reconcileOpenVisual, setSidePanelOpen, setSidePanelTab, view.kind, viewKey]);
 
 	const ensureOpenRouterReady = useCallback(async (targetId: string): Promise<boolean> => {
 		if (!isOpenRouterCatalogTarget(targetId)) return true;
