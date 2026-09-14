@@ -246,6 +246,7 @@ function decodeBase64Utf8(base64: string): string {
 function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [Shell, setShell] = useState<ComponentType<ShellProps> | null>(null);
 	const [failed, setFailed] = useState(false);
+	const [shellLoadError, setShellLoadError] = useState<string | null>(null);
 	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
 	const [receiptVerdict, setReceiptVerdict] = useState<ReceiptVerdict>({ kind: "unverified", reason: "no_receipt" });
 	const [optimizerLoadError, setOptimizerLoadError] = useState<string | null>(null);
@@ -502,6 +503,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		let cancelled = false;
 		const templateId = artifact.templateId;
 		setFailed(false);
+		setShellLoadError(null);
 		setShell(null);
 		if (!templateId) {
 			setFailed(true);
@@ -526,6 +528,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				} catch (reason) {
 					if (!cancelled) {
 						setFailed(true);
+						setShellLoadError(publicError(reason));
 						reportDiagnostic({
 							...visualIdentity,
 							severity: "error",
@@ -539,7 +542,12 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				}
 				return;
 			}
-			const nativeTemplate = typeof bridges.visuals?.getTemplate === "function" ? await bridges.visuals.getTemplate(templateId) : null;
+			// Bundled definitions cannot be shadowed by user templates and do not
+			// need a native catalog round trip before their shell can render.
+			const bundledTemplate = resolveTemplate(templateId);
+			const nativeTemplate = bundledTemplate?.distribution
+				? null
+				: typeof bridges.visuals?.getTemplate === "function" ? await bridges.visuals.getTemplate(templateId) : null;
 			const userAuthored = nativeTemplate?.sourceKind === "user";
 			if (cancelled) return;
 			if (userAuthored) {
@@ -593,6 +601,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				return;
 			}
 			setFailed(true);
+			setShellLoadError(publicError(reason));
 			reportDiagnostic({
 				...visualIdentity,
 				severity: "error",
@@ -765,7 +774,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		};
 	}, [boundRunId]);
 
-	if (failed) return <VisualInvalidState title="Template unavailable" detail={`No bundled shell is registered for ${artifact.templateId ?? "this visual"}.`} />;
+	if (failed) return <VisualInvalidState title={shellLoadError ? "Visual failed to load" : "Template unavailable"} detail={shellLoadError ?? `No bundled shell is registered for ${artifact.templateId ?? "this visual"}.`} />;
 	if (resolvedBindings.status === "rejected") {
 		return <VisualInvalidState title="Visual bindings unreadable" detail={resolvedBindings.error ?? "This visual's bindings could not be read."} />;
 	}

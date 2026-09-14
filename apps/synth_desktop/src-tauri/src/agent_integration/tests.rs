@@ -15,6 +15,19 @@ fn native_caller_scope_survives_unified_bridge_without_borrowing_a_session() {
 }
 
 #[test]
+fn native_session_presentation_uses_caller_but_external_clients_keep_explicit_targets() {
+    let tools = json!({"tools":[{"name":"session_present","inputSchema":{
+        "x-workshop-caller-session-path":"/session_id"
+    }}]});
+    let args = json!({"title":"Banking77 QA"});
+    let bound = bind_native_caller_session(&tools, "session_present", &args, Some("native-chat")).unwrap();
+    assert_eq!(bound, json!({"title":"Banking77 QA","session_id":"native-chat"}));
+    assert!(bind_native_caller_session(&tools, "session_present", &json!({"title":"QA","session_id":"other"}), Some("native-chat")).is_err());
+    let external = json!({"title":"QA","session_id":"explicit-target"});
+    assert_eq!(bind_native_caller_session(&tools, "session_present", &external, None).unwrap(), external);
+}
+
+#[test]
 fn native_caller_scope_binds_declared_nested_operation_arguments() {
     let tools = json!({"tools":[{"name":"optimizer_manage","inputSchema":{
         "x-workshop-caller-session-path":"/arguments/session_ref"

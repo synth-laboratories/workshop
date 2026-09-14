@@ -243,7 +243,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 	const order: string[] = [];
 	const subagentIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
 	const scopedThreadIds = new Set(events.map((event) => eventThreadId(event.payload ?? {}, eventItem(event))).filter(Boolean));
-	const isSingleThreadProjection = scopedThreadIds.size === 1;
+	const isSingleThreadProjection = scopedThreadIds.size === 1 && subagentIds.size === 0;
 	let activeAssistantId: string | null = null;
 	let producedAssistantForTurn = false;
 	let compactedDuringTurn = false;
@@ -1285,7 +1285,7 @@ export function eventsToLocalActivity(
 	const assistantIds = messages.filter((message) => message.role === "assistant").map((message) => message.id);
 	const childThreadIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
 	const scopedThreadIds = new Set(events.map((event) => eventThreadId(event.payload ?? {}, eventItem(event))).filter(Boolean));
-	const isSingleThreadProjection = scopedThreadIds.size === 1;
+	const isSingleThreadProjection = scopedThreadIds.size === 1 && childThreadIds.size === 0;
 	const lastContentSequenceByMessageId = new Map<string, number>();
 	const approvalKey = (event: RuntimeEvent): string | undefined => {
 		const payload = event.payload ?? {};
