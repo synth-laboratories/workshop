@@ -341,13 +341,23 @@ impl GepaProjection {
                     "sequence": event.aggregate_sequence,
                     "attempt": payload.get("attempt"),
                     "maxAttempts": payload.get("max_attempts"),
+                    "partial": payload.get("partial").and_then(Value::as_bool).unwrap_or(false),
                     "failureClass": failure.get("reason_code").or_else(|| failure.get("failure_type")),
                     "message": failure.get("message").and_then(Value::as_str).map(|s| s.chars().take(2000).collect::<String>()),
                 });
                 let attempts = object_mut(&mut self.runtime).entry("failedAttempts")
                     .or_insert_with(|| json!([]));
-                if let Some(attempts) = attempts.as_array_mut() { attempts.push(summary); }
-                self.rollouts_failed += 1;
+                if let Some(attempts) = attempts.as_array_mut() {
+                    // The streaming lane reports a provisional failure before
+                    // the job emits its final failure envelope. Replace that
+                    // provisional row; later retries remain separate attempts.
+                    let provisional = (summary["partial"] == false).then(|| attempts.iter().position(|prior|
+                        prior["partial"] == true && prior["candidateId"] == summary["candidateId"]
+                            && prior["stage"] == summary["stage"] && prior["exampleId"] == summary["exampleId"]
+                    )).flatten();
+                    if let Some(index) = provisional { attempts[index] = summary; }
+                    else { attempts.push(summary); self.rollouts_failed += 1; }
+                }
             }
             "optimizer.evaluation.coverage.updated" => {
                 let key = format!("{}:{}", payload.get("candidate_id").and_then(Value::as_str).unwrap_or("run"),
@@ -935,6 +945,19 @@ mod tests {
         assert_eq!(result.verdict, GepaVerdict::NoMeasuredImprovement);
         assert_eq!(result.selected_candidate_id.as_deref(), Some("seed"));
         assert!(!result.work.fixed_denominator);
+    }
+
+    #[test]
+    fn provisional_failure_is_replaced_but_retries_are_not_deduplicated() {
+        let mut projection = GepaProjection::default();
+        let mut payload = json!({"candidate_id":"seed", "stage":"seed_full_train", "example_id":"train:0", "partial":true});
+        projection.apply(&committed("optimizer.candidate_evaluation.attempt.failed", payload.clone(), 1)).unwrap();
+        payload["partial"] = json!(false);
+        projection.apply(&committed("optimizer.candidate_evaluation.attempt.failed", payload.clone(), 2)).unwrap();
+        assert_eq!(projection.rollouts_failed, 1);
+        assert_eq!(projection.runtime["failedAttempts"].as_array().unwrap().len(), 1);
+        projection.apply(&committed("optimizer.candidate_evaluation.attempt.failed", payload, 3)).unwrap();
+        assert_eq!(projection.rollouts_failed, 2);
     }
 
     #[test]
