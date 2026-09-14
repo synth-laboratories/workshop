@@ -140,40 +140,6 @@ impl InternClient {
         self.fresh_json(url).await
     }
 
-    /// Source-qualified read contract only. This fetch does not activate a
-    /// profile, authorize a mutation, or reuse a stop-time receipt snapshot.
-    pub async fn resource_settlement(
-        &self,
-        run_id: &str,
-    ) -> Result<crate::settlement::ResourceSettlement, InternClientError> {
-        if run_id.trim().is_empty() || matches!(run_id, "." | "..") || run_id.len() > 512 {
-            return Err(protocol("invalid settlement run ID"));
-        }
-        let mut url = self.base_url.join("smr/runs/").map_err(protocol)?;
-        url.path_segments_mut()
-            .map_err(|_| protocol("invalid settlement URL"))?
-            .pop_if_empty()
-            .push(run_id)
-            .push("resource-settlement");
-        let observation: crate::settlement::ResourceSettlement = self.fresh_json(url).await?;
-        observation.validate_for_run(run_id).map_err(protocol)?;
-        Ok(observation)
-    }
-
-    /// Read the recorded runtime, never substitute the current Async singleton.
-    pub async fn runtime_resources(&self, kind: RuntimeKind, id: &str) -> Result<crate::inventory::RuntimeInventory, InternClientError> {
-        if id.trim().is_empty() || matches!(id, "." | "..") || id.len() > 512 {
-            return Err(protocol("invalid inventory runtime ID"));
-        }
-        let segment = match kind { RuntimeKind::Sync => "sync-sessions", RuntimeKind::Async => "async-assignments" };
-        let mut url = self.base_url.join(&format!("smr/research-intern/{segment}/")).map_err(protocol)?;
-        url.path_segments_mut().map_err(|_| protocol("invalid inventory URL"))?
-            .pop_if_empty().push(id).push("resources");
-        let inventory: crate::inventory::RuntimeInventory = self.fresh_json(url).await?;
-        inventory.validate_identity(kind, id).map_err(protocol)?;
-        Ok(inventory)
-    }
-
     async fn fresh_json<R: DeserializeOwned>(&self, url: Url) -> Result<R, InternClientError> {
         let mut response = self
             .http

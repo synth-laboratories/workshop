@@ -4,11 +4,10 @@ Extracted Workshop Intern transport. `publish = false`. Caller supplies keys,
 endpoint and optionally a configured reqwest client; this crate never reads
 configuration, environment variables, credentials stores or the filesystem.
 
-`runtime_resources(kind, recorded_id)` reads the exact Sync session or Async
-assignment through the public resource inventory API. Unknown dispositions and
-incomplete coverage stay explicit. The method enforces the existing fresh-read
-HTTP boundary and response identity; it does not claim full resource coverage
-or activate a live profile.
+The client tracks the consolidated backend Research contract exactly. Removed
+runtime-inventory and run-settlement endpoints are not retained as Workshop-only
+compatibility calls; callers use the current Sync/Async runtime, usage, checkpoint,
+approval and presence surfaces instead.
 
 Run `cargo test --manifest-path crates/synth-api-client/Cargo.toml --offline`.
 Run `python3 scripts/check-research-contract.py` from the repository root to
