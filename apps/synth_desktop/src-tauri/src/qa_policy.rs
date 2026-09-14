@@ -18,6 +18,9 @@ pub(crate) struct QaPolicy {
     #[serde(default)]
     pub inline_evaluation_digests: Vec<String>,
     pub providers: Vec<String>,
+    /// Explicit operator consent to bounded proxy leases, never raw secrets.
+    #[serde(default)]
+    pub proxy_lease_providers: Vec<String>,
     pub max_request_usd_micros: u64,
     pub max_total_usd_micros: u64,
     pub max_rollouts: u64,
@@ -55,6 +58,12 @@ impl QaPolicy {
             )?;
             anyhow::ensure!(&canonical == root, "qa_policy_root_must_be_canonical");
         }
+        anyhow::ensure!(
+            self.proxy_lease_providers
+                .iter()
+                .all(|p| self.providers.contains(p)),
+            "qa_policy_lease_provider_out_of_scope"
+        );
         Ok(())
     }
 
@@ -137,6 +146,61 @@ impl QaPolicy {
         )?;
         Ok(())
     }
+
+    pub fn bind_eval(
+        &self,
+        conn: &rusqlite::Connection,
+        approval: &str,
+        session: &str,
+        provider: &str,
+        scope: &str,
+    ) -> Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS qa_eval_lease_bindings (
+            approval_id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+            provider TEXT NOT NULL, scope TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0)",
+        )?;
+        conn.execute("INSERT INTO qa_eval_lease_bindings(approval_id,session_id,provider,scope) VALUES (?1,?2,?3,?4)",
+            rusqlite::params![approval, session, provider, scope])?;
+        Ok(())
+    }
+
+    pub fn claim_eval_lease(
+        &self,
+        conn: &rusqlite::Connection,
+        approval: &str,
+        session: &str,
+        provider: &str,
+        scope: &str,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.proxy_lease_providers.iter().any(|p| p == provider),
+            "qa_eval_proxy_lease_not_authorized"
+        );
+        // An opt-in added later cannot upgrade an existing/pending request.
+        let receipt: String = conn.query_row(
+            "SELECT receipt FROM qa_policy_reservations WHERE approval_id=?1 AND policy_id=?2",
+            rusqlite::params![approval, self.id],
+            |row| row.get(0),
+        )?;
+        let original: QaPolicy = serde_json::from_str(&receipt)?;
+        anyhow::ensure!(original.expires_at == self.expires_at,
+            "qa_eval_proxy_lease_policy_expiry_changed");
+        anyhow::ensure!(
+            original.proxy_lease_providers.iter().any(|p| p == provider),
+            "qa_eval_proxy_lease_requires_new_admission"
+        );
+        let changed = conn.execute(
+            "UPDATE qa_eval_lease_bindings SET consumed=1
+            WHERE approval_id=?1 AND session_id=?2 AND provider=?3 AND scope=?4 AND consumed=0",
+            rusqlite::params![approval, session, provider, scope],
+        )?;
+        anyhow::ensure!(
+            changed == 1,
+            "qa_eval_proxy_lease_binding_missing_or_consumed"
+        );
+        Ok(())
+    }
 }
 
 pub(crate) fn active() -> Result<Option<QaPolicy>> {
@@ -172,6 +236,7 @@ mod tests {
             recipes: vec!["qa.gepa".into()],
             inline_evaluation_digests: vec![],
             providers: vec!["openrouter".into()],
+            proxy_lease_providers: vec![],
             max_request_usd_micros: 2_450_000,
             max_total_usd_micros: 4_900_000,
             max_rollouts: 12,
@@ -214,6 +279,54 @@ mod tests {
         let tx = db.transaction().unwrap();
         p.reserve(&tx, "conversation-two", 2_450_000).unwrap();
         assert!(p.reserve(&tx, "retry", 1).is_err());
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn eval_lease_requires_exact_fresh_opted_in_budget_binding() {
+        let mut p = policy();
+        p.proxy_lease_providers = vec!["openrouter".into()];
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        let tx = db.transaction().unwrap();
+        p.reserve(&tx, "paid", 2_450_000).unwrap();
+        p.bind_eval(&tx, "paid", "session-a", "openrouter", "recipe:qa.gepa")
+            .unwrap();
+        assert!(p
+            .claim_eval_lease(&tx, "paid", "session-b", "openrouter", "recipe:qa.gepa")
+            .is_err());
+        assert!(p
+            .claim_eval_lease(&tx, "paid", "session-a", "openai", "recipe:qa.gepa")
+            .is_err());
+        assert!(p
+            .claim_eval_lease(&tx, "paid", "session-a", "openrouter", "recipe:other")
+            .is_err());
+        assert!(p
+            .claim_eval_lease(&tx, "missing", "session-a", "openrouter", "recipe:qa.gepa")
+            .is_err());
+        p.claim_eval_lease(&tx, "paid", "session-a", "openrouter", "recipe:qa.gepa")
+            .unwrap();
+        assert!(p
+            .claim_eval_lease(&tx, "paid", "session-a", "openrouter", "recipe:qa.gepa")
+            .is_err());
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn existing_reservations_cannot_gain_credential_consent_retroactively() {
+        let mut p = policy();
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        let tx = db.transaction().unwrap();
+        p.reserve(&tx, "old", 2_450_000).unwrap();
+        p.bind_eval(&tx, "old", "session-a", "openrouter", "recipe:qa.gepa")
+            .unwrap();
+        assert!(p
+            .claim_eval_lease(&tx, "old", "session-a", "openrouter", "recipe:qa.gepa")
+            .is_err());
+        p.proxy_lease_providers = vec!["openrouter".into()];
+        let error = p
+            .claim_eval_lease(&tx, "old", "session-a", "openrouter", "recipe:qa.gepa")
+            .unwrap_err();
+        assert!(error.to_string().contains("requires_new_admission"));
         tx.commit().unwrap();
     }
 }

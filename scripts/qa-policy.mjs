@@ -11,7 +11,7 @@ if (operation === 'enable') {
   const bytes = fs.readFileSync(source);
   const profile = JSON.parse(bytes);
   const fields = ['schema_version','id','instance','expires_at','container_roots','recipe_roots',
-    'containers','recipes','inline_evaluation_digests','providers','max_request_usd_micros',
+    'containers','recipes','inline_evaluation_digests','providers','proxy_lease_providers','max_request_usd_micros',
     'max_total_usd_micros','max_rollouts'];
   if (Object.keys(profile).some(key => !fields.includes(key))) throw new Error('Unknown QA profile field');
   for (const key of ['container_roots','recipe_roots','containers','recipes','providers']) {
@@ -21,6 +21,10 @@ if (operation === 'enable') {
   }
   for (const key of ['max_request_usd_micros','max_total_usd_micros','max_rollouts']) {
     if (!Number.isSafeInteger(profile[key])) throw new Error(`Invalid integer ${key}`);
+  }
+  if (profile.proxy_lease_providers !== undefined && (!Array.isArray(profile.proxy_lease_providers)
+      || !profile.proxy_lease_providers.every(p => profile.providers.includes(p)))) {
+    throw new Error('Proxy lease providers must be explicitly allowed providers');
   }
   if (profile.schema_version !== 1 || profile.instance !== instance || !(Date.parse(profile.expires_at) > Date.now())) {
     throw new Error('QA profile must name this instance and have a future expiry');

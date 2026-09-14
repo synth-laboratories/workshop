@@ -24,6 +24,7 @@ Create an explicit profile (use canonical absolute repository paths):
   "recipes": ["qa.banking77.gepa.v1"],
   "inline_evaluation_digests": [],
   "providers": ["openrouter"],
+  "proxy_lease_providers": ["openrouter"],
   "max_request_usd_micros": 2450000,
   "max_total_usd_micros": 9800000,
   "max_rollouts": 12
@@ -55,7 +56,18 @@ do not refund it. The aggregate cap is strictly below $50. Keep the profile ID
 stable across restarts and revisions; a new ID represents a new operator budget,
 not a retry mechanism. Audit receipts identify `qa_policy`, never a human click.
 
-This policy does not grant credential access, import secrets, access Keychain,
-install sidecars, replace running containers, or waive visual readiness. Those
-require their normal authority. Pre-provision approved proxy credentials and
-required sidecars for unattended QA; this feature does not silently acquire them.
+`proxy_lease_providers` is optional and defaults to empty. Explicit opt-in permits
+the recipe execution path to authorize one bounded proxy lease for the same
+provider, conversation, recipe and freshly reserved compute approval. Each claim
+is consumed atomically and audited as `qa_eval_proxy_lease`. Missing, replayed,
+cross-session or out-of-scope requests fail without opening a modal. The opt-in
+must exist when the compute reservation is made: changing a profile never
+approves an already-pending credential prompt or upgrades an older reservation.
+
+This does not authorize raw credential access, locating/registering new secret
+sources, importing secrets, Keychain access, sidecar installation, container
+replacement, or fabricated visual readiness. Pre-provision the approved secrets
+proxy and required sidecars. Ordinary sessions and generic credential approval
+endpoints retain their existing consent behavior. An absent/revoked source,
+expired policy, or missing capability remains a structured failure, not a reason
+to acquire new credentials or silently fall back to a different provider.
