@@ -5880,6 +5880,7 @@ fn container_image_digest(metadata: &Value) -> Option<String> {
     for pointer in [
         "/info/imageDigest",
         "/info/image_digest",
+        "/info/runtime_identity/image_digest",
         "/imageDigest",
         "/image_digest",
         "/digest",
@@ -5899,6 +5900,7 @@ fn container_producer_source_revision(metadata: &Value) -> Option<String> {
     for pointer in [
         "/info/producerSourceRevision",
         "/info/producer_source_revision",
+        "/info/runtime_identity/producer_source_revision",
         "/producerSourceRevision",
         "/producer_source_revision",
     ] {
@@ -5926,6 +5928,7 @@ fn valid_sha256_digest(digest: &str) -> bool {
 fn refresh_inline_container_provenance(container: &mut ReadyContainer, info: &Value) -> Result<()> {
     let image_digest = info
         .get("imageDigest")
+        .or_else(|| info.pointer("/runtime_identity/image_digest"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|digest| valid_sha256_digest(digest))
@@ -5933,6 +5936,7 @@ fn refresh_inline_container_provenance(container: &mut ReadyContainer, info: &Va
         .to_string();
     let producer_source_revision = info
         .get("producerSourceRevision")
+        .or_else(|| info.pointer("/runtime_identity/producer_source_revision"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|revision| !revision.is_empty())
@@ -5942,6 +5946,7 @@ fn refresh_inline_container_provenance(container: &mut ReadyContainer, info: &Va
     if let Some(registered) = container
         .metadata
         .pointer("/info/imageDigest")
+        .or_else(|| container.metadata.pointer("/info/runtime_identity/image_digest"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|digest| valid_sha256_digest(digest))
@@ -5954,6 +5959,7 @@ fn refresh_inline_container_provenance(container: &mut ReadyContainer, info: &Va
     if let Some(registered) = container
         .metadata
         .pointer("/info/producerSourceRevision")
+        .or_else(|| container.metadata.pointer("/info/runtime_identity/producer_source_revision"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|revision| !revision.is_empty())
@@ -6409,6 +6415,25 @@ max_total_rollouts = 1
         }))
         .unwrap_err();
         assert!(format!("{drift:#}").contains("container_image_digest_mismatch"));
+    }
+
+    #[test]
+    fn approved_eval_accepts_container_runtime_identity_without_relaxing_digest_checks() {
+        let info = json!({"runtime_identity": {
+            "schema_version": "synth.container-runtime-identity.v1",
+            "image_digest": format!("sha256:{}", "a".repeat(64)),
+            "producer_source_revision": "containers@abc123"
+        }});
+        let metadata = json!({"info": info.clone()});
+        let mut container = ready_container_with_metadata(metadata.clone());
+        refresh_inline_container_provenance(&mut container, &info).unwrap();
+        assert_eq!(container.image_digest, container_image_digest(&metadata));
+        assert_eq!(container.producer_source_revision, container_producer_source_revision(&metadata));
+        let mut changed = info.clone();
+        changed["runtime_identity"]["image_digest"] = json!(format!("sha256:{}", "b".repeat(64)));
+        assert!(refresh_inline_container_provenance(&mut container, &changed).unwrap_err().to_string().contains("container_image_digest_mismatch"));
+        changed["runtime_identity"]["image_digest"] = json!("source.sha256:not-an-image");
+        assert!(refresh_inline_container_provenance(&mut container, &changed).unwrap_err().to_string().contains("container_image_digest_missing"));
     }
 
     #[test]
