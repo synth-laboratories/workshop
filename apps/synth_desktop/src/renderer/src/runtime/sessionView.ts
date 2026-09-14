@@ -1634,14 +1634,12 @@ export function eventsToLocalActivity(
 		// activity. Keep it in the journal/Advanced view and let the composer’s
 		// permissions control present the active policy.
 		if (event.eventKind === "approval.policy.effective") continue;
-		// A successful conversation-budget auto-approval is likewise control-plane
+		// A successful policy auto-approval is likewise control-plane
 		// bookkeeping, not something the user said or must act on. Repeated eval
 		// calls can produce dozens of these receipts; keep them in Advanced and the
 		// durable journal instead of turning the transcript into a spend ledger.
 		if (event.eventKind === "approval.granted"
-			&& payload.kind === "paid_compute"
-			&& payload.policyAuto === true
-			&& payload.approvalPolicy === "conversation_paid_compute_budget") continue;
+			&& payload.policyAuto === true) continue;
 		const path = typeof payload.path === "string" ? payload.path : undefined;
 		const approvalKind = typeof payload.kind === "string" ? payload.kind : "permission";
 		const approvalSubject = approvalKind === "paid_compute" ? "Paid compute"

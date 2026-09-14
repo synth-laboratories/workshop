@@ -151,6 +151,18 @@ test("conversation paid-compute auto-approval stays in the journal, not chat", (
 	assert.deepEqual(activity, {});
 });
 
+test("automatic QA and lifecycle grants stay out of chat without hiding failures", () => {
+	for (const kind of ["paid_compute", "credential_access", "sidecar_lifecycle"]) {
+		for (const policy of ["qa_policy", "qa_eval_proxy_lease", "operator-command"]) {
+			const payload = { approvalId: "qa-auto", kind, policyAuto: true, approvalPolicy: policy };
+			assert.deepEqual(eventsToLocalActivity([event({ sequence: 1, eventKind: "approval.granted", payload })], []), {});
+			for (const eventKind of ["approval.requested", "approval.rejected", "approval.expired"]) {
+				assert.ok(eventsToLocalActivity([event({ sequence: 1, eventKind, payload })], []).__active__?.length);
+			}
+		}
+	}
+});
+
 test("ineligible paid-compute requests still project a blocking modal card", () => {
 	const activity = eventsToLocalActivity([
 		event({

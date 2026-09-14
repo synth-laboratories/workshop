@@ -466,8 +466,6 @@ function ActivityLine({
 				<pre id={`activity-detail-${line.id}`} className="local-activity-detail" data-testid={`activity-detail-${line.id}`}>
 					{line.detail}
 				</pre>
-			) : !isReasoning ? (
-				<div className="local-activity-wave" aria-hidden />
 			) : null}
 		</div>
 	);
