@@ -58,9 +58,9 @@ impl AlgorithmKind {
     pub const fn reducer_version(self) -> &'static str {
         match self {
             Self::Eval => "eval.projection.v3",
-            // v6 retains failures/coverage and rejects unscored fallback zeros.
+            // v7 also coalesces provisional/final failure notifications.
             // Existing terminal runs replay once on read.
-            Self::Gepa => "gepa.projection.v6",
+            Self::Gepa => "gepa.projection.v7",
             Self::GoEx => "go_ex.projection.v3",
             // v3 persists the bounded metric series and checkpoint evaluation
             // summaries so training surfaces read the projection instead of
