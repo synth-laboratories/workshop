@@ -240,6 +240,9 @@ impl CispoProjection {
                 if let Some(id) = payload
                     .get("checkpointId")
                     .or_else(|| payload.get("checkpoint_id"))
+                    // mlx-rl sidecar items use their stable item identity when
+                    // they do not also repeat a checkpoint-specific field.
+                    .or_else(|| payload.get("id"))
                     .and_then(|v| v.as_str())
                 {
                     self.checkpoints.push(id.to_string());
@@ -372,6 +375,29 @@ mod tests {
             committed_at: "2026-08-27T18:00:01Z".into(),
             producer,
         }
+    }
+
+    #[test]
+    fn sidecar_item_identity_settles_the_policy_checkpoint() {
+        let mut projection = CispoProjection::default();
+        projection
+            .apply(&committed(
+                "sft.checkpoint.ready",
+                json!({
+                    "id": "cispo_mlx_job:step-1",
+                    "path": "/tmp/adapter",
+                    "sha256": "abc"
+                }),
+                1,
+            ))
+            .unwrap();
+
+        let result = projection.settle().unwrap();
+        assert_eq!(
+            result.policy_checkpoint_id.as_deref(),
+            Some("cispo_mlx_job:step-1")
+        );
+        assert!(!result.no_learning_signal);
     }
 
     #[test]
