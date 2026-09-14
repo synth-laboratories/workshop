@@ -1335,6 +1335,14 @@ export function useAppController() {
 					? `async:${view.sessionId}`
 					: view.kind;
 
+	const persistedVisualId =
+		(typeof activeChatSession?.metadata?.openVisualId === "string"
+			? activeChatSession.metadata.openVisualId : null)
+		?? (view.kind === "chat"
+			? activeChat?.artifacts?.find((artifact) => artifact.templateId !== "synth.subagents.v1")?.id ?? null
+			: view.kind === "sync"
+				? activeSync?.artifacts?.find((artifact) => artifact.templateId !== "synth.subagents.v1")?.id ?? null
+				: null);
 	useEffect(() => {
 		if (windowPane && view.kind !== "chat" && openArtifactIdRef.current) {
 			openArtifactByViewRef.current[viewKey] = openArtifactIdRef.current;
@@ -1343,15 +1351,7 @@ export function useAppController() {
 		const hasRemembered = Object.prototype.hasOwnProperty.call(openArtifactByViewRef.current, viewKey);
 		let remembered = hasRemembered ? openArtifactByViewRef.current[viewKey] : null;
 		if (!hasRemembered) {
-			const persistedId =
-				(typeof activeChatSession?.metadata?.openVisualId === "string"
-					? activeChatSession.metadata.openVisualId
-					: null)
-				?? (view.kind === "chat"
-					? activeChat?.artifacts?.find((artifact) => artifact.templateId !== "synth.subagents.v1")?.id ?? null
-					: view.kind === "sync"
-						? activeSync?.artifacts?.find((artifact) => artifact.templateId !== "synth.subagents.v1")?.id ?? null
-						: null);
+			const persistedId = persistedVisualId;
 			if (persistedId) {
 				remembered = persistedId;
 				openArtifactByViewRef.current[viewKey] = persistedId;
@@ -1367,7 +1367,7 @@ export function useAppController() {
 		dispatchVisualRevision(remembered ? { type: "select", id: remembered } : { type: "close" });
 		setOpenContainer(null);
 		setContainerPaneExpanded(false);
-	}, [viewKey, windowPane, activeChatSession?.metadata?.openVisualId, activeChat?.id, activeSync?.id]);
+	}, [viewKey, windowPane, persistedVisualId]);
 
 	useEffect(() => {
 		if (!openArtifactId) return;

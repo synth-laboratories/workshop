@@ -15,6 +15,9 @@ test("chat visual restoration is scoped and restores the content tab without for
   assert.match(restoration, /`chat:\$\{activeChat\?\.id/);
   assert.match(restoration, /if \(persistedId\) \{[\s\S]*?setSidePanelTab\("visual"\)/);
   assert.doesNotMatch(restoration, /setSidePanelOpen\(true\)/);
+  assert.match(restoration, /\[viewKey, windowPane, persistedVisualId\]/);
+  const layout = readFileSync(join(root, "hooks/useShellLayout.ts"), "utf8");
+  assert.match(layout, /runtimeStorage\.setItem\("synth\.inferenceRailOpen", sidePanelOpen \? "1" : "0"\)/);
 });
 const paneSource = visualHost.includes("export function VisualPane")
   ? visualHost.slice(visualHost.indexOf("const SHARED_URL_INVALID"))
