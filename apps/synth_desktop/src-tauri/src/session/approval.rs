@@ -1055,12 +1055,30 @@ impl ApprovalBroker {
                     anyhow::ensure!(credential_names.is_empty() || profile.proxy_lease_providers.contains(&provider),
                         "qa_eval_proxy_lease_not_authorized");
                 } else {
-                    anyhow::ensure!(operation == "optimizer.evaluation.inline.start"
-                        && preparation_digest.as_ref().is_some_and(|d| profile.inline_evaluation_digests.contains(d))
-                        && profile.providers.contains(&provider)
-                        && ceiling > 0 && ceiling <= profile.max_request_usd_micros
-                        && requested_cap.max_rollouts.is_some_and(|r| r > 0 && r <= profile.max_rollouts),
-                        "qa_policy_inline_evaluation_out_of_scope");
+                    anyhow::ensure!(
+                        operation == "optimizer.evaluation.inline.start",
+                        "qa_policy_inline_operation_out_of_scope"
+                    );
+                    anyhow::ensure!(
+                        preparation_digest
+                            .as_ref()
+                            .is_some_and(|digest| profile.inline_evaluation_digests.contains(digest)),
+                        "qa_policy_inline_digest_out_of_scope"
+                    );
+                    anyhow::ensure!(
+                        profile.providers.contains(&provider),
+                        "qa_policy_inline_provider_out_of_scope"
+                    );
+                    anyhow::ensure!(
+                        ceiling > 0 && ceiling <= profile.max_request_usd_micros,
+                        "qa_policy_inline_cost_out_of_scope"
+                    );
+                    anyhow::ensure!(
+                        requested_cap
+                            .max_rollouts
+                            .is_some_and(|rollouts| rollouts > 0 && rollouts <= profile.max_rollouts),
+                        "qa_policy_inline_rollouts_out_of_scope"
+                    );
                 }
                 let database = self.persistence.database()
                     .ok_or_else(|| anyhow!("qa_policy_requires_durable_database"))?;
