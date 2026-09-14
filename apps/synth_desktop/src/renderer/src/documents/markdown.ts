@@ -406,8 +406,11 @@ export function parseInline(source: string): InlineNode[] {
 		let emphasized = false;
 		for (const [marker, type] of EMPHASIS) {
 			if (!rest.startsWith(marker)) continue;
+			// Underscores inside identifiers are literal, not emphasis delimiters.
+			if (marker.startsWith("_") && /[\p{L}\p{N}_]/u.test(source[index - 1] ?? "")) continue;
 			const close = source.indexOf(marker, index + marker.length);
 			if (close === -1) continue;
+			if (marker.startsWith("_") && /[\p{L}\p{N}_]/u.test(source[close + marker.length] ?? "")) continue;
 			const inner = source.slice(index + marker.length, close);
 			if (!inner.trim()) continue;
 			// CommonMark's flanking rule, which is what keeps `2 * 3 * 4`
