@@ -35,6 +35,10 @@ pub struct ProjectSourceCatalog {
 }
 
 pub fn inspect(root: &Path) -> ProjectSourceInspection {
+    inspect_for(root, true, true)
+}
+
+fn inspect_for(root: &Path, containers: bool, recipes: bool) -> ProjectSourceInspection {
     let mut result = ProjectSourceInspection {
         path: root.display().to_string(),
         status: "invalid".into(),
@@ -58,27 +62,31 @@ pub fn inspect(root: &Path) -> ProjectSourceInspection {
         }
     };
     let manifest = root.join("workshop.containers.toml");
-    if manifest.exists() || manifest.is_symlink() {
+    if containers && (manifest.exists() || manifest.is_symlink()) {
         if let Err(error) = require_manifest_in(&manifest, std::slice::from_ref(&root)) {
             result.code = Some("container_manifest_invalid".into());
             result.message = Some(error.to_string());
             return result;
         }
     }
-    match workspace_recipe::load_container_specs(&root) {
-        Ok(specs) => result.containers = specs.into_iter().map(|spec| spec.id).collect(),
-        Err(error) => {
-            result.code = Some("container_manifest_invalid".into());
-            result.message = Some(error.to_string());
-            return result;
+    if containers {
+        match workspace_recipe::load_container_specs(&root) {
+            Ok(specs) => result.containers = specs.into_iter().map(|spec| spec.id).collect(),
+            Err(error) => {
+                result.code = Some("container_manifest_invalid".into());
+                result.message = Some(error.to_string());
+                return result;
+            }
         }
     }
-    match workspace_recipe::load_recipes(&root) {
-        Ok(recipes) => result.recipes = recipes.into_iter().map(|recipe| recipe.id).collect(),
-        Err(error) => {
-            result.code = Some("recipe_manifest_invalid".into());
-            result.message = Some(error.to_string());
-            return result;
+    if recipes {
+        match workspace_recipe::load_recipes(&root) {
+            Ok(recipes) => result.recipes = recipes.into_iter().map(|recipe| recipe.id).collect(),
+            Err(error) => {
+                result.code = Some("recipe_manifest_invalid".into());
+                result.message = Some(error.to_string());
+                return result;
+            }
         }
     }
     if result.containers.is_empty() && result.recipes.is_empty() {
@@ -96,7 +104,7 @@ pub fn catalog() -> Result<ProjectSourceCatalog> {
         .entries
         .into_iter()
         .map(|entry| ProjectSourceRow {
-            inspection: inspect(Path::new(&entry.path)),
+            inspection: inspect_for(Path::new(&entry.path), entry.containers, entry.recipes),
             path: entry.path,
             containers: entry.containers,
             recipes: entry.recipes,
@@ -130,6 +138,9 @@ pub fn catalog() -> Result<ProjectSourceCatalog> {
                 Capability::Recipes => implicit[index].recipes = true,
             }
         }
+    }
+    for row in &mut implicit {
+        row.inspection = inspect_for(Path::new(&row.path), row.containers, row.recipes);
     }
     Ok(ProjectSourceCatalog {
         config_path: settings.config_path,
@@ -186,6 +197,37 @@ max_total_rollouts = 10
             inspect(directory.path()).code.as_deref(),
             Some("container_manifest_invalid")
         );
+    }
+
+    #[test]
+    fn recipe_only_inspection_ignores_an_unrequested_container_declaration() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("workshop.recipe.toml"),
+            r#"
+id = "eval.recipe-only.v1"
+algorithm = "eval"
+container = "fixture"
+provider = "openrouter"
+model = "openai/gpt-4.1-nano"
+locality = "container"
+train_seeds = [0]
+[bounds]
+max_cost_usd = 0.50
+max_total_rollouts = 10
+"#,
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("workshop.containers.toml"),
+            "not valid toml [",
+        )
+        .unwrap();
+
+        let result = inspect_for(directory.path(), false, true);
+        assert_eq!(result.status, "valid", "{result:?}");
+        assert_eq!(result.recipes, vec!["eval.recipe-only.v1"]);
+        assert!(result.containers.is_empty());
     }
 
     #[cfg(unix)]
