@@ -374,6 +374,77 @@ test("showing an older visual opens it in the requesting chat without changing o
 	await expect(sidePanel.getByTestId("resource-shelf-empty")).toContainText("No outputs yet");
 });
 
+test("showing an ownerless workspace visual from chat opens it in that chat's right pane", async ({ page }) => {
+	await page.addInitScript((base) => {
+		const currentSessionId = "chat-current";
+		const visual = {
+			...base,
+			id: "vis_workspace_card",
+			title: "Visual Panel E2E",
+			sessionId: null
+		};
+		const listeners = new Set<(event: Record<string, unknown>) => void>();
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId: currentSessionId,
+				threadId: "thread-current",
+				workspace: "/workspaces/default",
+				model: "gpt-5.6-luna",
+				providerName: "openai",
+				providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1",
+				status: "ready"
+			}],
+			start: async () => ({ sessionId: currentSessionId, threadId: "thread-current" }),
+			startTurn: async () => ({ sessionId: currentSessionId, threadId: "thread-current", turnId: "turn-current" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async () => [],
+			get: async (visualId: string) => {
+				if (visualId !== visual.id) throw new Error(`missing visual ${visualId}`);
+				return visual;
+			},
+			revisions: async () => [],
+			onEvent: (next: (event: Record<string, unknown>) => void, attached?: () => void) => {
+				listeners.add(next);
+				queueMicrotask(() => attached?.());
+				return () => { listeners.delete(next); };
+			}
+		};
+		(window as typeof window & { __workspaceVisual?: unknown }).__workspaceVisual = {
+			emitShow: () => listeners.forEach((listener) => listener({
+				schemaVersion: "synth.desktop-app-event.v1",
+				eventId: "evt-show-workspace-visual",
+				sequence: 43,
+				sessionSequence: 1,
+				sessionId: currentSessionId,
+				source: "visual",
+				kind: "visual.show",
+				payload: {
+					visualId: visual.id,
+					title: visual.title,
+					templateId: visual.templateId,
+					revision: visual.currentRevision
+				},
+				createdAt: "2026-09-14T00:30:00Z"
+			}))
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("local-chat-chat-current").click();
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __workspaceVisual?: unknown }).__workspaceVisual !== undefined)).toBeTruthy();
+	await page.evaluate(() => (window as typeof window & { __workspaceVisual: { emitShow(): void } }).__workspaceVisual.emitShow());
+	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId)).toBe("vis_workspace_card");
+	const sidePanel = page.getByTestId("workbench-side-panel");
+	await expect(sidePanel).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toContainText("Visual Panel E2E");
+});
+
 test("an optimizer visual event appears immediately in its chat Outputs shelf", async ({ page }) => {
 	await page.addInitScript((base) => {
 		const sessionId = "visual-output-session";
