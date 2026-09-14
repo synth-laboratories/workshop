@@ -191,6 +191,15 @@ async fn discovery_context(
         {
             continue;
         }
+        // Ensure registers liveness and launch provenance, not a hydrated eval
+        // contract. Admission must observe the selected target itself instead
+        // of requiring the user to press Probe first or trusting stale metadata.
+        let (status, _, metadata, observed_family) = crate::hydrate_container(
+            base_url.as_deref().context("registered container has no base URL")?,
+            metadata,
+            true,
+        ).await;
+        let task_family = observed_family.or(task_family);
         let policy_revision = metadata
             .pointer("/capabilities/revision")
             .or_else(|| metadata.get("gitRevision"))
@@ -426,6 +435,32 @@ fn read_policy_source(
     ))
 }
 
+fn declared_contract_digest(metadata: &Value) -> Result<Option<DeclarationDigest>> {
+    if let Some(digest) = metadata.get("manifestHash").and_then(Value::as_str) {
+        return Ok(Some(DeclarationDigest::new(digest)?));
+    }
+    let Some(origin) = metadata.get("declarationOrigin").filter(|value| value.is_object()) else {
+        return Ok(None);
+    };
+    if ["manifestPath", "sourceRoot", "declarationId", "sourceRevision"].iter()
+        .any(|key| origin.get(key).and_then(Value::as_str).is_none_or(|value| value.trim().is_empty())) {
+        return Ok(None);
+    }
+    // A clean Git launch has no dirty-source digest. Hash its immutable origin
+    // and observed contract, excluding probe timestamps and runtime counters.
+    let digest = admission::digest_of(&json!({
+        "origin": origin,
+        "protocol": metadata.pointer("/capabilities/protocol"),
+        "revision": metadata.pointer("/capabilities/revision"),
+        "operations": metadata.pointer("/capabilities/operations"),
+        "policies": metadata.pointer("/capabilities/policy_refs"),
+        "evaluator": metadata.pointer("/info/logical_service_ids/evaluator"),
+        "evaluationPlan": metadata.pointer("/info/evaluation_plan_ref"),
+        "rewardAuthority": metadata.pointer("/info/reward_authority"),
+    }))?;
+    Ok(Some(DeclarationDigest::new(digest.as_str())?))
+}
+
 fn container_candidate(
     id: &str,
     status: &str,
@@ -438,11 +473,7 @@ fn container_candidate(
         .or_else(|| metadata.pointer("/info/capabilities/protocol"))
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let declaration_digest = metadata
-        .get("manifestHash")
-        .and_then(Value::as_str)
-        .map(DeclarationDigest::new)
-        .transpose()?;
+    let declaration_digest = declared_contract_digest(metadata)?;
     let source_revision = metadata
         .get("gitRevision")
         .or_else(|| metadata.pointer("/capabilities/revision"))
@@ -533,6 +564,20 @@ mod tests {
     use crate::data::{ContainerRegisterRequest, DataStore};
     use crate::storage::{ContentStore, Storage};
     use tempfile::tempdir;
+
+    #[test]
+    fn clean_launch_contract_digest_is_stable_and_tracks_contract_changes() {
+        let mut metadata = json!({"declarationOrigin": {"sourceRevision": "immutable-revision",
+            "manifestPath": "/workspace/workshop.containers.toml", "sourceRoot": "/workspace", "declarationId": "task"},
+            "capabilities": {"protocol": "live-eval", "observed_at": "first", "revision": "policy-a"}});
+        let original = declared_contract_digest(&metadata).unwrap().unwrap();
+        metadata["capabilities"]["observed_at"] = json!("later");
+        assert_eq!(declared_contract_digest(&metadata).unwrap().unwrap(), original);
+        metadata["capabilities"]["revision"] = json!("policy-b");
+        assert_ne!(declared_contract_digest(&metadata).unwrap().unwrap(), original);
+        assert!(declared_contract_digest(&json!({})).unwrap().is_none());
+        assert!(declared_contract_digest(&json!({"declarationOrigin": {}})).unwrap().is_none());
+    }
 
     #[test]
     fn logical_start_identity_is_stable_and_scoped() {
