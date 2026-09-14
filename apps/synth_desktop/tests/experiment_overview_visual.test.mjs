@@ -153,6 +153,16 @@ test("live overview distinguishes missing, zero, and sub-cent provider charges",
 	assert.doesNotMatch(renderCost(null), /\$0\.00|\$9\.99/);
 });
 
+test("live overview retains measured duration and token usage", () => {
+	const render = (runProgress) => renderToStaticMarkup(createElement(Shell, {
+		run: { status: "completed" }, runProgress: { completed: 4, total: 4, ...runProgress }
+	}));
+	const measured = render({ elapsedMs: 7123, promptTokens: 2260, completionTokens: 204 });
+	assert.match(measured, />7s</);
+	assert.match(measured, />2,464 tokens</);
+	assert.doesNotMatch(render({ promptTokens: 2260 }), /2,260 tokens|0s/);
+});
+
 test("experiment overview does not offer a dead inspector action for lite seals", () => {
 	const html = renderToStaticMarkup(createElement(Shell, { experiment: {
 		title: "Lite trace",
