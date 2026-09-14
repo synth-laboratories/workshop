@@ -59,7 +59,9 @@ test("tauri.package.json is the one place packaged resources are declared", () =
 
 test("every build entry point passes the packaging overlay", () => {
 	const pkg = readJson("package.json");
-	assert.match(pkg.scripts.build, /tauri build --config src-tauri\/tauri\.package\.json/);
+	assert.equal(pkg.scripts.build, "../../scripts/build-tier.sh stable");
+	const tier = readFileSync(join(repoRoot, "scripts/build-tier.sh"), "utf8");
+	assert.match(tier, /tauri build [\s\S]*?--config src-tauri\/tauri\.package\.json/);
 	const instance = readFileSync(join(repoRoot, "scripts/desktop-instance.sh"), "utf8");
 	assert.match(instance, /PACKAGE_CONFIG="src-tauri\/tauri\.package\.json"/);
 	assert.match(instance, /local tauri_configs=\(--config "\$PACKAGE_CONFIG" --config "\$CONFIG"\)/);
@@ -68,6 +70,21 @@ test("every build entry point passes the packaging overlay", () => {
 	assert.doesNotMatch(instance, /tauri (dev|build)(?![^\n]*PACKAGE_CONFIG)[^\n]*--config "\$CONFIG"/);
 	const desktop = readFileSync(join(repoRoot, "scripts/desktop.sh"), "utf8");
 	assert.match(desktop, /tauri build --bundles app --config src-tauri\/tauri\.package\.json/);
+});
+
+test("isolated packaged builds stage the declared diagnostics sidecar", () => {
+	const overlay = readJson("src-tauri/tauri.package.json");
+	assert.equal(
+		overlay.bundle.resources["../../../services/victoria-logs"],
+		"services/victoria-logs"
+	);
+	const instance = readFileSync(join(repoRoot, "scripts/desktop-instance.sh"), "utf8");
+	assert.match(instance, /services\/victoria-logs\/victoria-logs/);
+	assert.match(instance, /scripts\/diagnostics\/fetch-victorialogs\.sh/);
+	assert.match(
+		instance,
+		/stage-optimizer-runtime-distribution\.sh"[\s\S]*?fetch-victorialogs\.sh"[\s\S]*?local tauri_configs=/
+	);
 });
 
 test("isolated packaged QA launches preserve operator-provided SFT dataset paths", () => {

@@ -1578,6 +1578,9 @@ dev_instance() {
     python3 "$ROOT/scripts/stage-trace-runtime.py"
     "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
     "$ROOT/scripts/stage-optimizer-runtime-distribution.sh"
+    if [[ ! -x "$ROOT/services/victoria-logs/victoria-logs" ]]; then
+      "$ROOT/scripts/diagnostics/fetch-victorialogs.sh"
+    fi
     local tauri_configs=(--config "$PACKAGE_CONFIG" --config "$CONFIG")
     if [[ "$COMMAND" == "cua-live-build" ]]; then
       tauri_configs+=(--config "$LIVE_CONFIG")
