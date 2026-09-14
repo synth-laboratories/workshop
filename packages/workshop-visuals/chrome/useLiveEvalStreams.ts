@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LiveEvalEvent } from "../runtime/types.ts";
 import { reportVisualDiagnostic, VISUAL_STREAM_CODES } from "../runtime/diagnostics.ts";
 import { emptyLiveIngest, ingestLiveEnvelopeBatch } from "../runtime/liveStream.ts";
@@ -191,7 +191,10 @@ export function useLiveEvalStreams(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamKey, visualId, revision]);
 
-  return { events, state, closed, ready: state !== "error" && (hostEvidence?.ready ?? ready),
+  // Selection and session-cut notifications do not change the retained data.
+  // Keep its identity so evidence serialization is paid only for a new cut.
+  return useMemo(() => ({ events, state, closed, ready: state !== "error" && (hostEvidence?.ready ?? ready),
     recovered: hostEvidence?.recovered ?? recovered,
-    error: state === "error" ? error : hostEvidence ? hostEvidence.error : error, hostEvidence };
+    error: state === "error" ? error : hostEvidence ? hostEvidence.error : error, hostEvidence }),
+    [events, state, closed, ready, recovered, error, hostEvidence]);
 }

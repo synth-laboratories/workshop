@@ -3,7 +3,8 @@ import type { LiveEvalEvent } from "../../../runtime/types.ts";
 import {
   craftaxEventLane,
   environmentStepCount,
-  projectCraftaxViewer
+  projectCraftaxViewer,
+  type CraftaxViewerProjection
 } from "./projectCraftax.ts";
 
 export type CraftaxRolloutAggregate = {
@@ -91,9 +92,10 @@ function median(values: number[]): number | undefined {
  */
 export function summarizeCraftaxRun(
   events: LiveEvalEvent[],
-  terminalRollouts?: CraftaxTerminalRollout[]
+  terminalRollouts?: CraftaxTerminalRollout[],
+  retainedProjection?: CraftaxViewerProjection
 ): CraftaxRunAggregate {
-  const overall = projectCraftaxViewer(events);
+  const overall = retainedProjection?.ordered === events ? retainedProjection : projectCraftaxViewer(events);
   const journalRollouts = new Map(overall.lanes.map((lane) => {
     const laneEvents = overall.ordered.filter((event) => craftaxEventLane(event) === lane);
     const projection = projectCraftaxViewer(laneEvents, lane);

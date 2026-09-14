@@ -215,7 +215,9 @@ test("V5: actual Craftax viewer sustains 10 lanes and 100k envelopes with bounde
     const receipt = {
       schemaVersion: "synth.acceptance.visual-performance.v1",
       acceptance: "V5",
-      status: "passed",
+      status: heapDeltaBytes < MAX_HEAP_DELTA_BYTES && maxLongTaskMs < MAX_LONG_TASK_MS
+        && scrubMs < MAX_SCRUB_MS && dom.traceButtons < 100 && dom.laneButtons === LANE_COUNT
+        ? "passed" : "failed",
       generatedAt: new Date().toISOString(),
       workload: {
         lanes: LANE_COUNT, envelopes: ENVELOPE_COUNT,
