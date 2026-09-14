@@ -58,10 +58,9 @@ impl AlgorithmKind {
     pub const fn reducer_version(self) -> &'static str {
         match self {
             Self::Eval => "eval.projection.v3",
-            // v4 backfills the projection-derived collection rows introduced
-            // by the shared read model. Terminal v3 runs replay once on first
-            // read, then every later open is an indexed summary/page read.
-            Self::Gepa => "gepa.projection.v4",
+            // v5 repairs child rollout identities, including results arriving
+            // before allocation. Existing terminal runs replay once on read.
+            Self::Gepa => "gepa.projection.v5",
             Self::GoEx => "go_ex.projection.v3",
             // v3 persists the bounded metric series and checkpoint evaluation
             // summaries so training surfaces read the projection instead of

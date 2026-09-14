@@ -176,7 +176,7 @@ export default function App() {
 			}}
 			onToggleInference={() => {
 				const next = !c.showSidePanel;
-				if (next) c.setSidePanelTab(c.activeLocalModel ? "inference" : "outputs");
+				if (next && c.openArtifactId) c.setSidePanelTab("visual");
 				c.setSidePanelOpen(next);
 				runtimeStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
 			}}
