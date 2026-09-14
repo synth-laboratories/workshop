@@ -68,6 +68,26 @@ test("sourced visual compiles agent TSX, mounts advertised components, and hides
 	await expect(viewer.getByTestId("compose-detail-payload")).toContainText(MARKER);
 });
 
+test("older sourced visuals can import the agent trace component kit", async ({ page }) => {
+	await installVisuals(page, [sourcedVisual("vis_sourced_agent_trace", "Legacy agent trace")], {
+		vis_sourced_agent_trace: `import { AgentTraceInspector } from "@synth/visuals/components/agent_trace.v1";
+export default function Shell() {
+  const projection = {
+    trace_id: "trace_legacy",
+    state: "complete",
+    lanes: [{ lane_id: "lane_1", actor_id: "agent_1", display_name: "Rune agent", role: "agent" }],
+    items: []
+  };
+  return <AgentTraceInspector projection={projection} />;
+}
+`
+	});
+	const pane = await openVisual(page, "vis_sourced_agent_trace");
+	await expect(pane.getByTestId("agent-trace-inspector")).toBeVisible();
+	await expect(pane).toContainText("Showing all 1 agents together");
+	await expect(pane).not.toContainText("Unknown import");
+});
+
 test("sourced visual fails closed on an unknown import instead of mounting a shell", async ({ page }) => {
 	await installVisuals(page, [sourcedVisual("vis_sourced_import", "Sourced unknown import")], {
 		vis_sourced_import: `import _ from "lodash";
