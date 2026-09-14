@@ -420,7 +420,7 @@ fn start_command(spec: &ContainerSpec, broker_secret: Option<&str>) -> Result<La
     // names which Workshop proxy routes may be minted later for an approved
     // run; the proxy remains the sole holder of provider secret material.
     for provider in &spec.credential_providers {
-        if provider != "openrouter" {
+        if !workspace_recipe::supported_proxy_provider(provider) {
             bail!(
                 "container `{}` requests unsupported credential provider `{provider}`",
                 spec.id
