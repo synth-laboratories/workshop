@@ -9,7 +9,9 @@ export function useVisualEvidence<T>(owner:string,input:T|undefined):{value:T|un
  if(!/^[a-zA-Z0-9_.-]{1,80}$/.test(owner))throw new Error("Invalid evidence owner");
  const client=useVisualSessionClient(),session=useVisualSessionSnapshot();
  const [cut]=useVisualState<string|null>(`source.${owner}`,null,{type:"string",nullable:true});
- const key=input===undefined?undefined:stableSerialize(input);
+ // Standalone viewers have no evidence-cut store. Serializing their entire
+ // retained journal on every render does no work for them and stalls replay.
+ const key=useMemo(()=>!client?.supportsEvidenceCuts||input===undefined?undefined:stableSerialize(input),[client?.supportsEvidenceCuts,input]);
  const value=useMemo(()=>input,[key]);
  const [loaded,setLoaded]=useState<{digest:string;value:T}>();
  const [error,setError]=useState<string>();

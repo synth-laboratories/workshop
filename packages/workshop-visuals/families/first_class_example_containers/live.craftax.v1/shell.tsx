@@ -502,20 +502,24 @@ export function Shell(props: ShellProps) {
     ? Math.max(0, moments.findLastIndex((index) => index <= evaluationIndex))
     : -1;
   const evaluationEvents = useMemo(
-    () => evaluationIndex < 0 ? [] : fullProjection.ordered.slice(0, evaluationIndex + 1),
+    () => evaluationIndex < 0 ? [] : evaluationIndex === fullProjection.ordered.length - 1
+      ? fullProjection.ordered : fullProjection.ordered.slice(0, evaluationIndex + 1),
     [evaluationIndex, fullProjection.ordered]
   );
   const lifecycleTerminal = props.runLifecycle?.terminal === true;
   const lifecycleFailed = props.runLifecycle?.failed === true;
-  const viewer = useMemo(() => projectCraftaxViewer(evaluationEvents, chosenLane, laneCutoff), [evaluationEvents, chosenLane, laneCutoff]);
+  const viewer = useMemo(() => evaluationEvents === fullProjection.ordered
+    && (chosenLane == null || chosenLane === fullProjection.selectedLane) && laneCutoff == null
+    ? fullProjection : projectCraftaxViewer(evaluationEvents, chosenLane, laneCutoff),
+    [evaluationEvents, chosenLane, laneCutoff, fullProjection]);
   const { lanes, selectedLane, laneEvents, visibleEvents, visibleIndex, rewardSignals, achievements, traceEvents, semanticTrace, frameEvents, policy } = viewer;
   const laneSummaries = useMemo(() => summarizeLanes(evaluationEvents), [evaluationEvents]);
   const terminalRollouts = lifecycleTerminal && props.runLifecycle?.rollouts?.length
     ? props.runLifecycle.rollouts
     : undefined;
   const runAggregate = useMemo(
-    () => summarizeCraftaxRun(evaluationEvents, terminalRollouts),
-    [evaluationEvents, terminalRollouts]
+    () => summarizeCraftaxRun(evaluationEvents, terminalRollouts, fullProjection),
+    [evaluationEvents, terminalRollouts, fullProjection]
   );
   const latest = visibleEvents.at(-1);
   const selectedFrameEvent = useMemo(
