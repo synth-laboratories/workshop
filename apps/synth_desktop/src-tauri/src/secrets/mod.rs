@@ -2176,6 +2176,46 @@ mod tests {
     }
 
     #[test]
+    fn configured_env_registers_only_present_values_and_prunes_old_instance_rows() {
+        let (root, service) = locator_service("locator-configured-prune");
+        let current_file = root.path.join(".env");
+        let old_file = root.path.join("old-instance.env");
+        std::fs::write(&current_file, "OPENAI_API_KEY=sk-current-not-real\n").unwrap();
+        std::fs::write(&old_file, "OPENAI_API_KEY=sk-old-not-real\n").unwrap();
+
+        let old_locator_id = service.db.transaction(|conn| {
+            let locator = locator::upsert_instance(
+                conn,
+                &old_file,
+                "openai",
+                "OPENAI_API_KEY",
+                "Old instance",
+            )?;
+            lease::upsert_env_source_descriptor(
+                conn,
+                "openai",
+                "OPENAI_API_KEY",
+                &old_file,
+                Some(&locator.id),
+                None,
+                false,
+            )?;
+            Ok(locator.id)
+        }).unwrap();
+
+        let loaded = service.load_configured_env_sources().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].provider, "openai");
+        let connections = service.list(None, None).unwrap();
+        assert_eq!(connections.len(), 1);
+        assert_eq!(connections[0].provider, "openai");
+        let locations = service.locators(true).unwrap();
+        assert_eq!(locations.len(), lease::CANONICAL_PROVIDER_VARS.len());
+        assert!(!locations.iter().any(|row| row.id == old_locator_id));
+        assert_eq!(locations.iter().filter(|row| row.registered).count(), 1);
+    }
+
+    #[test]
     fn credential_probe_child_processes_are_time_bounded() {
         let mut success = std::process::Command::new("/bin/sh");
         success.args(["-c", "exit 0"]);

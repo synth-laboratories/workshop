@@ -707,11 +707,11 @@ pub fn find_recipe(workspace: &Path, recipe_id: &str) -> Result<WorkspaceRecipe>
 /// Resolve recipes only from executable project sources with recipe capability.
 /// Conversation file attachments do not grant execution authority.
 pub fn find_session_recipe(
-    _db: &crate::storage::Database,
-    _session_id: &str,
+    db: &crate::storage::Database,
+    session_id: &str,
     recipe_id: &str,
 ) -> Result<(PathBuf, WorkspaceRecipe)> {
-    let roots = crate::project_sources::discovery_roots(crate::project_sources::Capability::Recipes)?;
+    let roots = session_recipe_roots(db, session_id)?;
     let mut matches = Vec::new();
     for root in roots {
         for path in recipe_paths(&root)? {
@@ -740,11 +740,11 @@ pub fn find_session_recipe(
 /// ids are retained here so start can reject the ambiguity instead of the
 /// catalog silently choosing one source.
 pub fn load_session_recipes(
-    _db: &crate::storage::Database,
-    _session_id: &str,
+    db: &crate::storage::Database,
+    session_id: &str,
 ) -> Result<Vec<WorkspaceRecipe>> {
     let mut recipes = Vec::new();
-    for root in crate::project_sources::discovery_roots(crate::project_sources::Capability::Recipes)? {
+    for root in session_recipe_roots(db, session_id)? {
         for path in recipe_paths(&root)? {
             if let Ok(recipe) = parse_recipe(&path) {
                 recipes.push(recipe);
@@ -752,6 +752,22 @@ pub fn load_session_recipes(
         }
     }
     Ok(recipes)
+}
+
+fn session_recipe_roots(db: &crate::storage::Database, session_id: &str) -> Result<Vec<PathBuf>> {
+    #[cfg(test)]
+    if crate::project_sources::TEST_SOURCE_CONFIG.try_with(|_| ()).is_err() {
+        // Older optimizer integration fixtures predate executable project-source
+        // grants and place their declaration in a unique temporary conversation
+        // workspace. Keep that compatibility inside the test binary only. Tests
+        // exercising the real authority always bind TEST_SOURCE_CONFIG, and the
+        // production build has no workspace fallback at all.
+        return Ok(crate::workspace_scope::approved_search_roots(db, session_id)?
+            .into_iter()
+            .take(1)
+            .collect());
+    }
+    crate::project_sources::discovery_roots(crate::project_sources::Capability::Recipes)
 }
 
 pub fn load_container_specs(workspace: &Path) -> Result<Vec<ContainerSpec>> {

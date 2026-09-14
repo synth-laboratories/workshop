@@ -60,7 +60,7 @@ pub const OPTIMIZER_RUNTIME_STALE: &str = "optimizer_runtime_stale";
 pub const OPTIMIZER_RUNTIME_UNHEALTHY: &str = "optimizer_runtime_unhealthy";
 pub const MANAGED_BYOK_REJECTED: &str = "managed_byok_rejected";
 
-const CANONICAL_PROVIDER_VARS: &[(&str, &str)] = &[
+pub(super) const CANONICAL_PROVIDER_VARS: &[(&str, &str)] = &[
     ("openai", "OPENAI_API_KEY"),
     ("openrouter", "OPENROUTER_API_KEY"),
     ("anthropic", "ANTHROPIC_API_KEY"),
@@ -558,6 +558,23 @@ pub fn upsert_env_source_descriptor(
     Ok(stored)
 }
 
+fn remove_locator_sources(
+    conn: &rusqlite::Connection,
+    locator_id: &str,
+) -> Result<Vec<(String, String)>> {
+    let sources = {
+        let mut stmt = conn.prepare(
+            "SELECT id,backend_ref FROM secret_refs WHERE locator_id=?1",
+        )?;
+        let rows = stmt.query_map([locator_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    conn.execute("DELETE FROM secret_refs WHERE locator_id=?1", [locator_id])?;
+    Ok(sources)
+}
+
 fn hex_short(input: &str) -> String {
     let digest = Sha256::digest(input.as_bytes());
     digest
@@ -598,10 +615,12 @@ impl SecretsService {
             .and_then(|text| text.parse::<toml::Value>().ok())
             .unwrap_or(toml::Value::Table(toml::map::Map::new()));
         let mut instance_locator_ids = Vec::new();
+        let mut removed_sources = Vec::new();
         for (provider, default_var) in CANONICAL_PROVIDER_VARS {
             let variable = provider_variable_from_config(&document, provider)
                 .unwrap_or_else(|_| (*default_var).to_owned());
-            let locator_id = self.db.transaction(|conn| {
+            let has_value = read_env_file_value(&env_file, &variable).is_some();
+            let (locator_id, removed) = self.db.transaction(|conn| {
                 let locator = super::locator::upsert_instance(
                     conn,
                     &env_file,
@@ -609,25 +628,51 @@ impl SecretsService {
                     &variable,
                     &format!("Workshop instance {provider}"),
                 )?;
-                let source_id = upsert_env_source_descriptor(
-                    conn,
-                    provider,
-                    &variable,
-                    &env_file,
-                    Some(&locator.id),
-                    None,
-                    false,
-                )?;
-                super::locator::prefer_configured_instance_source(
-                    conn,
-                    &source_id,
-                    &locator.id,
-                    provider,
-                    &variable,
-                )?;
-                Ok(locator.id)
+                let removed = if has_value {
+                    let source_id = upsert_env_source_descriptor(
+                        conn,
+                        provider,
+                        &variable,
+                        &env_file,
+                        Some(&locator.id),
+                        None,
+                        false,
+                    )?;
+                    super::locator::prefer_configured_instance_source(
+                        conn,
+                        &source_id,
+                        &locator.id,
+                        provider,
+                        &variable,
+                    )?;
+                    Vec::new()
+                } else {
+                    remove_locator_sources(conn, &locator.id)?
+                };
+                Ok((locator.id, removed))
             })?;
             instance_locator_ids.push(locator_id);
+            removed_sources.extend(removed);
+        }
+        removed_sources.extend(self.db.transaction(|conn| {
+            let stale = super::locator::all_records(conn)?
+                .into_iter()
+                .filter(|record| {
+                    record.kind == super::locator::CredentialLocatorKind::InstanceEnvFile
+                        && !instance_locator_ids.contains(&record.id)
+                })
+                .map(|record| record.id)
+                .collect::<Vec<_>>();
+            let mut removed = Vec::new();
+            for locator_id in stale {
+                removed.extend(remove_locator_sources(conn, &locator_id)?);
+                super::locator::remove(conn, &locator_id)?;
+            }
+            Ok(removed)
+        })?);
+        for (source_id, backend_ref) in removed_sources {
+            self.env_sources.remove(&backend_ref);
+            self.capabilities.revoke_secret(&source_id);
         }
         let preferred = self.db.with_conn(|conn| {
             let mut stmt = conn.prepare(
@@ -653,7 +698,6 @@ impl SecretsService {
                 ),
             }
         }
-        let _ = instance_locator_ids;
         self.rewrite_locator_export();
         Ok(descriptors)
     }
