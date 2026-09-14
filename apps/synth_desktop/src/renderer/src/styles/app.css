@@ -3644,15 +3644,6 @@ html:not(.sidebar-hidden):not(.visual-expanded) .titlebar:not(.titlebar-native-i
 	opacity: 1;
 }
 
-.local-activity-wave {
-	width: min(100%, 420px);
-	height: 10px;
-	margin-top: 2px;
-	background:
-		radial-gradient(circle at 8px 5px, #d7dbe1 1.4px, transparent 1.6px) 0 0 / 16px 10px repeat-x;
-	opacity: 0.9;
-}
-
 .local-activity-detail {
 	width: 100%;
 	max-width: 560px;

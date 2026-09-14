@@ -167,15 +167,34 @@ impl RuntimeClient {
                 if result.get("code").and_then(Value::as_str).is_some() {
                     anyhow::bail!("{}", result);
                 }
-                anyhow::bail!(
-                    "Workshop request failed ({status}): {}",
-                    result
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or("runtime rejected the request")
-                );
+                let message = result.get("error").and_then(Value::as_str)
+                    .unwrap_or("runtime rejected the request");
+                anyhow::bail!("{}", runtime_error_message(status, message));
             }
             Ok(result)
         })
+    }
+}
+
+fn runtime_error_message(status: reqwest::StatusCode, message: &str) -> String {
+    // An embedded tool can relay an error from this same transport. Preserve
+    // that context once instead of recursively prefixing every IPC hop.
+    if message.starts_with("Workshop request failed (") {
+        message.to_owned()
+    } else {
+        format!("Workshop request failed ({status}): {message}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relayed_runtime_errors_keep_one_transport_prefix() {
+        let first = runtime_error_message(reqwest::StatusCode::BAD_REQUEST, "container source revision missing");
+        assert_eq!(runtime_error_message(reqwest::StatusCode::BAD_REQUEST, &first), first);
+        assert!(first.ends_with("container source revision missing"));
+        assert_eq!(first.matches("Workshop request failed").count(), 1);
     }
 }
