@@ -529,12 +529,12 @@ export function Shell(props: ShellProps) {
   const selectedEnvironmentStep = selectedFrameEvent ? eventStep(selectedFrameEvent) : undefined;
   const observation = latestObservation(visibleEvents);
   const inventory = inventoryFrom(observation);
-  const runCost = runCostSummary(props.runLifecycle, finite(policy.usage.cost_usd), runAggregate);
+  const runCost = runCostSummary(props.runLifecycle, runAggregate.totalCostUsd, runAggregate);
   const receiptCalls = props.runLifecycle?.usage.calls;
   const retainedCalls = runAggregate.totalCalls;
   const callValue = receiptCalls == null ? formatMissingNumber(retainedCalls, 0) : `${formatMissingNumber(receiptCalls, 0)} billed`;
   const callDetail = receiptCalls == null
-    ? `${runAggregate.reportedCalls}/${runAggregate.rollouts.length} rollout journals reported calls`
+    ? `${runAggregate.reportedCalls}/${runAggregate.rollouts.length} rollout journals · retries are included in usage, not decision count`
     : retainedCalls == null
       ? `Workshop proxy receipt · retained call starts unavailable`
       : `${formatMissingNumber(retainedCalls, 0)} retained call starts · Workshop receipt covers ${formatMissingNumber(receiptCalls, 0)}`;
@@ -562,9 +562,9 @@ export function Shell(props: ShellProps) {
     : semanticTrace;
   const selectedTrace = inspectedItems.find((item) => item.id === selectedTraceId) ?? (traceMode === "focus" ? inspectedItems.find((item) => item.category === "policy") : inspectedItems.at(-1));
   const turns = useMemo(() => projectAgentTurns(visibleEvents), [visibleEvents]);
-  const totalTokens = completeSum(turns.calls.map((call) => finite(call.usage.total_tokens)));
+  const totalTokens = finite(policy.usage.total_tokens);
   const totalLatencyMs = completeSum(turns.calls.map((call) => call.latencyMs));
-  const totalCostUsd = completeSum(turns.calls.map((call) => call.costUsd));
+  const totalCostUsd = finite(policy.usage.cost_usd);
   const selectedRolloutTokens = selectedTerminal?.tokens ?? totalTokens;
   const selectedRolloutAuthority = selectedTerminal?.authority
     ?? props.runLifecycle?.modelIdentity?.authority
@@ -871,7 +871,7 @@ export function Shell(props: ShellProps) {
           <OverviewStat label="Rollouts" value={String(runAggregate.rollouts.length || "—")} detail={`${terminalLanes} terminal`} />
           <OverviewStat label="Terminal reward" value={formatMissingNumber(runAggregate.rewardMean)} detail={runAggregate.reportedRewards ? `mean · median ${formatMissingNumber(runAggregate.rewardMedian)} · range ${formatMissingNumber(runAggregate.rewardMin)}–${formatMissingNumber(runAggregate.rewardMax)} · ${runAggregate.reportedRewards}/${runAggregate.rollouts.length} scored` : "No terminal numeric rewards reported"} />
           <OverviewStat label="Environment steps" value={formatMissingNumber(runAggregate.totalSteps, 0)} detail={`${rangeLabel(runAggregate.minSteps, runAggregate.maxSteps, "steps")} · ${runAggregate.reportedSteps}/${runAggregate.rollouts.length} reported`} />
-          <OverviewStat label="Provider calls" value={callValue} detail={callDetail} />
+          <OverviewStat label={receiptCalls == null ? "Policy decisions" : "Provider calls"} value={callValue} detail={callDetail} />
           <OverviewStat label="Provider tokens" value={tokenValue == null ? "Not emitted" : `${formatMissingNumber(tokenValue, 0)}${receiptTokens == null ? "" : " billed"}`} detail={tokenDetail} />
           <OverviewStat label="Achievements" value={runAggregate.totalAchievements == null ? "Not emitted" : counted(runAggregate.totalAchievements, "unlock")} detail={runAggregate.totalAchievements == null ? `${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} terminal records reported` : `median ${formatMissingNumber(runAggregate.achievementMedian)} · range ${formatMissingNumber(runAggregate.minAchievements, 0)}–${formatMissingNumber(runAggregate.maxAchievements, 0)} · ${runAggregate.achievementNames.length} unique · ${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} reported`} />
         </div>

@@ -2,6 +2,7 @@ import { projectAgentTurns } from "../../../runtime/agentTranscript.ts";
 import type { LiveEvalEvent } from "../../../runtime/types.ts";
 import {
   craftaxEventLane,
+  aggregateTraceUsage,
   environmentStepCount,
   projectCraftaxViewer,
   type CraftaxViewerProjection
@@ -100,21 +101,14 @@ export function summarizeCraftaxRun(
     const laneEvents = overall.ordered.filter((event) => craftaxEventLane(event) === lane);
     const projection = projectCraftaxViewer(laneEvents, lane);
     const calls = projectAgentTurns(projection.visibleEvents).calls;
-    const tokenValues = calls.map((call) => finite(call.usage.total_tokens));
-    const tokens = calls.length > 0 && tokenValues.every((value) => value !== undefined)
-      ? sum(tokenValues as number[])
-      : undefined;
-    const costValues = calls.map((call) => finite(call.costUsd));
-    const costUsd = calls.length > 0 && costValues.every((value) => value !== undefined)
-      ? sum(costValues as number[])
-      : undefined;
+    const usage = aggregateTraceUsage(projection.visibleEvents, true);
     return [lane, {
       lane,
       reward: projection.reward,
       steps: environmentStepCount(projection.visibleEvents),
       calls: calls.length,
-      tokens,
-      costUsd,
+      tokens: finite(usage.total_tokens),
+      costUsd: finite(usage.cost_usd),
       achievements: projection.achievements,
       achievementsReported: true
     }] as const;

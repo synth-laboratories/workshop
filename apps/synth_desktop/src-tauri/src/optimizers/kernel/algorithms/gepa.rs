@@ -16,6 +16,20 @@ use crate::optimizers::kernel::work::{close_open_items, WorkItem, WorkSummary};
 
 const STAGE_HELDOUT: &str = "heldout";
 
+fn evaluation_work_id(payload: &Value) -> Option<String> {
+    payload.get("workItemId")
+        .or_else(|| payload.get("rollout_id"))
+        .or_else(|| payload.get("child_resource_ref").and_then(|v| v.get("id")))
+        .or_else(|| payload.get("evaluation_id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .or_else(|| Some(format!("gepa:{}:{}:{}",
+            payload.get("candidate_id")?.as_str()?,
+            payload.get("stage")?.as_str()?,
+            payload.get("example_id")?.as_str()?)))
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct GepaCandidate {
@@ -313,11 +327,7 @@ impl GepaProjection {
                 self.rollouts_allocated += 1;
                 let candidate = payload.get("candidate_id").and_then(|v| v.as_str());
                 let stage = payload.get("stage").and_then(|v| v.as_str());
-                let work_id = payload
-                    .get("workItemId")
-                    .or_else(|| payload.get("evaluation_id"))
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
+                let work_id = evaluation_work_id(payload)
                     .or_else(|| {
                         candidate.map(|candidate| {
                             format!(
@@ -411,10 +421,7 @@ impl GepaProjection {
                         }
                     }
                 }
-                if let Some(work_id) = payload
-                    .get("workItemId")
-                    .or_else(|| payload.get("evaluation_id"))
-                    .and_then(|v| v.as_str())
+                if let Some(work_id) = evaluation_work_id(payload)
                 {
                     if let Some(item) = self
                         .work_items
@@ -424,7 +431,7 @@ impl GepaProjection {
                         let valid = payload
                             .get("valid")
                             .and_then(|v| v.as_bool())
-                            .unwrap_or(true);
+                            .unwrap_or_else(|| payload.get("reward").and_then(Value::as_f64).is_some());
                         item.seal_terminal(if valid {
                             TerminalKind::Completed
                         } else {
@@ -858,6 +865,19 @@ mod tests {
         assert_eq!(result.verdict, GepaVerdict::NoMeasuredImprovement);
         assert_eq!(result.selected_candidate_id.as_deref(), Some("seed"));
         assert!(!result.work.fixed_denominator);
+    }
+
+    #[test]
+    fn child_rollout_identity_matches_result_even_with_evaluation_alias() {
+        let allocated = json!({"candidate_id":"seed", "stage":"heldout", "example_id":"test:1",
+            "child_resource_ref":{"id":"rollout-1"}});
+        let result = json!({"candidate_id":"seed", "stage":"heldout", "example_id":"test:1",
+            "rollout_id":"rollout-1", "evaluation_id":"alias", "reward":0.5});
+        assert_eq!(evaluation_work_id(&allocated), evaluation_work_id(&result));
+        let mut projection = GepaProjection::default();
+        projection.apply(&committed("optimizer.candidate_evaluation.allocated", allocated, 1)).unwrap();
+        projection.apply(&committed("optimizer.evaluation_result.received", result, 2)).unwrap();
+        assert_eq!(projection.close_open_work().unwrap(), 0);
     }
 
     #[test]
