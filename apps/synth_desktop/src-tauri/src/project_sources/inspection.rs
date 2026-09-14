@@ -109,7 +109,7 @@ pub fn catalog() -> Result<ProjectSourceCatalog> {
     for capability in [Capability::Containers, Capability::Recipes] {
         for root in resolve_roots(capability)?
             .into_iter()
-            .filter(|root| root.origin == RootOrigin::Environment)
+            .filter(|root| matches!(root.origin, RootOrigin::Environment | RootOrigin::QaPolicy))
         {
             let path = root.path.display().to_string();
             let index = if let Some(index) = implicit.iter().position(|row| row.path == path) {
@@ -119,7 +119,7 @@ pub fn catalog() -> Result<ProjectSourceCatalog> {
                     path,
                     containers: false,
                     recipes: false,
-                    origin: RootOrigin::Environment,
+                    origin: root.origin,
                     inspection: inspect(&root.path),
                     last_scanned_at: None,
                 });

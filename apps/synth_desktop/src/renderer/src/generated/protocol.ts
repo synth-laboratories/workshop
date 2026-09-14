@@ -4130,7 +4130,7 @@ export type RolloutEvidenceEntry = {
  */
 export type RolloutEvidenceState = "open" | "sealed_complete" | "sealed_partial" | "aborted" | "missing";
 
-export type RootOrigin = "configured" | "environment";
+export type RootOrigin = "configured" | "environment" | "qa_policy";
 
 export type RunCollection = "candidates" | "rollouts" | "evaluations" | "metric_points" | "proposer_calls" | "artifacts" | "evidence_refs";
 

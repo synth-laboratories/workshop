@@ -370,6 +370,9 @@ async fn store_broker_secret(db: &Arc<Database>, container_id: &str, secret: &st
 }
 
 fn require_source_grant(spec: &ContainerSpec) -> Result<()> {
+    if let Some(policy) = crate::qa_policy::active()? {
+        policy.require_container(&spec.origin.source_root, &spec.id)?;
+    }
     crate::project_sources::require_manifest(&spec.origin.manifest_path, crate::project_sources::Capability::Containers)?;
     Ok(())
 }

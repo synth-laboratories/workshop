@@ -95,6 +95,7 @@ impl Capability {
 pub enum RootOrigin {
     Configured,
     Environment,
+    QaPolicy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,6 +156,15 @@ fn validate_root(root: &Path, home: Option<&Path>) -> Result<()> {
 }
 
 pub fn resolve_roots(capability: Capability) -> Result<Vec<ResolvedRoot>> {
+    if let Some(policy) = crate::qa_policy::active()? {
+        let paths = match capability {
+            Capability::Containers => policy.container_roots,
+            Capability::Recipes => policy.recipe_roots,
+        };
+        return Ok(paths.into_iter().map(|path| ResolvedRoot {
+            path, origin: RootOrigin::QaPolicy,
+        }).collect());
+    }
     #[cfg(test)]
     {
         // Tests supply real, isolated config files. Never inherit operator grants

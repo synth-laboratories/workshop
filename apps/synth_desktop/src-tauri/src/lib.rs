@@ -53,6 +53,7 @@ mod optimizers;
 mod platform;
 mod plugins;
 mod project_sources;
+mod qa_policy;
 pub mod presentation;
 pub mod recovery;
 mod reports;

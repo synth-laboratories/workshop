@@ -85,6 +85,9 @@ Usage: ./scripts/desktop-instance.sh <command> [name] [--verbose]
   rebuild-run [name]  Build, bundle, sign, record, verify, launch, wait for health
   assert-identity [name]  Verify the built app's signing identity and record it
   status [name]    Show the exact process and instance paths
+  qa-enable [name] Install the explicit SYNTH_QA_PROFILE for this test instance
+  qa-disable [name] Revoke QA policy, preserving its file and budget history
+  qa-status [name] Show the installed QA policy (no credential values)
                    --verbose also prints the operation-lock owner
   stage [name]     Stage protected-folder-free runtime inputs without launching
   stop [name]      Stop only the named instance service and owned runtime
@@ -1769,6 +1772,9 @@ case "$COMMAND" in
 esac
 
 case "$COMMAND" in
+  qa-enable) node "$ROOT/scripts/qa-policy.mjs" enable "$DATA_ROOT" "$NAME" "${SYNTH_QA_PROFILE:?Set SYNTH_QA_PROFILE to an explicit QA profile JSON file}" ;;
+  qa-disable) node "$ROOT/scripts/qa-policy.mjs" disable "$DATA_ROOT" "$NAME" ;;
+  qa-status) node "$ROOT/scripts/qa-policy.mjs" status "$DATA_ROOT" "$NAME" ;;
   dev|cua|cua-build|cua-run|cua-live-build) dev_instance ;;
   cua-live) cua_live_instance ;;
   rebuild-run) rebuild_run_instance ;;
