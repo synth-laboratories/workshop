@@ -1,0 +1,25 @@
+id = "qa.banking77.gepa.v1"
+algorithm = "gepa"
+title = "Banking77 GEPA QA"
+container = "banking77"
+provider = "openrouter"
+model = "openai/gpt-5.6-luna"
+proposer_model = "openai/gpt-5.6-luna"
+locality = "container"
+credential_mode = "proxy"
+family = "banking77"
+harness = "classify"
+policy_config = "classify"
+requires_credential_advertisement = false
+train_seeds = [0, 1]
+heldout_seeds = [501, 502]
+minibatch_size = 2
+concurrency = 2
+
+[bounds]
+max_cost_usd = 2.45
+max_total_rollouts = 12
+max_generations = 1
+
+[policy]
+max_tokens = 256

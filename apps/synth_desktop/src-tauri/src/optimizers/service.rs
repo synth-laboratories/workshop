@@ -1361,6 +1361,26 @@ impl OptimizerService {
         db.run(move |conn| {
             let mut run = load_run(conn, &optimizer_run_id)?;
             if OptimizerRunStatus::str_is_terminal(&run.status) {
+                // Older visual-ready writes could erase these fields from the
+                // mutable row. Recover the read model from sealed evidence,
+                // without changing the journal or replaying paid work.
+                if let Some(manifest) = terminal::load(conn, &optimizer_run_id)? {
+                    if !run.usage.extra.contains_key("providerUsageReceipt") {
+                        let payload: Option<String> = conn.query_row(
+                            "SELECT payload_json FROM optimizer_events WHERE optimizer_run_id=?1
+                             AND event_type='optimizer.usage.reconciled' AND sequence_number<=?2
+                             ORDER BY sequence_number DESC LIMIT 1",
+                            params![optimizer_run_id, run.cursor_seq],
+                            |row| row.get(0),
+                        ).optional()?;
+                        if let Some(payload) = payload {
+                            apply_authoritative_provider_usage(&mut run.usage, &serde_json::from_str(&payload)?)?;
+                        }
+                    }
+                    if let Some(summary) = run.summary.as_object_mut() {
+                        summary.insert("terminalManifest".into(), manifest);
+                    }
+                }
                 if let Some(state) = super::kernel::persist::load_state(conn, &optimizer_run_id)? {
                     rewrite_terminal_summary_progress(&mut run, &state);
                 }
@@ -8116,6 +8136,36 @@ pub(in crate::optimizers) mod tests {
         assert!(format!("{error:#}").contains("terminal_already_sealed"));
         let events = svc.events_after(stale.id, 0, None).await.unwrap();
         assert_eq!(events.len(), 5, "no accepted event was dropped");
+    }
+
+    #[tokio::test]
+    async fn terminal_read_recovers_erased_provider_receipt_without_rewriting_evidence() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_receipt_recovery", "chat_recovery").await;
+        svc.append_event_payloads(run.id.clone(), vec![
+            draft("optimizer.run.started"),
+            draft("eval.run.planned").snapshot(Map::from_iter([("planned_trials".into(), json!(1))])),
+            measured_eval_trial("trial:0", 1.0),
+            draft("optimizer.usage.reconciled").item(json!({
+                "schemaVersion": "workshop.provider-usage-receipt.v1",
+                "receiptDigest": format!("sha256:{}", "a".repeat(64)),
+                "authority": "workshop.secrets_proxy", "calls": 1,
+                "promptTokens": 100, "completionTokens": 20, "costUsd": 0.000697
+            })),
+            draft("optimizer.run.completed"),
+        ]).await.unwrap();
+        let before = svc.get(run.id.clone()).await.unwrap();
+        let mut damaged = before.clone();
+        damaged.usage = OptimizerUsageSummary::default();
+        damaged.summary.as_object_mut().unwrap().remove("terminalManifest");
+        svc.db.run_transaction(move |conn| upsert_run(conn, &damaged)).await.unwrap();
+        let recovered = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(recovered.usage.cost_usd, Some(0.000697));
+        assert_eq!(recovered.usage.calls, 1);
+        assert_eq!(recovered.usage.prompt_tokens, 100);
+        assert_eq!(recovered.summary["terminalManifest"], before.summary["terminalManifest"]);
+        assert_eq!(recovered.cursor_seq, before.cursor_seq);
+        assert_eq!(svc.events_after(run.id, 0, None).await.unwrap().len(), 5);
     }
 
     /// Sequence allocation is inside the transaction, so racing appends

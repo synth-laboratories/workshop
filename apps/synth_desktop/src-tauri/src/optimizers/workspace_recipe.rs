@@ -1326,6 +1326,9 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         "max_compactions",
         "thinking_budget",
         "answer_max_tokens",
+        // Classification containers advertise and consume this standard
+        // completion limit; inline evaluation already accepts the same key.
+        "max_tokens",
         "timeout_seconds",
         "min_request_interval",
         "sampler_retries",
@@ -2519,6 +2522,21 @@ max_total_rollouts = 1
             catalog_entry(&recipe)["credentialInputs"],
             json!(["OPENROUTER_API_KEY"])
         );
+    }
+
+    #[test]
+    fn banking77_qa_recipe_stays_bounded() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../workshop.recipes/qa.banking77.gepa.v1.toml");
+        let recipe = parse_recipe(&path).unwrap();
+        assert_eq!(recipe.algorithm, AlgorithmKind::Gepa);
+        assert_eq!(recipe.container, "banking77");
+        assert_eq!(recipe.provider, "openrouter");
+        assert_eq!(recipe.bounds.max_cost_usd, 2.45);
+        assert_eq!(recipe.bounds.max_total_rollouts, 12);
+        assert_eq!(recipe.bounds.max_generations, Some(1));
+        assert_eq!(recipe.policy.get("max_tokens"), Some(&json!(256)));
+        assert!(recipe.train_seeds.iter().all(|seed| !recipe.heldout_seeds.contains(seed)));
     }
 
     #[test]

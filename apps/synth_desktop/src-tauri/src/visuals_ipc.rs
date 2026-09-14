@@ -4454,6 +4454,7 @@ pub(crate) async fn dispatch_optimizer(
             let (run, event) = optimizers
                 .open_visual_in_session(id.to_string(), session_ref)
                 .await?;
+            core.broadcast_committed(event.clone());
             Ok(json!({ "run": run, "event": event }))
         }
         ("POST", path)

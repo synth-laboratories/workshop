@@ -536,10 +536,18 @@ function liveOverlay(props: ShellProps): { status?: string; progress?: Progress 
     }
   }
   const costUsd = finiteNumber(agreement?.costUsd);
+  const elapsedMs = finiteNumber(agreement?.elapsedMs);
+  const elapsedSeconds = elapsedMs == null ? undefined : Math.max(0, Math.floor(elapsedMs / 1000));
+  const promptTokens = finiteNumber(agreement?.promptTokens);
+  const completionTokens = finiteNumber(agreement?.completionTokens);
   const progress: Progress = {
     phase: text(agreement?.phaseLabel),
     completed: finiteNumber(agreement?.completed),
     total: finiteNumber(agreement?.total),
+    elapsed: elapsedSeconds == null ? undefined : elapsedSeconds < 60
+      ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`,
+    usage: promptTokens != null && completionTokens != null
+      ? `${(promptTokens + completionTokens).toLocaleString("en-US")} tokens` : undefined,
     cost: costUsd != null
       ? costUsd > 0 && costUsd < 0.000001
         ? "<$0.000001"

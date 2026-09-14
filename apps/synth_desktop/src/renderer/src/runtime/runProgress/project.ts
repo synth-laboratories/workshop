@@ -153,6 +153,7 @@ export type ProgressAgreement = {
 	total?: number;
 	progressFraction?: number;
 	costUsd: number | null;
+	elapsedMs?: number;
 	promptTokens: number | null;
 	completionTokens: number | null;
 	terminal: boolean;
@@ -169,6 +170,7 @@ export function progressAgreement(projection: RunProgressProjection): ProgressAg
 		...(projection.work.total != null ? { total: projection.work.total } : {}),
 		...(projection.progress?.fraction != null ? { progressFraction: projection.progress.fraction } : {}),
 		costUsd: projection.usage.costUsd.value ?? null,
+		...(projection.timing.elapsedMs != null ? { elapsedMs: projection.timing.elapsedMs } : {}),
 		promptTokens: projection.usage.promptTokens.value ?? null,
 		completionTokens: projection.usage.completionTokens.value ?? null,
 		terminal: projection.terminal,
