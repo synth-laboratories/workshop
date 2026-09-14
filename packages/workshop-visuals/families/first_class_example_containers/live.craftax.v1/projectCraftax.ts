@@ -164,24 +164,36 @@ function payloadUsage(payload: Json): Json {
   );
 }
 
-function aggregateTraceUsage(traceEvents: LiveEvalEvent[]): Json {
+export function aggregateTraceUsage(traceEvents: LiveEvalEvent[], requireComplete = false): Json {
   const totals: Json = {};
+  const seen = new Set<string>();
+  const missing = new Set<string>();
   const add = (raw: unknown) => {
     const usage = object(raw);
     for (const key of ["prompt_tokens", "completion_tokens", "total_tokens", "cost_usd"] as const) {
       const value = finite(usage[key]);
       if (value != null) totals[key] = (finite(totals[key]) ?? 0) + value;
+      else missing.add(key);
     }
   };
   for (const event of traceEvents) {
     if (event.kind !== "span.policy.data") continue;
     const payload = object(event.payload);
     if (payload.delta === true) continue;
-    add(payloadUsage(payload));
-    if (Array.isArray(payload.prior_attempts)) {
-      for (const attempt of payload.prior_attempts) add(object(attempt).usage);
+    // A fallback snapshot may repeat its final failed generation in prior_attempts.
+    // Only provider identity proves duplication; equal usage alone does not.
+    const attempts = [payload, ...(Array.isArray(payload.prior_attempts) ? payload.prior_attempts.map(object) : [])];
+    for (const attempt of attempts) {
+      const generation = attempt.generation_id;
+      if (typeof generation === "string" && generation.length > 0) {
+        const identity = JSON.stringify([craftaxEventLane(event), generation]);
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+      }
+      add(payloadUsage(attempt));
     }
   }
+  if (requireComplete) for (const key of missing) delete totals[key];
   return totals;
 }
 

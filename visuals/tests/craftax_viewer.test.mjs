@@ -340,6 +340,26 @@ test("retained CAS media keeps a PNG replayable when its container URL is gone",
   });
 });
 
+test("fallback retry usage counts each provider generation once", () => {
+  const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, cost_usd: 0.01 };
+  const view = projectCraftaxViewer([
+    event("seed:0", "span.policy.data", 1, {
+      generation_id: "last-failed", usage,
+      prior_attempts: [
+        { generation_id: "first-failed", usage },
+        { generation_id: "last-failed", usage },
+      ],
+    }),
+    event("seed:0", "span.policy.data", 2, { generation_id: "success", usage }),
+  ]);
+  assert.deepEqual(view.policy.usage, {
+    prompt_tokens: 30, completion_tokens: 15, total_tokens: 45, cost_usd: 0.03,
+  });
+  const aggregate = summarizeCraftaxRun(view.ordered);
+  assert.equal(aggregate.totalTokens, 45);
+  assert.equal(aggregate.totalCostUsd, 0.03);
+});
+
 test("real ReAct policy partials expose metadata, data, plan, usage, and fallback", () => {
   const events = [
     event("seed:0", "span.policy.opened", 1, {

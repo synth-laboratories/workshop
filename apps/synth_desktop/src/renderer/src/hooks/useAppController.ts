@@ -1335,7 +1335,15 @@ export function useAppController() {
 					? `async:${view.sessionId}`
 					: view.kind;
 
+	// Presentation is independent of output ownership: a chat can show another
+	// chat's visual. Restore the latest show event, not the first owned artifact.
+	const latestShownVisual = activeChat
+		? [...(eventsBySession[activeChat.id] ?? [])].reverse().find((event) =>
+			event.eventKind === "visual.show" && typeof event.payload?.visualId === "string")
+		: undefined;
 	const persistedVisualId =
+		(typeof latestShownVisual?.payload?.visualId === "string" ? latestShownVisual.payload.visualId : null)
+		??
 		(typeof activeChatSession?.metadata?.openVisualId === "string"
 			? activeChatSession.metadata.openVisualId : null)
 		?? (view.kind === "chat"
@@ -1354,7 +1362,8 @@ export function useAppController() {
 			const persistedId = persistedVisualId;
 			if (persistedId) {
 				remembered = persistedId;
-				openArtifactByViewRef.current[viewKey] = persistedId;
+				// Do not freeze a provisional artifact fallback in memory before
+				// asynchronous journal hydration supplies the actual selected visual.
 				// Restore the content tab as well as its identity. Keep the user's
 				// explicit open/closed preference; selecting a tab does not reopen it.
 				setSidePanelTab("visual");
