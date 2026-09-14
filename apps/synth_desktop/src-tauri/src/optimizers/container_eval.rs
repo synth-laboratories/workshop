@@ -520,6 +520,17 @@ fn bind_workspace_container_identity(spec: &mut EvalSpec, info: &Value) {
     }
 }
 
+/// Reject missing or changed evidence provenance before reserving paid compute.
+/// Execution repeats this check because the target may change after admission.
+pub(super) async fn preflight_inline_provenance(
+    service: &OptimizerService,
+    container_id: &str,
+) -> Result<()> {
+    let (mut container, _) = find_ready_container_by_id(service, container_id).await?;
+    let info = fresh_container_info(&container.base_url, "inline provenance preflight").await?;
+    refresh_inline_container_provenance(&mut container, &info)
+}
+
 /// The inline executor accepts only the final, approval-bound stage.
 pub(super) async fn start_inline(
     service: &OptimizerService,

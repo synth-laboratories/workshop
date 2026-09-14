@@ -1209,6 +1209,21 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     // sidecar made an otherwise configured public SFT recipe unreachable.
     let is_hosted_sft =
         algorithm_id == Some("sft") && request.recipe_id != "sft.craftax.gpt-oss.smoke.v1";
+    // Missing/disabled runtime is a setup error, not a paid attempt. Refuse
+    // before consuming a bounded QA reservation or requesting a proxy lease.
+    // Installed runtimes retain the existing lifecycle approval/warm-start path.
+    if !is_local_eval && !is_hosted_sft {
+        if !crate::plugins::optimizers_plugin_enabled() {
+            return Err(AppError::from(anyhow::Error::from(
+                crate::plugins::PluginNotReady::new("disabled", "enable"),
+            )));
+        }
+        if state.optimizers().manager().refresh().await.version.is_none() {
+            return Err(AppError::from(anyhow::Error::from(
+                crate::plugins::PluginNotReady::new("not_installed", "install"),
+            )));
+        }
+    }
     let limits = recipe
         .get("limits")
         .cloned()
