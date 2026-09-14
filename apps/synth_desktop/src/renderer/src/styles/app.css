@@ -3174,6 +3174,9 @@ html:not(.sidebar-hidden):not(.visual-expanded) .titlebar:not(.titlebar-native-i
 }
 
 .assistant-rich-body { line-height: 1.55; }
+.assistant-rich-body .document-prose { font: inherit; letter-spacing: inherit; }
+.assistant-rich-body .document-prose p { margin: 0 0 0.75em; white-space: pre-wrap; }
+.assistant-rich-body .document-prose > :last-child { margin-bottom: 0; }
 .assistant-resource-chip {
 	display: inline-flex;
 	align-items: center;

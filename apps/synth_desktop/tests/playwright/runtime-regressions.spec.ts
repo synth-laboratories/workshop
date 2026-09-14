@@ -472,6 +472,39 @@ test("Settings can force and reset a model multi-agent preset", async ({ page })
 	]);
 });
 
+test("assistant Markdown renders tables and code while preserving resource links", async ({ page }) => {
+	await page.addInitScript(() => {
+		let listener: ((event: any) => void) | undefined;
+		(window as any).__emitMarkdownEvent = (event: any) => listener?.(event);
+		(window as any).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{ sessionId: "markdown-qa", threadId: "markdown-thread", workspace: "/workspaces/default", model: "openai/gpt-5.6-luna", providerName: "openrouter", status: "ready" }],
+			start: async () => ({ sessionId: "markdown-qa", threadId: "markdown-thread" }),
+			startTurn: async () => ({ sessionId: "markdown-qa", threadId: "markdown-thread", turnId: "markdown-turn" }),
+			close: async () => undefined,
+			interrupt: async () => undefined,
+			onEvent: (next: (event: any) => void) => { listener = next; return () => { listener = undefined; }; }
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-markdown-qa").click();
+	await page.evaluate(() => (window as any).__emitMarkdownEvent({
+		sessionId: "markdown-qa", method: "agentMessage/completed", params: {
+			messageId: "markdown-result",
+			content: "## Evaluation results\n\n**Banking77** is ready.\n\n| Task | State |\n| --- | --- |\n| Banking77 | Ready |\n\n```text\n[keep literal](synth visual vis_demo)\n```\n\n[Open result](synth visual vis_demo) and [QA file](</workspaces/QA file.md:12>)\n\n<script>alert(1)</script>"
+		}
+	}));
+	const body = page.locator(".assistant-rich-body");
+	await expect(body.getByRole("heading", { name: "Evaluation results" })).toBeVisible();
+	await expect(body.locator("strong").filter({ hasText: /^Banking77$/ })).toBeVisible();
+	await expect(body.getByRole("cell", { name: "Ready", exact: true })).toBeVisible();
+	await expect(body.locator("pre code")).toHaveText("[keep literal](synth visual vis_demo)");
+	await expect(body.getByRole("button", { name: "Open result", exact: true })).toBeVisible();
+	await expect(body.getByRole("button", { name: "QA file", exact: true })).toBeVisible();
+	await expect(body.locator("script")).toHaveCount(0);
+	await expect(body).toContainText("<script>alert(1)</script>");
+});
+
 test("V1 child events open the shared conversation transcript without treating idle as done", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
