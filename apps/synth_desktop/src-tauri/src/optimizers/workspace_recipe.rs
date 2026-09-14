@@ -1584,7 +1584,7 @@ fn parse_selected_containers(
         let command = launch.command.clone();
         let cwd = launch.working_directory.clone();
         for provider in &item.credential_providers {
-            if provider != "openrouter" {
+            if !supported_proxy_provider(provider) {
                 bail!(
                     "container `{}` requests unsupported credential provider `{}`",
                     item.id,
@@ -1629,6 +1629,10 @@ fn parse_selected_containers(
         });
     }
     Ok(specs)
+}
+
+pub(super) fn supported_proxy_provider(provider: &str) -> bool {
+    matches!(provider, "openrouter" | "openai")
 }
 
 fn credential_bearing_environment_name(name: &str) -> bool {
@@ -2744,7 +2748,7 @@ url = "http://127.0.0.1:8098"
 health = "/health"
 contract = "synth-containers/v1"
 locality = "container"
-credential_providers = ["openrouter"]
+credential_providers = ["openrouter", "openai"]
 [container.launch]
 schema_version = "synth.container-launch.v1"
 working_directory = "svc"
@@ -2766,7 +2770,7 @@ include = ["svc/serve.py"]
         let spec = find_container_spec(&workspace, "classify").unwrap();
         assert!(spec.cwd.starts_with(&workspace.canonicalize().unwrap()));
         assert!(spec.cwd.ends_with("svc"));
-        assert_eq!(spec.credential_providers, vec!["openrouter"]);
+        assert_eq!(spec.credential_providers, vec!["openrouter", "openai"]);
         assert_eq!(
             spec.environment["SYNTH_CRAFTAX_URL"],
             "http://127.0.0.1:8098"
