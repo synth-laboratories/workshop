@@ -28,6 +28,14 @@ test("managed MLX and clean-clone builds use one exact source revision", () => {
   assert.ok(sources.includes(`synth-mlx-rl-${revision}"`));
 });
 
+test("managed Optimizers and clean-clone builds use one exact source revision", () => {
+  const runtime = readFileSync(new URL("apps/synth_desktop/src-tauri/src/optimizers/manager.rs", root), "utf8");
+  const sources = readFileSync(new URL("scripts/prepare-build-sources.sh", root), "utf8");
+  const revision = runtime.match(/OPTIMIZER_DISTRIBUTION_SOURCE_REVISION: &str = "([a-f0-9]{40})"/)[1];
+  assert.ok(sources.includes(`fetch_build_source optimizers ${revision}`));
+  assert.ok(sources.includes(`optimizers-${revision}"`));
+});
+
 test("the shipped browser is a direct exact dependency, independent of private test tools", () => {
   const pkg = JSON.parse(readFileSync(new URL("package.json", root), "utf8"));
   const npmLock = JSON.parse(readFileSync(new URL("package-lock.json", root), "utf8"));
