@@ -47,7 +47,6 @@ import {
 } from "../types/landing";
 import { useInferenceMonitor } from "../components/InferencePanel";
 import { artifactFromVisualRecord } from "../components/VisualHost";
-import { presentWorkspaceVisual } from "../runtime/visualPresentation";
 import { useAccountShell } from "./useAccountShell";
 import { usePluginStatuses } from "./usePluginStatuses";
 import { useComputerUse } from "./useComputerUse";
@@ -1595,20 +1594,28 @@ export function useAppController() {
 			if (event.kind === "visual.show") {
 				// `ownerSessionId` is the conversation that owns the visual. The
 				// event session is where the show request should be presented.
-				// Keep those identities separate so an older visual can open in the
-				// requesting chat without being adopted into that chat's Outputs.
+				// Keep those identities separate so an older or workspace-owned visual
+				// can open in the requesting chat without being adopted into that
+				// chat's Outputs.
 				const owner =
 					typeof payload?.ownerSessionId === "string" && payload.ownerSessionId
 						? payload.ownerSessionId
 						: null;
-				if (!owner) {
-					presentWorkspaceVisual(visualId);
-					return;
-				}
 				const displaySessionId =
-					typeof event.sessionId === "string"
+					typeof event.sessionId === "string" && event.sessionId
 						? event.sessionId
 						: owner;
+				if (!displaySessionId) {
+					// A global/workspace request still means "show in the pane". Keep it
+					// on the current window surface instead of redirecting to the Visuals
+					// library, which is a separate explicit navigation action.
+					openArtifactByViewRef.current[viewKey] = visualId;
+					openArtifactByViewRef.current.window = visualId;
+					reconcileOpenVisual(visualId, eventRevision, true);
+					setSidePanelTab("visual");
+					setSidePanelOpen(true);
+					return;
+				}
 				const displayViewKey = `chat:${displaySessionId}`;
 				openArtifactByViewRef.current[displayViewKey] = visualId;
 				openArtifactByViewRef.current.window = visualId;
@@ -1621,10 +1628,8 @@ export function useAppController() {
 					setView({ kind: "chat", chatId: displaySessionId });
 				}
 				reconcileOpenVisual(visualId, eventRevision, true);
-				if (view.kind === "chat") {
-					setSidePanelTab("visual");
-					setSidePanelOpen(true);
-				}
+				setSidePanelTab("visual");
+				setSidePanelOpen(true);
 			}
 			else if (event.kind === "visual.updated" && openArtifactIdRef.current === visualId) {
 				reconcileOpenVisual(visualId, eventRevision);
