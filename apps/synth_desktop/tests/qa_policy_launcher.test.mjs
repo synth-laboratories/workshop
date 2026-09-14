@@ -13,7 +13,8 @@ test('QA launcher persists policy, refuses replacement and archives revocation',
     const source = path.join(directory, 'profile.json');
     const data = path.join(directory, 'data');
     fs.writeFileSync(source, JSON.stringify({schema_version:1, id:'qa-test', instance:'test',
-      container_roots:[], recipe_roots:[], containers:[], recipes:[], providers:[],
+      container_roots:[], recipe_roots:[], containers:[], recipes:[], providers:['openrouter'],
+      proxy_lease_providers:['openrouter'],
       expires_at:new Date(Date.now()+3600000).toISOString(), max_request_usd_micros:100,
       max_total_usd_micros:200, max_rollouts:1}));
     const run = (op, instance='test') => spawnSync(process.execPath,

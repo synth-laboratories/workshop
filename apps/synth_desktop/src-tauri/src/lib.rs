@@ -1365,9 +1365,11 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     for provider in &credential_names {
         codex
             .approvals
-            .authorize_host(
+            .authorize_eval_proxy(
                 app,
                 session_id,
+                &paid_approval_id,
+                &request.recipe_id,
                 session::approval::ApprovalKind::CredentialAccess {
                     consent: session::approval::CredentialConsent::IssueLease,
                     provider: provider.clone(),

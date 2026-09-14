@@ -1042,7 +1042,7 @@ impl ApprovalBroker {
         kind: ApprovalKind,
     ) -> Result<(String, ApprovalDecision)> {
         if let Some(profile) = crate::qa_policy::active()? {
-            if let ApprovalKind::PaidCompute { requested_cap, recipe_id, preparation_digest, operation, .. } = &kind {
+            if let ApprovalKind::PaidCompute { requested_cap, recipe_id, preparation_digest, operation, credential_names, .. } = &kind {
                 let ceiling = requested_cap.max_cost_usd_micros
                     .ok_or_else(|| anyhow!("qa_policy_requires_dollar_cap"))?;
                 let provider = paid_compute_provider(&kind)
@@ -1050,6 +1050,10 @@ impl ApprovalBroker {
                 if let Some(recipe) = recipe_id {
                     profile.require_compute(Some(recipe), &provider, ceiling, requested_cap.max_rollouts)?;
                     profile.require_recipe_source(recipe)?;
+                    // Refuse before reserving budget, rather than consume an
+                    // allowance and then surprise unattended QA with a modal.
+                    anyhow::ensure!(credential_names.is_empty() || profile.proxy_lease_providers.contains(&provider),
+                        "qa_eval_proxy_lease_not_authorized");
                 } else {
                     anyhow::ensure!(operation == "optimizer.evaluation.inline.start"
                         && preparation_digest.as_ref().is_some_and(|d| profile.inline_evaluation_digests.contains(d))
@@ -1063,7 +1067,16 @@ impl ApprovalBroker {
                 let approval_id = format!("approval-qa-{}", uuid::Uuid::new_v4().simple());
                 let reserved_id = approval_id.clone();
                 let reserved_profile = profile.clone();
-                database.run_transaction(move |conn| reserved_profile.reserve(conn, &reserved_id, ceiling)).await?;
+                let reserved_session = session_id.unwrap_or("qa-policy").to_owned();
+                let reserved_provider = provider.clone();
+                let reserved_scope = match recipe_id {
+                    Some(id) => format!("recipe:{id}"),
+                    None => format!("inline:{}", preparation_digest.as_deref().unwrap_or_default()),
+                };
+                database.run_transaction(move |conn| {
+                    reserved_profile.reserve(conn, &reserved_id, ceiling)?;
+                    reserved_profile.bind_eval(conn, &reserved_id, &reserved_session, &reserved_provider, &reserved_scope)
+                }).await?;
                 let decision = ApprovalDecision::ApproveWithCap { cap: requested_cap.clone() };
                 // Failed receipt writes retain the ceiling: uncertainty never
                 // restores authorization. This is policy evidence, not a click.
@@ -1147,6 +1160,52 @@ impl ApprovalBroker {
         Err(anyhow!(
             "this mutation requires an agent session for approval"
         ))
+    }
+
+    /// Dedicated eval-only lease admission. The general credential approval
+    /// API remains human-controlled; this requires a fresh budget binding.
+    pub(crate) async fn authorize_eval_proxy<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: Option<&str>,
+        paid_approval_id: &str,
+        recipe_id: &str,
+        kind: ApprovalKind,
+    ) -> Result<String> {
+        let Some(profile) = crate::qa_policy::active()? else {
+            return self.authorize_host(app, session_id, kind).await;
+        };
+        let ApprovalKind::CredentialAccess {
+            consent: CredentialConsent::IssueLease, provider,
+            locator_id: None, display_path: None, variable: None, switch_from_display: None, ..
+        } = &kind else {
+            return Err(anyhow!("qa_eval_proxy_requires_issue_lease"));
+        };
+        let provider = match provider.as_str() {
+            "OPENROUTER_API_KEY" => "openrouter",
+            "OPENAI_API_KEY" => "openai",
+            other => other,
+        }.to_owned();
+        profile.require_recipe_source(recipe_id)?;
+        anyhow::ensure!(profile.recipes.iter().any(|id| id == recipe_id), "qa_policy_compute_out_of_scope");
+        let database = self.persistence.database().ok_or_else(|| anyhow!("qa_policy_requires_durable_database"))?;
+        let session = session_id.unwrap_or("qa-policy").to_owned();
+        let paid = paid_approval_id.to_owned();
+        let scope = format!("recipe:{recipe_id}");
+        let claim_profile = profile.clone();
+        let claim_provider = provider.clone();
+        database.run_transaction(move |conn| {
+            claim_profile.claim_eval_lease(conn, &paid, &session, &claim_provider, &scope)
+        }).await?;
+        let approval_id = format!("approval-qa-lease-{}", uuid::Uuid::new_v4().simple());
+        let decision = ApprovalDecision::Credential { outcome: CredentialDecision::IssueLease };
+        self.write_auto_grant(app, session_id.unwrap_or("qa-policy"), &approval_id, &kind, &decision,
+            "qa_eval_proxy_lease", Some(serde_json::json!({
+                "qaPolicyId": profile.id, "paidApprovalId": paid_approval_id,
+                "recipeId": recipe_id, "provider": provider, "expiresAt": profile.expires_at,
+                "rawCredentialAccess": false
+            }))).await?;
+        Ok(approval_id)
     }
 
     /// Conversation-scoped paid-compute auto-approval. Ineligible requests
