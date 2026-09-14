@@ -30,6 +30,15 @@ fn evaluation_work_id(payload: &Value) -> Option<String> {
             payload.get("example_id")?.as_str()?)))
 }
 
+fn coverage_metric(row: &Value) -> Option<&'static str> {
+    match row.get("stage").and_then(Value::as_str) {
+        Some("seed_full_train" | "candidate_full_train") => Some("train"),
+        Some("heldout") => Some("heldout"),
+        Some("candidate_minibatch") => Some("minibatch"),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct GepaCandidate {
@@ -323,6 +332,30 @@ impl GepaProjection {
                     runtime.insert("rolloutsPerMinute".into(), json!(rollouts_per_minute));
                 }
             }
+            "optimizer.candidate_evaluation.attempt.failed" => {
+                let failure = payload.get("failure").unwrap_or(&Value::Null);
+                let summary = json!({
+                    "candidateId": payload.get("candidate_id"),
+                    "stage": payload.get("stage"),
+                    "exampleId": payload.get("example_id"),
+                    "sequence": event.aggregate_sequence,
+                    "attempt": payload.get("attempt"),
+                    "maxAttempts": payload.get("max_attempts"),
+                    "failureClass": failure.get("reason_code").or_else(|| failure.get("failure_type")),
+                    "message": failure.get("message").and_then(Value::as_str).map(|s| s.chars().take(2000).collect::<String>()),
+                });
+                let attempts = object_mut(&mut self.runtime).entry("failedAttempts")
+                    .or_insert_with(|| json!([]));
+                if let Some(attempts) = attempts.as_array_mut() { attempts.push(summary); }
+                self.rollouts_failed += 1;
+            }
+            "optimizer.evaluation.coverage.updated" => {
+                let key = format!("{}:{}", payload.get("candidate_id").and_then(Value::as_str).unwrap_or("run"),
+                    payload.get("stage").and_then(Value::as_str).unwrap_or("unknown"));
+                let mut coverage = payload.as_object().cloned().unwrap_or_default();
+                coverage.insert("sequence".into(), json!(event.aggregate_sequence));
+                nested_object_mut(&mut self.runtime, "coverage").insert(key, Value::Object(coverage));
+            }
             "optimizer.candidate_evaluation.allocated" => {
                 self.rollouts_allocated += 1;
                 let candidate = payload.get("candidate_id").and_then(|v| v.as_str());
@@ -584,6 +617,31 @@ impl GepaProjection {
                 self.phase = Some(RunPhase::Materializing);
             }
             _ => {}
+        }
+        // Some producers publish a fallback mean of zero when every rollout
+        // failed. Coverage is the authority that distinguishes missing from zero.
+        if let Some(coverage) = self.runtime.get("coverage").and_then(Value::as_object) {
+            for row in coverage.values() {
+                let Some(metric) = coverage_metric(row) else { continue; };
+                // A later successful evaluation can supersede an earlier
+                // failed stage for the same candidate and score domain.
+                if coverage.values().any(|other|
+                    other.get("candidate_id") == row.get("candidate_id")
+                        && coverage_metric(other) == Some(metric)
+                        && other.get("sequence").and_then(Value::as_u64).unwrap_or(0)
+                            > row.get("sequence").and_then(Value::as_u64).unwrap_or(0)) { continue; }
+                if row.get("scored").and_then(Value::as_u64) != Some(0)
+                    || row.get("failed").and_then(Value::as_u64).unwrap_or(0) == 0 { continue; }
+                if let Some(candidate) = row.get("candidate_id").and_then(Value::as_str)
+                    .and_then(|id| self.candidates.get_mut(id)) {
+                    match metric {
+                        "train" => candidate.train_reward = None,
+                        "heldout" => candidate.heldout_reward = None,
+                        "minibatch" => candidate.minibatch_reward = None,
+                        _ => {}
+                    }
+                }
+            }
         }
         apply_usage(&mut self.usage, event);
         Ok(())
@@ -877,6 +935,30 @@ mod tests {
         assert_eq!(result.verdict, GepaVerdict::NoMeasuredImprovement);
         assert_eq!(result.selected_candidate_id.as_deref(), Some("seed"));
         assert!(!result.work.fixed_denominator);
+    }
+
+    #[test]
+    fn failed_coverage_cannot_become_a_zero_score() {
+        let mut projection = GepaProjection::default();
+        projection.apply(&committed("optimizer.candidate_evaluation.attempt.failed", json!({
+            "candidate_id":"seed", "stage":"seed_full_train", "example_id":"train:0",
+            "failure":{"reason_code":"http", "message":"container returned 422"}
+        }), 1)).unwrap();
+        projection.apply(&committed("optimizer.evaluation.coverage.updated", json!({
+            "candidate_id":"seed", "stage":"seed_full_train", "required":1,
+            "scored":0, "failed":1, "pending":0
+        }), 2)).unwrap();
+        projection.apply(&committed("candidate.evaluated", json!({"candidate_id":"seed", "train_reward":0}), 3)).unwrap();
+        assert_eq!(projection.candidates["seed"].train_reward, None);
+        assert_eq!(projection.rollouts_failed, 1);
+        assert_eq!(projection.runtime["failedAttempts"][0]["failureClass"], "http");
+        // A genuine scored zero remains a measured score, not missing data.
+        projection.apply(&committed("optimizer.evaluation.coverage.updated", json!({
+            "candidate_id":"seed", "stage":"seed_full_train", "required":1,
+            "scored":1, "failed":0, "pending":0
+        }), 4)).unwrap();
+        projection.apply(&committed("candidate.evaluated", json!({"candidate_id":"seed", "train_reward":0}), 5)).unwrap();
+        assert_eq!(projection.candidates["seed"].train_reward, Some(0.0));
     }
 
     #[test]

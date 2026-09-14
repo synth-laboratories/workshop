@@ -1246,6 +1246,18 @@ fn compile_gepa_task_contract(
         .cloned()
         .collect::<Vec<_>>();
     let mut gepa = toml::value::Table::new();
+    // Honor the admitted workspace concurrency instead of inheriting the
+    // optimizer runtime's unrelated default pool of eight workers.
+    let concurrency = i64::try_from(recipe.concurrency).context("GEPA concurrency exceeds supported range")?;
+    gepa.insert("pipeline".into(), toml::Value::Table([
+        ("workers".into(), toml::Value::Table([
+            ("rollout".into(), toml::Value::Integer(concurrency)),
+        ].into_iter().collect())),
+        ("adaptive_rollout_concurrency".into(), toml::Value::Table([
+            ("initial".into(), toml::Value::Integer(concurrency)),
+            ("max".into(), toml::Value::Integer(concurrency)),
+        ].into_iter().collect())),
+    ].into_iter().collect()));
     gepa.insert(
         "max_total_rollouts".into(),
         toml::Value::Integer(recipe.bounds.max_total_rollouts),
@@ -2620,6 +2632,7 @@ container = "banking77"
 provider = "openrouter"
 model = "openai/gpt-5.6-luna"
 proposer_model = "openai/gpt-5.6-luna"
+concurrency = 2
 locality = "container"
 candidate_field = "system_prompt"
 train_seeds = [0, 1]
@@ -2638,6 +2651,9 @@ max_total_rollouts = 1
         let run_dir = workspace.join("run");
         let copied = copy_into_run_dir(&recipe, &run_dir).unwrap();
         let document: toml::Value = toml::from_str(&fs::read_to_string(copied).unwrap()).unwrap();
+        assert_eq!(document["gepa"]["pipeline"]["workers"]["rollout"].as_integer(), Some(2));
+        assert_eq!(document["gepa"]["pipeline"]["adaptive_rollout_concurrency"]["initial"].as_integer(), Some(2));
+        assert_eq!(document["gepa"]["pipeline"]["adaptive_rollout_concurrency"]["max"].as_integer(), Some(2));
         assert_eq!(document["policy"]["provider"].as_str(), Some("openrouter"));
         assert_eq!(
             document["policy"]["model"].as_str(),

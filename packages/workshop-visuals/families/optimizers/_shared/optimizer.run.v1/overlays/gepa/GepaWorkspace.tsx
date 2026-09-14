@@ -101,7 +101,7 @@ function EvidenceIntegrity({ gepa }: { gepa: NonNullable<ProjectedState["gepa"]>
       {gepa.failedAttempts.length > 0 ? (
         <details style={{ marginTop: 8 }}>
           <summary style={{ cursor: "pointer", color: "#b23830", fontSize: 12, fontWeight: 650 }}>
-            {gepa.failedAttempts.length} exhausted rollout {gepa.failedAttempts.length === 1 ? "attempt" : "attempts"} — excluded from scores
+            {gepa.failedAttempts.length} failed rollout {gepa.failedAttempts.length === 1 ? "attempt" : "attempts"} — excluded from scores
           </summary>
           <div style={{ display: "grid", gap: 6, marginTop: 7 }}>
             {gepa.failedAttempts.slice(-12).map((failure) => (
@@ -404,7 +404,7 @@ export function GepaWorkspace({
     },
     {
       tier: "detail",
-      label: "Configured concurrency",
+      label: "Current worker limit",
       value: gepa.runtime.configuredRolloutWorkers != null
         ? `${Math.round(gepa.runtime.configuredRolloutWorkers)}`
         : "unavailable",

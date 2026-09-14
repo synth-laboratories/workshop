@@ -381,8 +381,29 @@ function gepaProjection(base: ProjectedState, view: OptimizerRunViewV2Like): voi
     frontierHistory: [],
     stages,
     evaluations,
-    failedAttempts: [],
-    coverage: [],
+    failedAttempts: records(projectedRuntime.failedAttempts).map((failure) => ({
+      candidateId: optionalString(failure.candidateId),
+      sequence: numberOrNull(failure.sequence) ?? 0,
+      stage: optionalString(failure.stage),
+      exampleId: optionalString(failure.exampleId),
+      attempt: numberOrNull(failure.attempt) ?? undefined,
+      maxAttempts: numberOrNull(failure.maxAttempts) ?? undefined,
+      failureClass: optionalString(failure.failureClass),
+      message: optionalString(failure.message),
+    })),
+    coverage: Object.values(record(projectedRuntime.coverage)).map((value) => {
+      const row = record(value);
+      const required = numberOrNull(row.required) ?? 0;
+      const scored = numberOrNull(row.scored) ?? 0;
+      const failed = numberOrNull(row.failed) ?? 0;
+      const pending = numberOrNull(row.pending) ?? Math.max(0, required - scored - failed);
+      return {
+        candidateId: optionalString(row.candidate_id), stage: optionalString(row.stage),
+        required, scored, failed, pending, sequence: numberOrNull(row.sequence) ?? 0,
+        complete: required > 0 && scored === required && failed === 0 && pending === 0,
+        promotionEligible: row.promotion_eligible === true || row.complete === true,
+      };
+    }),
     proposerTraces: proposerCalls.map((call, index) => ({
       generation: numberOrNull(call.generation) ?? index,
       sequence: index + 1,

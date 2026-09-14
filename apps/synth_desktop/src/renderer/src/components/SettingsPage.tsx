@@ -627,7 +627,8 @@ export function SettingsPage({
 									Synth Desktop is a local-first research workbench.
 								</p>
 							</SettingsCard>
-							<SettingsCard title="What’s new" testId="about-changelog">
+							<SettingsCard title="Release history" testId="about-changelog">
+								<p>Historical release notes. The installed version and source revision are shown above.</p>
 								<div className="about-changelog">
 									{CHANGELOG.map((release) => (
 										<article className="about-release" key={release.version}>
