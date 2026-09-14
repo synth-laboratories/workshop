@@ -81,7 +81,7 @@ export function ProjectSourcesSettings() {
 		{error ? <p role="alert">{error}</p> : null}
 		{notice ? <p role="status">{notice}</p> : null}
 		{catalog?.sources.map((row) => <SourceRow key={row.path} row={row} busy={busy} remove={remove} />)}
-		{catalog && !catalog.sources.length ? <p>No approved project source. Add a repository folder or review an agent request below.</p> : null}
+		{catalog && !catalog.sources.length ? <p>No manually approved project sources. Launcher-managed sources, if present, are listed below. Add a repository folder or review an agent request to grant additional access.</p> : null}
 		{catalog?.implicitRoots.length ? <div><h4>Launcher-managed sources</h4><p>These permissions come from the launcher environment. Removing an approved row above does not remove an environment grant.</p>
 			{catalog.implicitRoots.map((row) => <SourceRow key={row.path} row={row} busy={busy} />)}</div> : null}
 		<h4>Pending source requests</h4>

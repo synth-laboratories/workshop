@@ -143,9 +143,9 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
       testId: "gepa-related-work-card",
       rows: [
         { name: "Rollouts", value: `${gepa.rolloutsCompleted.toLocaleString()} completed · ${attached.toLocaleString()} attached` },
-        { name: "Runtime", value: `${gepa.runtime.configuredRolloutWorkers ?? "?"} configured · ${gepa.runtime.estimatedEffectiveConcurrency?.toFixed(1) ?? "?"} effective · ${gepa.runtime.rolloutsPerMinute?.toFixed(1) ?? "?"} rollouts/min` },
+        { name: "Runtime", value: `${gepa.runtime.configuredRolloutWorkers ?? "?"} current limit · ${gepa.runtime.staticRolloutWorkers ?? "?"} pool capacity · ${gepa.runtime.estimatedEffectiveConcurrency?.toFixed(1) ?? "?"} effective · ${gepa.runtime.rolloutsPerMinute?.toFixed(1) ?? "?"} rollouts/min` },
         { name: "Proposer", value: `${proposerRunning} running · ${proposerCompleted} complete · ${proposerFailed} failed` },
-        { name: "Failures", value: `${gepa.failedAttempts.length.toLocaleString()} exhausted attempts` },
+        { name: "Failures", value: `${gepa.failedAttempts.length.toLocaleString()} failed attempts` },
         { name: "Current phase", value: gepa.activity.label },
         { name: "Generation", value: String(gepa.activity.generation ?? (gepa.proposerTraces.length ? Math.max(...gepa.proposerTraces.map((trace) => trace.generation)) : reporting.missing)) }
       ]

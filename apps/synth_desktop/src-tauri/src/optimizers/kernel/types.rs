@@ -58,9 +58,9 @@ impl AlgorithmKind {
     pub const fn reducer_version(self) -> &'static str {
         match self {
             Self::Eval => "eval.projection.v3",
-            // v5 repairs child rollout identities, including results arriving
-            // before allocation. Existing terminal runs replay once on read.
-            Self::Gepa => "gepa.projection.v5",
+            // v6 retains failures/coverage and rejects unscored fallback zeros.
+            // Existing terminal runs replay once on read.
+            Self::Gepa => "gepa.projection.v6",
             Self::GoEx => "go_ex.projection.v3",
             // v3 persists the bounded metric series and checkpoint evaluation
             // summaries so training surfaces read the projection instead of

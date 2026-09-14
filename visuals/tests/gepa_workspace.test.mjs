@@ -108,9 +108,15 @@ test("live run view exposes durable setup and measured concurrency", () => {
   assert.equal(projected.gepa.runtime.rolloutsPerMinute, 600);
   view.header.lifecycle = "terminal";
   view.header.terminal = { kind: "failed", finalSequence: 51, sealedAt: "2026-09-14T17:10:48Z" };
+  view.projection.runtime.failedAttempts = [{ candidateId: "seed", sequence: 16, stage: "seed_full_train", exampleId: "train:0", failureClass: "http", message: "container returned 422" }];
+  view.projection.runtime.coverage = { seed: { candidate_id: "seed", stage: "seed_full_train", required: 2, scored: 0, failed: 2, pending: 0, sequence: 24 } };
   const failed = projectRunViewV2({ ...RUN, status: "failed" }, view);
   assert.equal(failed.gepa.activity.label, "Search failed");
   assert.equal(failed.gepa.stages.find(stage => stage.id === "complete").status, "failed");
+  assert.equal(failed.gepa.failedAttempts[0].message, "container returned 422");
+  assert.equal(failed.gepa.coverage[0].scored, 0);
+  assert.equal(failed.gepa.coverage[0].failed, 2);
+  assert.equal(failed.gepa.coverage[0].promotionEligible, false);
 });
 
 function solEvents() {
