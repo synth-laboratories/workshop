@@ -86,6 +86,7 @@ function WorkspacePanel({ client }: { client: LiveWorkspaceClient }) {
   const [preview, setPreview] = useState<LiveWorkspaceRead | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [changed, setChanged] = useState<Set<string>>(new Set());
+  const [listed, setListed] = useState(false);
   const signatures = useRef(new Map<string, string>());
 
   useEffect(() => {
@@ -120,6 +121,7 @@ function WorkspacePanel({ client }: { client: LiveWorkspaceClient }) {
         signatures.current = nextSignatures;
         setChanged(nextChanged);
         setEntries(listing.entries);
+        setListed(true);
         setError(null);
         const selectedStillExists = selected
           ? listing.entries.some((entry) => entry.path === selected && entry.kind !== "directory")
@@ -138,7 +140,10 @@ function WorkspacePanel({ client }: { client: LiveWorkspaceClient }) {
       }
     };
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 2000);
+    const timer = window.setInterval(() => {
+      if (!document.documentElement.hasAttribute("data-synth-review-capture")
+        && !document.documentElement.hasAttribute("data-synth-capture")) void refresh();
+    }, 2000);
     return () => {
       disposed = true;
       window.clearInterval(timer);
@@ -164,7 +169,8 @@ function WorkspacePanel({ client }: { client: LiveWorkspaceClient }) {
   };
 
   return (
-    <section className="sv-section" aria-label="Live workspace" data-testid="harbor-live-workspace">
+    <section className="sv-section" aria-label="Live workspace" data-testid="harbor-live-workspace"
+      data-visual-capture-blocked={!status || (status.state === "observing" && !listed) ? "true" : undefined}>
       <div className="sv-section-head">
         <h3>Workspace</h3>
         <span className="sv-chip" data-tone={status?.state === "observing" ? "ok" : status?.state === "unavailable" ? "bad" : undefined}>
@@ -378,6 +384,7 @@ export function Shell(props: ShellProps) {
       title={props.title ?? "Harbor trial / verifier"}
       lede={props.lede}
       testId="visual-live-harbor-eval"
+      captureBlocked={hasSource && !ready && !restored}
       footer="live.harbor_eval.v1 · ATIF is a projection of this evidence, not the log"
     >
       <BenchmarkStatus rows={benchmarkRows} />

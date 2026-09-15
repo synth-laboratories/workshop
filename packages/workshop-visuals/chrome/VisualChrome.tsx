@@ -49,6 +49,8 @@ export type VisualChromeProps = {
   testId?: string;
   observation?: SurfaceObservation;
   layout?: "document" | "workspace";
+  /** Refuse a pixel cut while an authoritative live replay has not answered. */
+  captureBlocked?: boolean;
 };
 
 /** Shared light chrome wrapper for all genre templates. */
@@ -61,7 +63,8 @@ export function VisualChrome({
   children,
   testId,
   observation,
-  layout = "document"
+  layout = "document",
+  captureBlocked = false
 }: VisualChromeProps) {
   return (
     <div
@@ -69,6 +72,7 @@ export function VisualChrome({
       data-testid={testId}
       data-synth-visual=""
       data-layout={layout}
+      data-visual-capture-blocked={captureBlocked ? "true" : undefined}
       role={layout === "workspace" ? "region" : undefined}
       aria-label={layout === "workspace" ? title : undefined}
       {...(observation ? surfaceObservationAttributes(observation) : {})}

@@ -92,3 +92,40 @@ diagnostic.
 Success is recorded because its absence is evidence: without it, "the renderer
 never asked" and "the stream returned nothing" are the same empty pane and the
 same empty query.
+
+## Harbor/Codex tool feed
+
+`scripts/harbor-live-visual.mjs` adapts an exact Harbor trial directory to
+this transport. Start it once `trial.log` exists, while the agent is still
+running:
+
+```sh
+node scripts/harbor-live-visual.mjs \
+  --trial-dir /absolute/path/to/harbor/trial \
+  --visual-id unique-visual-id \
+  --connection-file /absolute/path/to/visuals-ipc.json \
+  --title 'Harbor trial' \
+  --workspace-source /absolute/path/to/credential-free-workspace-descriptor.json
+```
+
+The workspace source is optional. The producer binds a declared `live_sse`
+source and loopback poll URL, publishes cursor-ordered `tools` envelopes from
+Harbor's continuously written `agent/codex.txt`, and uses archived session
+JSONL only if that live log is absent. It never publishes raw commands,
+outputs, instructions, messages, reasoning or credential values. Loopback
+polling carries sanitized tool identity/status/duration/exit code only.
+
+After `verifier/reward.txt` and Harbor's `result.json` agree, the producer
+emits verifier and terminal status evidence, replaces its ephemeral poll
+binding with the retained envelopes inline, marks the visual saved, and
+releases its loopback listener. A reopened result no longer needs the sidecar
+or a manual score binding. Missing or contradictory scores fail closed.
+
+## Live pixel cuts
+
+Review capture remounts a visual after the native session checkpoint is
+frozen. During that remount, `useVisualEvidence` reads the checkpoint's pinned
+`source.live-streams` digest; it does not commit a newer poll answer. A capture
+with no resolved prefix waits boundedly and fails rather than certifying a
+blank connecting placeholder. The capture barrier then verifies zero DOM
+mutations before saving pixels and its semantic state receipt.

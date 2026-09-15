@@ -66,8 +66,20 @@ function begin(visualId:string,revision:number,stateVersion:number){
     try{
       if(!roots.length)throw new Error("Capture session surface is not mounted");
       for(const root of roots){
-        if(root.querySelector(blockedSelector))
-          throw new Error("Capture visual is unresolved, loading, or invalid");
+        // Scoped review capture remounts the visual, and a declared replay or
+        // workspace status may not have answered yet. Wait for that first
+        // authoritative page rather than freezing a connecting placeholder.
+        // Invalid shells still fail immediately; non-answering streams remain
+        // a bounded, named capture failure.
+        const deadline=Date.now()+8_000;
+        while(root.querySelector(blockedSelector)){
+          if(root.querySelector('[data-testid="visual-invalid"]'))
+            throw new Error("Capture visual is invalid");
+          if(barrier.closed)return;
+          if(Date.now()>=deadline)
+            throw new Error("Capture visual did not resolve its declared inputs within 8s");
+          await new Promise(resolve=>setTimeout(resolve,40));
+        }
         if(root.dataset.visualSessionReady!=="true" || Number(root.dataset.visualSessionRevision)!==revision || Number(root.dataset.visualSessionVersion)!==stateVersion)
           throw new Error("Capture renderer has not observed the committed session version");
         // CSS URL images can animate independently of the DOM and WAAPI.

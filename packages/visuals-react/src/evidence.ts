@@ -16,8 +16,13 @@ export function useVisualEvidence<T>(owner:string,input:T|undefined):{value:T|un
  const [loaded,setLoaded]=useState<{digest:string;value:T}>();
  const [error,setError]=useState<string>();
  const replay=Boolean(session?.state.replay);
+ const capture=document.documentElement.hasAttribute('data-synth-review-capture')
+  || document.documentElement.hasAttribute('data-synth-capture');
  useEffect(()=>{
-  if(!client?.supportsEvidenceCuts||!session?.ready||value===undefined||replay)return;
+  // A coherent pixel cut is pinned to the native checkpoint's evidence
+  // digest. It must read that cut, never commit a fresher live-poll value while
+  // the capture barrier holds the presentation frozen.
+  if(!client?.supportsEvidenceCuts||!session?.ready||value===undefined||replay||capture)return;
   let cancelled=false;setError(undefined);
   void(async()=>{
    const digest=await canonicalDigest(value);
@@ -30,7 +35,7 @@ export function useVisualEvidence<T>(owner:string,input:T|undefined):{value:T|un
    setLoaded({digest,value});
   })().catch(reason=>{if(!cancelled)setError(String(reason));});
   return()=>{cancelled=true;};
- },[client,session?.ready,owner,key,replay]);
+ },[client,session?.ready,owner,key,replay,capture]);
  useEffect(()=>{
   if(!client?.supportsEvidenceCuts||!cut||loaded?.digest===cut)return;
   let cancelled=false;setError(undefined);
@@ -44,5 +49,5 @@ export function useVisualEvidence<T>(owner:string,input:T|undefined):{value:T|un
  },[client,cut,loaded?.digest]);
  if(!client?.supportsEvidenceCuts)return {value:input,ready:true};
  const restored=loaded?.digest===cut?loaded.value:undefined;
- return {value:restored,ready:!error&&restored!==undefined&&(replay||key===stableSerialize(restored)),error};
+ return {value:restored,ready:!error&&restored!==undefined&&(replay||capture||key===stableSerialize(restored)),error};
 }

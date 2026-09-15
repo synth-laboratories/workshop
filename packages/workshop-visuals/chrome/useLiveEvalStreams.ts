@@ -23,6 +23,17 @@ export type LiveEvalStreamsView = {
 };
 
 const POLL_INTERVAL_MS = 500;
+const pixelCutPending = () => document.documentElement.hasAttribute("data-synth-review-capture")
+  || document.documentElement.hasAttribute("data-synth-capture");
+type CapturePrefix = { events: LiveEvalEvent[]; hostEvidence?: HostLiveEvidence; ready: boolean; state: TransportState; closed: number };
+const capturePrefixes = new Map<string, CapturePrefix>();
+const CAPTURE_PREFIX_LIMIT = 8;
+function retainCapturePrefix(key: string | null, value: CapturePrefix) {
+  if (!key) return;
+  capturePrefixes.delete(key);
+  capturePrefixes.set(key, value);
+  while (capturePrefixes.size > CAPTURE_PREFIX_LIMIT) capturePrefixes.delete(capturePrefixes.keys().next().value!);
+}
 
 /**
  * Fold every declared rollout stream into one viewer from its durable poll
@@ -57,6 +68,7 @@ export function useLiveEvalStreams(
   clientRef.current = client;
   const streamKey = JSON.stringify(client.streams.map(({streamId, pollUrl, sseUrl}) => [streamId, pollUrl, sseUrl]));
   const { visualId, revision } = identity;
+  const captureKey = visualId && revision != null ? JSON.stringify([visualId, revision, streamKey]) : null;
 
   useEffect(() => {
     ingest.current = emptyLiveIngest();
@@ -70,6 +82,22 @@ export function useLiveEvalStreams(
     const streams = clientRef.current.streams;
     if (streams.length === 0) {
       setState("idle");
+      return;
+    }
+    // Review capture remounts the selected visual inside this same renderer.
+    // Its toolbar is operating an already-open pane whose native poll answers
+    // were retained here. Reuse only that exact visual/revision/stream prefix;
+    // a cold capture without one must still answer from authority or fail
+    // bounded, never certify an empty connecting placeholder.
+    const prefix = pixelCutPending() && captureKey ? capturePrefixes.get(captureKey) : undefined;
+    if (prefix) {
+      ingest.current = ingestLiveEnvelopeBatch(emptyLiveIngest(), prefix.events);
+      setEvents(prefix.events);
+      setHostEvidence(prefix.hostEvidence);
+      setReady(prefix.ready);
+      setRecovered(prefix.events.length);
+      setClosed(prefix.closed);
+      setState(prefix.state);
       return;
     }
     setState("declared");
@@ -121,6 +149,8 @@ export function useLiveEvalStreams(
       } else {
         setError(null);
       }
+      retainCapturePrefix(captureKey, { events: ingest.current.events as LiveEvalEvent[],
+        hostEvidence: host, ready: host?.ready ?? ingest.current.ready, state: "live", closed: closedStreams.size });
     };
 
     const pollOne = async (stream: (typeof streams)[number]) => {
@@ -175,7 +205,12 @@ export function useLiveEvalStreams(
         setClosed(closedStreams.size);
         const allClosed = closedStreams.size === streams.length;
         setState(allClosed ? "terminal" : "live");
-        if (!allClosed) timer = window.setTimeout(() => void pollAll(), POLL_INTERVAL_MS);
+        const retained = captureKey ? capturePrefixes.get(captureKey) : undefined;
+        if (retained) retainCapturePrefix(captureKey, { ...retained, state: allClosed ? "terminal" : "live", closed: closedStreams.size });
+        // A scoped pixel cut remounts this pane. Replay one authoritative
+        // prefix, then hold it until the capture barrier releases; otherwise
+        // a new tool event can repaint the DOM under a frozen checkpoint.
+        if (!allClosed && !pixelCutPending()) timer = window.setTimeout(() => void pollAll(), POLL_INTERVAL_MS);
       } catch (reason) {
         fail(reason instanceof Error ? reason.message : "replay error", VISUAL_STREAM_CODES.streamInterrupted);
       }
