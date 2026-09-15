@@ -12,6 +12,7 @@ export type VisualBindingKind =
   | "local_cas"
   | "run_ref"
   | "live_sse"
+  | "live_workspace"
   | "fixture"
   | "optimizer_run"
   | "query_snapshot"
@@ -73,6 +74,7 @@ export type VisualBinding = {
    * - trace_v5 → digest or catalog id
    * - local_cas → content-addressed blob digest / path
    * - live_sse → absolute SSE URL
+   * - live_workspace → absolute host-admitted descriptor path
    * - fixture → relative path under visuals/fixtures/ or template examples/
    * - optimizer_run → cloud/local optimizer_run_id
    * - query_snapshot → immutable trace query snapshot id

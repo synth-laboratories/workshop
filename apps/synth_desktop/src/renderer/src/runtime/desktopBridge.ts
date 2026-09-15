@@ -955,6 +955,9 @@ window.synthWorkspaceScope ??= isTauri
 				)),
 			render: (visualId) => fromGenerated(spectaCommands.visualsRender(visualId)),
 			pollStream: (request) => fromGenerated(spectaCommands.visualStreamPoll(request)),
+			workspaceStatus: (request) => fromGenerated(spectaCommands.visualWorkspaceStatus(request)) as Promise<import("@synth/workshop-visuals/runtime/workspaceClient.ts").LiveWorkspaceStatus>,
+			workspaceList: (request) => fromGenerated(spectaCommands.visualWorkspaceList(request)) as Promise<import("@synth/workshop-visuals/runtime/workspaceClient.ts").LiveWorkspaceList>,
+			workspaceRead: (request) => fromGenerated(spectaCommands.visualWorkspaceRead(request)) as Promise<import("@synth/workshop-visuals/runtime/workspaceClient.ts").LiveWorkspaceRead>,
 			readMedia: (request) => fromGenerated(spectaCommands.visualMediaRead(request)).then(visualMediaResponse),
 			onEvent(listener, onAttached) {
 				return listenRuntimeAppEvents((payload) => {

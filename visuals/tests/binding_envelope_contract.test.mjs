@@ -57,6 +57,21 @@ test("the canonical inputs array does not emit slot", () => {
   assert.equal(resolved.slots[0].slot, undefined);
 });
 
+test("a live workspace binding resolves to a host-owned descriptor reference", () => {
+  const bindings = {
+    schemaVersion: "synth.visual-bindings.v1",
+    inputs: [{ input: "workspace", kind: "live_workspace", source: "/tmp/harbor/trial/stream.json" }]
+  };
+  const resolved = resolveVisualBindings(bindings);
+  assert.equal(resolved.status, "canonical");
+  assert.equal(resolved.slots[0].kind, "live_workspace");
+  const props = propsFromBindings(bindings);
+  assert.deepEqual(props.props.workspace, {
+    descriptor_path: "/tmp/harbor/trial/stream.json",
+    schema: "synth.live-workspace.v1"
+  });
+});
+
 test("disagreeing input and slot fail closed", () => {
   const resolved = resolveVisualBindings({
     schemaVersion: "synth.visual-bindings.v1",

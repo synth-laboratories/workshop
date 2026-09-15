@@ -727,6 +727,9 @@ export type VisualsBridge = {
 	}>;
 	render(visualId: string): Promise<VisualRecord>;
 	pollStream(request: { visualId: string; pollUrl: string; after: number; limit: number }): Promise<unknown>;
+	workspaceStatus(request: { visualId: string; source: string }): Promise<import("@synth/workshop-visuals/runtime/workspaceClient.ts").LiveWorkspaceStatus>;
+	workspaceList(request: { visualId: string; source: string; path: string }): Promise<import("@synth/workshop-visuals/runtime/workspaceClient.ts").LiveWorkspaceList>;
+	workspaceRead(request: { visualId: string; source: string; path: string }): Promise<import("@synth/workshop-visuals/runtime/workspaceClient.ts").LiveWorkspaceRead>;
 	/**
 	 * `synth.visual.media.v1` — one bounded binary object by CAS digest.
 	 *

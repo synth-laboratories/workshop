@@ -153,6 +153,13 @@ async function resolveBinding(
         schema: binding.schema ?? "synth.live_eval.v1"
       };
     }
+    case "live_workspace": {
+      if (!binding.source) throw new Error("live_workspace binding requires a source");
+      return {
+        descriptor_path: binding.source,
+        schema: binding.schema ?? "synth.live-workspace.v1"
+      };
+    }
     case "annotation_evidence_head": {
       if (binding.data !== undefined) return dig(binding.data, binding.path);
       if (!binding.source) {
@@ -289,6 +296,7 @@ const BINDING_KINDS: readonly string[] = [
   "local_cas",
   "run_ref",
   "live_sse",
+  "live_workspace",
   "fixture",
   "optimizer_run",
   "query_snapshot",
@@ -500,6 +508,11 @@ export function propsFromBindings(value: unknown): { props: Record<string, unkno
           schema: binding.schema ?? "evals.event-stream.v1"
         };
       }
+    } else if (binding.kind === "live_workspace" && binding.source) {
+      props[name] = {
+        descriptor_path: binding.source,
+        schema: binding.schema ?? "synth.live-workspace.v1"
+      };
     } else if (binding.kind === "optimizer_run" && binding.source) {
       props[name] = {
         optimizer_run_id: binding.source,

@@ -82,6 +82,95 @@ test("[v0.2] Harbor live visual fails closed when reward.txt is missing", async 
 	await expect(viewer).not.toContainText("$0.00");
 });
 
+test("[v0.11.1] Harbor workspace opens read-only and previews live files", async ({ page }) => {
+	const events = [
+		envelope("stream.subscribed", null, { "stream.id": "stream_workspace", ready: true }),
+		envelope("trial.launched", 1, { sandbox: "harbor-docker", trial_id: "cybernetics-smoke" })
+	];
+	await installVisuals(page, [liveVisual({
+		id: "vis_v0111_workspace",
+		templateId: "live.harbor_eval.v1",
+		title: "CyberneticsBench live workspace",
+		bindings: {
+			schemaVersion: "synth.visual-bindings.v1",
+			inputs: [
+				{ input: "stream", kind: "inline", data: { events } },
+				{ input: "workspace", kind: "live_workspace", source: "/tmp/cyberneticsbench/trial/stream.json" }
+			]
+		}
+	})], {}, {
+		entries: [
+			{ path: "solution.py", name: "solution.py", kind: "file", size: 25, modifiedAt: "2026-09-14T12:00:00Z" },
+			{ path: "escape-passwd", name: "escape-passwd", kind: "symlink", size: 0, modifiedAt: "2026-09-14T12:00:01Z" },
+			{ path: "artifacts", name: "artifacts", kind: "directory", size: 0, modifiedAt: "2026-09-14T12:00:00Z" }
+		],
+		files: { "solution.py": "print('cybernetics live')\n" },
+		readErrors: { "escape-passwd": "workspace path is unavailable or escapes its declared root" }
+	});
+	const pane = await openVisual(page, "vis_v0111_workspace");
+	const workspace = pane.getByTestId("harbor-live-workspace");
+	await expect(workspace).toBeVisible();
+	await expect(workspace).toContainText("observing");
+	await expect(workspace).toContainText("read-only");
+	await workspace.getByRole("button", { name: /solution\.py/ }).click();
+	await expect(workspace.getByLabel("Live preview of solution.py")).toContainText("cybernetics live");
+	await workspace.getByRole("button", { name: /escape-passwd/ }).click();
+	await expect(workspace).toContainText("workspace path is unavailable or escapes its declared root");
+	await expect(workspace).toContainText("Preview unavailable.");
+	await expect(workspace).not.toContainText("[object Object]");
+	await expect(workspace).not.toContainText("Loading…");
+	await expect(workspace.getByText("Terminal", { exact: true })).toHaveCount(0);
+});
+
+test("[v0.11.1] Harbor workspace clears a selected file that disappears", async ({ page }) => {
+	await installVisuals(page, [liveVisual({
+		id: "vis_v0111_workspace_rebind",
+		templateId: "live.harbor_eval.v1",
+		title: "CyberneticsBench workspace rebind",
+		bindings: {
+			schemaVersion: "synth.visual-bindings.v1",
+			inputs: [
+				{ input: "stream", kind: "inline", data: { events: [] } },
+				{ input: "workspace", kind: "live_workspace", source: "/tmp/cyberneticsbench/rebind/stream.json" }
+			]
+		}
+	})], {}, {
+		entries: [{ path: "old.txt", name: "old.txt", kind: "file", size: 3 }],
+		entriesAfterFirst: [{ path: "new.txt", name: "new.txt", kind: "file", size: 3 }],
+		entriesAfterMs: 1_500,
+		files: { "old.txt": "old", "new.txt": "new" }
+	});
+	const pane = await openVisual(page, "vis_v0111_workspace_rebind");
+	const workspace = pane.getByTestId("harbor-live-workspace");
+	await workspace.getByRole("button", { name: /old\.txt/ }).click();
+	await expect(workspace.getByLabel("Live preview of old.txt")).toContainText("old");
+	await expect(workspace.getByRole("button", { name: /new\.txt/ })).toBeVisible({ timeout: 5_000 });
+	await expect(workspace).toContainText("Select a file to preview it live.");
+	await expect(workspace.getByRole("alert")).toHaveCount(0);
+});
+
+test("[v0.11.1] Harbor workspace clears ephemeral files when the sandbox expires", async ({ page }) => {
+	await installVisuals(page, [liveVisual({
+		id: "vis_v0111_workspace_expired",
+		templateId: "live.harbor_eval.v1",
+		title: "CyberneticsBench expired workspace",
+		bindings: {
+			schemaVersion: "synth.visual-bindings.v1",
+			inputs: [{ input: "workspace", kind: "live_workspace", source: "/tmp/cyberneticsbench/expired/stream.json" }]
+		}
+	})], {}, {
+		entries: [{ path: "transient.txt", name: "transient.txt", kind: "file", size: 9 }],
+		files: { "transient.txt": "transient" },
+		unavailableAfterMs: 1_500
+	});
+	const pane = await openVisual(page, "vis_v0111_workspace_expired");
+	const workspace = pane.getByTestId("harbor-live-workspace");
+	await expect(workspace.getByRole("button", { name: /transient\.txt/ })).toBeVisible();
+	await expect(workspace).toContainText("unavailable", { timeout: 5_000 });
+	await expect(workspace.getByRole("button", { name: /transient\.txt/ })).toHaveCount(0);
+	await expect(workspace).toContainText("workspace unavailable");
+});
+
 test("[v0.2] guessed /events bindings fail closed instead of rendering a live visual", async ({ page }) => {
 	await installVisuals(page, [liveVisual({
 		id: "vis_v02_guessed",

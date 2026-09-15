@@ -299,6 +299,7 @@ pub const VISUAL_BINDING_KINDS: &[&str] = &[
     "local_cas",
     "run_ref",
     "live_sse",
+    "live_workspace",
     "fixture",
     "optimizer_run",
     "query_snapshot",
@@ -583,8 +584,42 @@ fn validate_bindings(slots: &[Value]) -> anyhow::Result<()> {
                 super::live_eval::assert_declared_stream_source(source)?;
             }
         }
+        if kind == "live_workspace" {
+            let source = slot.get("source").and_then(Value::as_str).unwrap_or_default();
+            if source.is_empty() || !std::path::Path::new(source).is_absolute() {
+                anyhow::bail!(
+                    "live_workspace binding requires an absolute host-admitted descriptor path"
+                );
+            }
+        }
     }
     Ok(())
+}
+
+/// Exact descriptor paths a visual declared for host-side live workspace access.
+pub fn declared_workspace_sources(bindings: &Value) -> Vec<String> {
+    let Ok(canonical) = canonicalize_bindings(bindings) else {
+        return Vec::new();
+    };
+    canonical
+        .value
+        .get("inputs")
+        .or_else(|| canonical.value.get("slots"))
+        .and_then(Value::as_array)
+        .map(|slots| {
+            slots
+                .iter()
+                .filter(|slot| {
+                    slot.get("kind").and_then(Value::as_str) == Some("live_workspace")
+                })
+                .filter_map(|slot| {
+                    slot.get("source")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Declared live-stream poll URLs, in slot order.

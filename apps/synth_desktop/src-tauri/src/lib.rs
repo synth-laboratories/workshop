@@ -46,6 +46,7 @@ mod intern_api;
 pub mod ipc;
 mod laguna;
 mod laguna_adapters;
+pub mod live_workspace;
 mod limits;
 pub mod lineage;
 mod model_catalog;

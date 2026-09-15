@@ -751,6 +751,9 @@ export const commands = {
 	scope: ConversationWorkspaceScope | null,
 	attachmentError: string | null,
 } | null, AppError_Serialize>(__TAURI_INVOKE("project_source_approve", { requestId })),
+	visualWorkspaceStatus: (request: VisualWorkspaceRequest) => typedError<VisualWorkspaceStatus, AppError_Serialize>(__TAURI_INVOKE("visual_workspace_status", { request })),
+	visualWorkspaceList: (request: VisualWorkspacePathRequest) => typedError<VisualWorkspaceListResult, AppError_Serialize>(__TAURI_INVOKE("visual_workspace_list", { request })),
+	visualWorkspaceRead: (request: VisualWorkspacePathRequest) => typedError<VisualWorkspaceReadResult, AppError_Serialize>(__TAURI_INVOKE("visual_workspace_read", { request })),
 };
 
 /* Types */
@@ -5463,6 +5466,51 @@ export type VisualUpload = {
 	committedUrl: string | null,
 	error: string | null,
 	updatedAt: string,
+};
+
+export type VisualWorkspaceEntry = {
+	path: string,
+	name: string,
+	kind: string,
+	size: number,
+	modifiedAt: string | null,
+};
+
+export type VisualWorkspaceListResult = {
+	schemaVersion: string,
+	path: string,
+	entries: VisualWorkspaceEntry[],
+	truncated: boolean,
+};
+
+export type VisualWorkspacePathRequest = {
+	visualId: string,
+	source: string,
+	path: string,
+};
+
+export type VisualWorkspaceReadResult = {
+	schemaVersion: string,
+	path: string,
+	content: string | null,
+	binary: boolean,
+	truncated: boolean,
+	byteSize: number,
+};
+
+export type VisualWorkspaceRequest = {
+	visualId: string,
+	source: string,
+};
+
+export type VisualWorkspaceStatus = {
+	schemaVersion: string,
+	state: string,
+	provider: string,
+	mode: string,
+	workspace: string,
+	capabilities: string[],
+	message: string | null,
 };
 
 export type WhisperModelHit = {

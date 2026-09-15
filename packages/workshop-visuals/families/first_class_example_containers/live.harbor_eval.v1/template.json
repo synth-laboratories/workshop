@@ -46,6 +46,15 @@
       "schema": "synth.trace-stream-event.v1"
     },
     {
+      "name": "workspace",
+      "description": "Credential-free Harbor stream.json descriptor for a live, read-only sandbox file view.",
+      "accepts": [
+        "live_workspace"
+      ],
+      "required": false,
+      "schema": "synth.live-workspace.v1"
+    },
+    {
       "name": "experiment",
       "description": "Persisted terminal projection for the same run. A reopened or settled visual renders from this instead of waiting on a closed stream; missing usage stays unavailable rather than zero.",
       "accepts": [

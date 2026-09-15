@@ -50,6 +50,6 @@ export async function resolveBoundVisual(
   const result=await bindTemplateSlots(template,bindings,guarded);check();
   if(result.errors.length)throw new Error(result.errors.join(" · "));
   return Object.fromEntries(Object.values(result.slots)
-    .filter(slot=>!["inline","live_sse","optimizer_run"].includes(slot.kind))
+    .filter(slot=>!["inline","live_sse","live_workspace","optimizer_run"].includes(slot.kind))
     .map(slot=>[slot.input ?? slot.slot,slot.data]));
 }

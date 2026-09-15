@@ -66991,6 +66991,9 @@
                   },
                   {
                     "const": "environment"
+                  },
+                  {
+                    "const": "qa_policy"
                   }
                 ]
               },
@@ -67148,6 +67151,9 @@
                   },
                   {
                     "const": "environment"
+                  },
+                  {
+                    "const": "qa_policy"
                   }
                 ]
               },
@@ -67322,6 +67328,9 @@
                   },
                   {
                     "const": "environment"
+                  },
+                  {
+                    "const": "qa_policy"
                   }
                 ]
               },
@@ -67485,6 +67494,9 @@
                   },
                   {
                     "const": "environment"
+                  },
+                  {
+                    "const": "qa_policy"
                   }
                 ]
               },
@@ -68106,6 +68118,9 @@
                   },
                   {
                     "const": "environment"
+                  },
+                  {
+                    "const": "qa_policy"
                   }
                 ]
               },
@@ -68311,6 +68326,329 @@
       },
       "_meta": {
         "workshop/operationId": "desktop.project_source_approve.v1"
+      }
+    },
+    {
+      "name": "visual_workspace_status",
+      "description": "Workshop visual workspace status. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "visualId": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "visualId",
+              "source"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "workspace": {
+                "type": "string"
+              },
+              "capabilities": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "message": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "state",
+              "provider",
+              "mode",
+              "workspace",
+              "capabilities",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visual_workspace_status.v1"
+      }
+    },
+    {
+      "name": "visual_workspace_list",
+      "description": "Workshop visual workspace list. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "visualId": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "visualId",
+              "source",
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/T2"
+                }
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "path",
+              "entries",
+              "truncated"
+            ],
+            "additionalProperties": false
+          },
+          "T2": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "size": {
+                "type": "number"
+              },
+              "modifiedAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "name",
+              "kind",
+              "size",
+              "modifiedAt"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visual_workspace_list.v1"
+      }
+    },
+    {
+      "name": "visual_workspace_read",
+      "description": "Workshop visual workspace read. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "visualId": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "visualId",
+              "source",
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/T1"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {
+          "T1": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "binary": {
+                "type": "boolean"
+              },
+              "truncated": {
+                "type": "boolean"
+              },
+              "byteSize": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "path",
+              "content",
+              "binary",
+              "truncated",
+              "byteSize"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.visual_workspace_read.v1"
       }
     }
   ]

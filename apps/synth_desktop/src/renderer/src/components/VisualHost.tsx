@@ -68,6 +68,7 @@ import { projectVisualRunLifecycle } from "../runtime/visualRunLifecycle";
 import { isTerminalRunStatus } from "../runtime/runProgress/types";
 import { runFacets } from "./optimizers/runPresentation";
 import { VisualPaneChrome, type VisualPaneDebugState } from "./VisualPaneChrome";
+import type { LiveWorkspaceClient } from "@synth/workshop-visuals/runtime/workspaceClient.ts";
 
 import { traceResearchClient } from "../runtime/traceResearch";
 
@@ -78,7 +79,7 @@ type ShellProps = {
 	[key: string]: unknown;
 };
 
-const TEMPLATE_PORTS=new Set(["replay","media","traceResearch","onReviewFinding","evidence","history","collections","visualState"]);
+const TEMPLATE_PORTS=new Set(["replay","media","workspace","traceResearch","onReviewFinding","evidence","history","collections","visualState"]);
 function PinnedTemplate({Shell,...props}:{Shell:ComponentType<ShellProps>}&ShellProps){
 	const client=useVisualSessionClient();
 	const replay=Boolean(useVisualSessionSnapshot()?.state.replay);
@@ -272,6 +273,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				if (binding.kind === "trace_v5") return true;
 				if (
 					binding.kind === "live_sse"
+					|| binding.kind === "live_workspace"
 					|| binding.kind === "optimizer_run"
 					|| binding.kind === "inline"
 				) return false;
@@ -317,6 +319,19 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			),
 		[artifact.id]
 	);
+	const workspaceBinding = resolvedBindings.status !== "rejected"
+		? resolvedBindings.slots.find((binding) => binding.kind === "live_workspace")
+		: undefined;
+	const workspaceClient = useMemo<LiveWorkspaceClient | undefined>(() => {
+		const source = workspaceBinding?.source;
+		if (!source || !bridges.visuals?.workspaceStatus) return undefined;
+		const visualId = artifact.visualId ?? artifact.id;
+		return {
+			status: () => bridges.visuals!.workspaceStatus({ visualId, source }),
+			list: (path) => bridges.visuals!.workspaceList({ visualId, source, path }),
+			read: (path) => bridges.visuals!.workspaceRead({ visualId, source, path }),
+		};
+	}, [artifact.id, artifact.visualId, workspaceBinding?.source]);
 	const synchronouslyResolved = useMemo(() => {
 		if (!isVisualBindings(artifact.bindings) || asyncBindings.length === 0) {
 			return propsFromBindings(artifact.bindings);
@@ -909,6 +924,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				comparison={comparisonPayload ?? undefined}
 				replay={replayClient}
 				media={mediaClient}
+				workspace={workspaceClient}
 				traceResearch={traceResearchClient}
 				sealedTraceProjections={sealedTraceProjections}
 				analysisFindings={analysisFindings}

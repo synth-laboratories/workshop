@@ -60,7 +60,8 @@ pub use live_eval::{
 };
 pub use models::{
     binding_descriptors, canonicalize_bindings, declared_optimizer_run_ids, declared_poll_urls,
-    descriptor_input_name, stamp_binding_input, BindingsForm, CanonicalBindings, RendererKind,
+    declared_workspace_sources, descriptor_input_name, stamp_binding_input, BindingsForm,
+    CanonicalBindings, RendererKind,
     VisualAnnotation, VisualAnnotationCreate, VisualCreateRequest, VisualQuery, VisualRecord,
     VisualRevision, VisualSeal, VisualSealBundle, VisualStatus, VisualUpdateRequest, VisualUpload,
     VISUAL_BINDINGS_SCHEMA_VERSION, VISUAL_BINDING_KINDS, VISUAL_SCHEMA_VERSION,

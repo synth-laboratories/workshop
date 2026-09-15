@@ -38,10 +38,19 @@ export function streamBinding(events: unknown[], extra: Record<string, unknown> 
 export async function installVisuals(
 	page: Page,
 	visuals: VisualRecord[],
-	contentById: Record<string, string> = {}
+	contentById: Record<string, string> = {},
+	workspace?: {
+		entries: Array<{ path: string; name: string; kind: string; size: number; modifiedAt?: string | null }>;
+		entriesAfterFirst?: Array<{ path: string; name: string; kind: string; size: number; modifiedAt?: string | null }>;
+		entriesAfterMs?: number;
+		files: Record<string, string>;
+		readErrors?: Record<string, string>;
+		unavailableAfterMs?: number;
+	}
 ): Promise<void> {
-	await page.addInitScript(({ rows, content }) => {
+	await page.addInitScript(({ rows, content, liveWorkspace }) => {
 		const store = [...rows] as VisualRecord[];
+		const workspaceInstalledAt = Date.now();
 		const encode = (text: string) => {
 			const bytes = new TextEncoder().encode(text);
 			let binary = "";
@@ -84,10 +93,36 @@ export async function installVisuals(
 					base64: encode(source)
 				};
 			},
+			workspaceStatus: async () => {
+				const unavailable = !liveWorkspace || (liveWorkspace.unavailableAfterMs != null
+					&& Date.now() - workspaceInstalledAt >= liveWorkspace.unavailableAfterMs);
+				return {
+					schemaVersion: "synth.live-workspace.v1",
+					state: unavailable ? "unavailable" : "observing",
+					provider: "harbor-docker",
+					mode: "observe",
+					workspace: "/workspace",
+					capabilities: unavailable ? [] : ["files.read", "files.watch"],
+					message: unavailable ? "workspace unavailable" : null
+				};
+			},
+			workspaceList: async () => {
+				const useLaterEntries = liveWorkspace?.entriesAfterFirst
+					&& Date.now() - workspaceInstalledAt >= (liveWorkspace.entriesAfterMs ?? 0);
+				const entries = useLaterEntries ? liveWorkspace.entriesAfterFirst : liveWorkspace?.entries ?? [];
+				return { schemaVersion: "synth.live-workspace.v1", path: "", entries, truncated: false };
+			},
+			workspaceRead: async ({ path }: { path: string }) => {
+				const readError = liveWorkspace?.readErrors?.[path];
+				if (readError) throw { message: readError };
+				const value = liveWorkspace?.files[path];
+				if (value == null) throw new Error(`missing workspace file ${path}`);
+				return { schemaVersion: "synth.live-workspace.v1", path, content: value, binary: false, truncated: false, byteSize: value.length };
+			},
 			onEvent: () => () => undefined,
 			onShow: () => () => undefined
 		};
-	}, { rows: visuals, content: contentById });
+	}, { rows: visuals, content: contentById, liveWorkspace: workspace });
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 }
