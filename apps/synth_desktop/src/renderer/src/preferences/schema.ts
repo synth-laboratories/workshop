@@ -6,8 +6,8 @@
  */
 
 export const PREFERENCES_STORAGE_KEY = "synth.preferences.v1";
-export const PREFERENCES_SCHEMA_VERSION = 6 as const;
-export const DEFAULT_VISIBLE_PLUGIN_IDS = ["visuals", "experiments", "environment-qa", "inventory", "inference"] as const;
+export const PREFERENCES_SCHEMA_VERSION = 7 as const;
+export const DEFAULT_VISIBLE_PLUGIN_IDS = ["swarms", "visuals", "experiments", "environment-qa", "inventory", "inference"] as const;
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ToolActivityMode = "detailed" | "grouped" | "compact";
@@ -387,6 +387,12 @@ export function migrateLegacyPreferences(storage: Storage): DesktopPreferences {
 		&& base.layout.default.outputPaneWidth === 420) {
 		base.layout.last.outputPaneWidth = 720;
 		base.layout.default.outputPaneWidth = 720;
+	}
+	// Version 7 introduced the first-class Swarms surface. Existing installs
+	// have an explicit visibility list from before the destination existed, so
+	// opt the new built-in in once without re-enabling any older hidden items.
+	if (parsedVersion > 0 && parsedVersion < 7 && !base.navigation.visiblePluginIds.includes("swarms")) {
+		base.navigation.visiblePluginIds.unshift("swarms");
 	}
 
 	const approval = storage.getItem("synth.approvalMode");
