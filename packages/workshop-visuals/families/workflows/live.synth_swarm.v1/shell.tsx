@@ -27,7 +27,7 @@ const payloadValue = (event: LiveEvalEvent, key: string) => event.payload[key] ?
 const snapshotActors = (event: LiveEvalEvent) => Array.isArray(event.payload.actors)
   ? event.payload.actors.map(record).filter((value): value is Record<string, unknown> => value !== null)
   : [];
-const actorIdentity = (actor: Record<string, unknown>) => text(actor.actor_id) ?? text(actor.actor_key) ?? text(actor.participant_session_id);
+const actorIdentity = (actor: Record<string, unknown>) => text(actor.actor_key) ?? text(actor.actor_id) ?? text(actor.participant_session_id) ?? text(actor.session_id);
 const statusOf = (events: LiveEvalEvent[], fallback?: string) => {
   for (let index = events.length - 1; index >= 0; index--) {
     const payload = events[index]?.payload ?? {};
@@ -59,10 +59,26 @@ export function Shell(props: ShellProps) {
   const visible = useMemo(() => liveStream.events.slice(0, liveStream.events.length ? effective + 1 : 0), [liveStream.events, effective]);
   const status = statusOf(visible, swarm.status);
   const terminal = terminalStatus(status);
+  const actorAliases = useMemo(() => {
+    const aliases = new Map<string, string>();
+    for (const actor of visible.flatMap(snapshotActors)) {
+      const canonical = actorIdentity(actor);
+      if (!canonical) continue;
+      for (const candidate of [actor.actor_key, actor.actor_id, actor.participant_session_id, actor.session_id]) {
+        const alias = text(candidate);
+        if (alias) aliases.set(alias, canonical);
+      }
+    }
+    return aliases;
+  }, [visible]);
+  const eventActorOf = (event: LiveEvalEvent) => {
+    const raw = actorOf(event);
+    return raw ? actorAliases.get(raw) ?? raw : null;
+  };
   const actors = useMemo(() => [...new Set([
-    ...visible.map(actorOf),
+    ...visible.map(eventActorOf),
     ...visible.flatMap(snapshotActors).map(actorIdentity),
-  ].filter((value): value is string => Boolean(value)))], [visible]);
+  ].filter((value): value is string => Boolean(value)))], [visible, actorAliases]);
   const transcript = visible.filter((event) => event.kind === "transcript" || text(payloadValue(event, "message")) || text(payloadValue(event, "summary")));
   const latestUsage = [...visible].reverse().find((event) => number(payloadValue(event, "spend_usd")) != null || number(payloadValue(event, "cost_usd")) != null || number(payloadValue(event, "tokens")) != null);
   const spend = latestUsage ? number(payloadValue(latestUsage, "spend_usd")) ?? number(payloadValue(latestUsage, "cost_usd")) : null;
@@ -88,7 +104,7 @@ export function Shell(props: ShellProps) {
       <div className="sv-section-head"><h3>Live activity</h3><span className="sv-mono">{swarm.swarmId ?? visible[0]?.run_id ?? "awaiting id"}</span></div>
       <div className="sw-actors">
         {(actors.length ? actors : ["Coordinator"]).map((actor) => {
-          const actorEvents = visible.filter((event) => actorOf(event) === actor);
+          const actorEvents = visible.filter((event) => eventActorOf(event) === actor);
           const latest = actorEvents.at(-1);
           const nested = [...visible].reverse().flatMap(snapshotActors).find((candidate) => actorIdentity(candidate) === actor);
           const activity = latest ? labelOf(latest) : text(nested?.last_activity_kind) ?? text(nested?.completion_reason) ?? "Waiting for assignment";
@@ -102,10 +118,10 @@ export function Shell(props: ShellProps) {
     {liveStream.events.length > 1 ? <div className="sw-scrub"><span className="sv-mono">0</span><input aria-label="Swarm event cutoff" type="range" min="0" max={max} value={effective} onChange={(event) => setCut(Number(event.target.value))}/><button className="sv-button" type="button" onClick={() => setCut(null)}>Live edge</button></div> : null}
     <div className="sw-lower">
       <section className="sw-card"><div className="sv-section-head"><h3>Recent events</h3><span>{tokens == null ? "usage pending" : `${tokens.toLocaleString()} tokens`}</span></div>
-        <div className="sw-events">{visible.slice(-12).reverse().map((event, index) => <div className="sw-event" key={`${event.sequence ?? event.logical_time ?? index}`}><span className="sw-kind">{labelOf(event)}</span><span>{actorOf(event) ?? "swarm"}</span><time>{event.ts ? new Date(event.ts).toLocaleTimeString() : `#${event.sequence ?? event.logical_time ?? "—"}`}</time></div>)}</div>
+        <div className="sw-events">{visible.slice(-12).reverse().map((event, index) => <div className="sw-event" key={`${event.sequence ?? event.logical_time ?? index}`}><span className="sw-kind">{labelOf(event)}</span><span>{eventActorOf(event) ?? "swarm"}</span><time>{event.ts ? new Date(event.ts).toLocaleTimeString() : `#${event.sequence ?? event.logical_time ?? "—"}`}</time></div>)}</div>
       </section>
       <section className="sw-card"><div className="sv-section-head"><h3>Transcript pulse</h3><span>{transcript.length} updates</span></div>
-        <div className="sw-transcript">{transcript.slice(-6).reverse().map((event, index) => <article key={`${event.sequence ?? index}`}><strong>{actorOf(event) ?? "Swarm"}</strong><p>{text(payloadValue(event, "summary")) ?? text(payloadValue(event, "message")) ?? labelOf(event)}</p></article>)}{transcript.length === 0 ? <p className="sw-empty">No transcript metadata yet. Raw prompts and private outputs are not exposed here.</p> : null}</div>
+        <div className="sw-transcript">{transcript.slice(-6).reverse().map((event, index) => <article key={`${event.sequence ?? index}`}><strong>{eventActorOf(event) ?? "Swarm"}</strong><p>{text(payloadValue(event, "summary")) ?? text(payloadValue(event, "message")) ?? labelOf(event)}</p></article>)}{transcript.length === 0 ? <p className="sw-empty">No transcript metadata yet. Raw prompts and private outputs are not exposed here.</p> : null}</div>
       </section>
     </div>
   </VisualChrome>;
