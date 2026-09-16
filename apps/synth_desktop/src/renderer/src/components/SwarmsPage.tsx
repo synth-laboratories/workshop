@@ -20,10 +20,11 @@ const text = (value: unknown): string | null => typeof value === "string" && val
 
 function configurationFacts(swarm: Record<string, unknown>) {
 	const snapshot = record(record(swarm.configuration)?.snapshot);
-	const resolved = record(snapshot?.resolved_actor_profile);
+	const execution = record(snapshot?.execution) ?? snapshot;
+	const resolved = record(execution?.resolved_actor_profile);
 	return {
-		model: text(snapshot?.agent_model) ?? text(resolved?.model) ?? SWARM_AGENT_MODEL,
-		harness: text(snapshot?.agent_harness) ?? text(snapshot?.agent_kind) ?? text(resolved?.agent_harness) ?? SWARM_AGENT_HARNESS
+		model: text(execution?.agent_model) ?? text(resolved?.model) ?? SWARM_AGENT_MODEL,
+		harness: text(execution?.agent_harness) ?? text(execution?.agent_kind) ?? text(resolved?.agent_harness) ?? SWARM_AGENT_HARNESS
 	};
 }
 

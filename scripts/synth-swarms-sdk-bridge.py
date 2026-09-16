@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from urllib.parse import urlsplit
 
 from synth_ai.sdk.research.client import AsyncClient
 from synth_ai.sdk.research.contracts.common import ProjectId, SwarmId
@@ -150,6 +151,7 @@ def _spec(value: Any, *, hosted: bool = False) -> SwarmSpec:
 async def _run(operation: str, request: dict[str, Any]) -> None:
     base_url = _required_text(request.get("baseUrl"), "baseUrl")
     hosted = not base_url.startswith(("http://127.0.0.1", "http://localhost", "http://[::1]"))
+    deployment = f"hosted:{urlsplit(base_url).hostname}" if hosted else "local"
     api_key = _required_text(request.get("apiKey"), "apiKey")
     payload = request.get("payload") or {}
     if not isinstance(payload, Mapping):
@@ -163,7 +165,7 @@ async def _run(operation: str, request: dict[str, Any]) -> None:
                 "schemaVersion": "workshop.swarms-sdk-bridge.v1",
                 "transport": "synth-ai-sdk",
                 "stream": "sse",
-                "deployment": "hosted" if hosted else "local",
+                "deployment": deployment,
                 "operations": [
                     "preflight", "create", "list", "retrieve", "configuration",
                     "status", "activity", "usage", "evidence", "pause", "resume",
