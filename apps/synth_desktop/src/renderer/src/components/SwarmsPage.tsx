@@ -6,6 +6,8 @@ import { bridges } from "../runtime/desktopBridge";
 
 type Props = { onBack: () => void; onOpenVisual: (visual: VisualRecord) => void };
 const SWARM_VISUAL_TEMPLATE = "live.synth_swarm.v1";
+const SWARM_AGENT_MODEL = "gpt-5.6-luna";
+const SWARM_AGENT_HARNESS = "codex";
 
 function swarmIdOf(value: Record<string, unknown> | null): string | null {
 	const candidate = value?.swarm_id ?? value?.run_id;
@@ -41,7 +43,8 @@ function visualBindings(
 					projectId: swarm.project_id ?? swarm.projectId ?? null,
 					maxSpendUsd,
 					maxConcurrentActors,
-					model: "gpt-5.6-luna",
+					model: SWARM_AGENT_MODEL,
+					harness: SWARM_AGENT_HARNESS,
 					provider: "auto",
 					streamState
 				}
@@ -101,7 +104,8 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 		objective: objective.trim(),
 		runbook: "lite",
 		timeboxSeconds: 900,
-		agentModel: "gpt-5.6-luna",
+		agentModel: SWARM_AGENT_MODEL,
+		agentHarness: SWARM_AGENT_HARNESS,
 		provider: "auto",
 		idempotencyKey: crypto.randomUUID(),
 		limit: {
