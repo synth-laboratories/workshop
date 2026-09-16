@@ -99,7 +99,7 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 				bumpRevision: true,
 				metadata: { swarmId, streamState, eventCount: events.length, transport: "sdk_sse" }
 			}).catch((reason) => setError(publicError(reason)));
-		}, 200);
+		}, 1_000);
 		return () => window.clearTimeout(timer);
 	}, [concurrency, events, maxSpend, objective, streamState, swarm, swarmId, visualId]);
 

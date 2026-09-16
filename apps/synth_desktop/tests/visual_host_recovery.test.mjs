@@ -11,6 +11,8 @@ const groupedFixture = readFileSync(join(root, "tests/bombadil/run.mjs"), "utf8"
 const minWidth = readFileSync(join(root, "tests/bombadil/minimum-width-replay.spec.ts"), "utf8");
 const chrome = readFileSync(join(root, "src/renderer/src/components/VisualPaneChrome.tsx"), "utf8");
 const swarms = readFileSync(join(root, "src/renderer/src/components/SwarmsPage.tsx"), "utf8");
+const swarmStream = readFileSync(join(root, "src/renderer/src/runtime/cloudSwarms.ts"), "utf8");
+const swarmVisual = readFileSync(join(root, "../../packages/workshop-visuals/families/workflows/live.synth_swarm.v1/shell.tsx"), "utf8");
 
 test("an injected renderer crash remounts the same identity and revision", () => {
 	assert.match(host, /consumeInjectedRendererCrash\(/);
@@ -52,5 +54,11 @@ test("live swarm SSE frames advance the durable visual revision", () => {
 	assert.match(swarms, /watchSwarm\(/);
 	assert.match(swarms, /transport: "sdk_sse"/);
 	assert.match(swarms, /bumpRevision: true/);
+	assert.match(swarms, /}, 1_000\);/);
 	assert.equal(swarms.includes("bumpRevision: false"), false);
+	assert.match(swarmVisual, /snapshotActors/);
+	assert.match(swarmVisual, /completion_status/);
+	assert.match(swarmVisual, /payloadValue\(event, "summary"\)/);
+	assert.match(swarmStream, /terminal_phase/);
+	assert.match(swarmStream, /cloudSwarmsWatchStop\(activeSubscriptionId\)/);
 });
