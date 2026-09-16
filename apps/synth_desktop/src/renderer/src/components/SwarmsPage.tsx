@@ -140,6 +140,11 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 				if (typeof summary.maxConcurrentActors === "number") setConcurrency(String(summary.maxConcurrentActors));
 				if (text(summary.runbookPreset)) setRunbookPreset(text(summary.runbookPreset)!);
 				setStreamState("reconnecting");
+				// Recovery must restore the complete supervision surface, not only the
+				// background SSE subscription. Keep the durable visual visible so the
+				// page's right-panel promise remains true after an app restart.
+				const shown = await bridges.visuals?.show(visual.id).catch(() => visual) ?? visual;
+				if (!disposed) onOpenVisual(shown);
 			}
 		}).catch((reason) => { if (!disposed) setError(publicError(reason)); });
 		return () => { disposed = true; };
