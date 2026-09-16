@@ -16,6 +16,7 @@ type SwarmSummary = {
   model?: string;
   provider?: string;
   streamState?: string;
+  usage?: Record<string, unknown> | null;
 };
 type StreamPayload = { events?: LiveEvalEvent[]; replay_ms?: number };
 export type ShellProps = LiveTemplateProps & { title?: string; lede?: string; swarm?: SwarmSummary; stream?: StreamPayload };
@@ -81,8 +82,14 @@ export function Shell(props: ShellProps) {
   ].filter((value): value is string => Boolean(value)))], [visible, actorAliases]);
   const transcript = visible.filter((event) => event.kind === "transcript" || text(payloadValue(event, "message")) || text(payloadValue(event, "summary")));
   const latestUsage = [...visible].reverse().find((event) => number(payloadValue(event, "spend_usd")) != null || number(payloadValue(event, "cost_usd")) != null || number(payloadValue(event, "tokens")) != null);
-  const spend = latestUsage ? number(payloadValue(latestUsage, "spend_usd")) ?? number(payloadValue(latestUsage, "cost_usd")) : null;
-  const tokens = latestUsage ? number(payloadValue(latestUsage, "tokens")) ?? number(payloadValue(latestUsage, "total_tokens")) : null;
+  const settledMoney = record(swarm.usage?.money);
+  const settledTokens = record(record(swarm.usage?.tokens)?.totals);
+  const settledSpend = number(settledMoney?.billed_cents) != null ? number(settledMoney?.billed_cents)! / 100 : null;
+  const settledTokenTotal = settledTokens
+    ? (number(settledTokens.input_tokens) ?? 0) + (number(settledTokens.output_tokens) ?? 0)
+    : null;
+  const spend = settledSpend ?? (latestUsage ? number(payloadValue(latestUsage, "spend_usd")) ?? number(payloadValue(latestUsage, "cost_usd")) : null);
+  const tokens = settledTokenTotal ?? (latestUsage ? number(payloadValue(latestUsage, "tokens")) ?? number(payloadValue(latestUsage, "total_tokens")) : null);
 
   return <VisualChrome
     kicker="Synth Cloud · Swarm"

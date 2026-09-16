@@ -46,7 +46,8 @@ function visualBindings(
 					model: SWARM_AGENT_MODEL,
 					harness: SWARM_AGENT_HARNESS,
 					provider: "auto",
-					streamState
+					streamState,
+					usage: swarm.usage ?? null
 				}
 			}
 		]
@@ -77,6 +78,11 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 			(state, detail) => {
 				setStreamState(state);
 				if (detail) setError(detail);
+				if (state === "closed") {
+					void swarmSdkCall("usage", { swarmId }).then((usage) => {
+						setSwarm((current) => current ? { ...current, usage } : current);
+					}).catch((reason) => setError(publicError(reason)));
+				}
 			}
 		).then((close) => { dispose = close; }).catch((reason) => {
 			setStreamState("error");
