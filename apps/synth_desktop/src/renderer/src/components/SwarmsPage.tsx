@@ -93,7 +93,10 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 			void bridges.visuals?.update(visualId, {
 				bindings: visualBindings(swarm, events, streamState, objective.trim(), Number(maxSpend), Number(concurrency)),
 				status: streamState === "error" ? "failed" : streamState === "closed" ? "saved" : "live",
-				bumpRevision: false,
+				// The visual host reconciles updates by revision. Persist each debounced
+				// SSE frame as a revision so the open pane advances live and the Visuals
+				// registry can replay the same state after navigation or restart.
+				bumpRevision: true,
 				metadata: { swarmId, streamState, eventCount: events.length, transport: "sdk_sse" }
 			}).catch((reason) => setError(publicError(reason)));
 		}, 200);

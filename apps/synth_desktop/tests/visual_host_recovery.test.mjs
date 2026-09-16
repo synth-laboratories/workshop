@@ -10,6 +10,7 @@ const publicError = readFileSync(join(root, "src/renderer/src/runtime/publicErro
 const groupedFixture = readFileSync(join(root, "tests/bombadil/run.mjs"), "utf8");
 const minWidth = readFileSync(join(root, "tests/bombadil/minimum-width-replay.spec.ts"), "utf8");
 const chrome = readFileSync(join(root, "src/renderer/src/components/VisualPaneChrome.tsx"), "utf8");
+const swarms = readFileSync(join(root, "src/renderer/src/components/SwarmsPage.tsx"), "utf8");
 
 test("an injected renderer crash remounts the same identity and revision", () => {
 	assert.match(host, /consumeInjectedRendererCrash\(/);
@@ -45,4 +46,11 @@ test("visual maintenance is first-class and keeps durable optimizer evidence", (
 	assert.match(host, /runFacets\(run\)\.containerId/);
 	assert.match(host, /isTerminalRunStatus\(run\.status\)/);
 	assert.match(host, /durable run evidence was retained/);
+});
+
+test("live swarm SSE frames advance the durable visual revision", () => {
+	assert.match(swarms, /watchSwarm\(/);
+	assert.match(swarms, /transport: "sdk_sse"/);
+	assert.match(swarms, /bumpRevision: true/);
+	assert.equal(swarms.includes("bumpRevision: false"), false);
 });
