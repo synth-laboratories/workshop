@@ -63,4 +63,5 @@ test("live swarm SSE frames advance the durable visual revision", () => {
 	assert.match(swarmStream, /cloudSwarmsWatchStop\(activeSubscriptionId\)/);
 	assert.match(swarms, /swarmSdkCall\("usage", \{ swarmId \}\)/);
 	assert.match(swarmVisual, /billed_cents/);
+	assert.doesNotMatch(swarmVisual, /actors\.length\}\{swarm\.maxConcurrentActors/);
 });

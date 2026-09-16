@@ -103,7 +103,7 @@ export function Shell(props: ShellProps) {
   >
     <div className="sw-summary">
       <div className="sw-stat"><small>Status</small><strong data-status={status.toLowerCase()}>{status}</strong></div>
-      <div className="sw-stat"><small>Actors observed</small><strong>{actors.length}{swarm.maxConcurrentActors ? ` / ${swarm.maxConcurrentActors}` : ""}</strong></div>
+      <div className="sw-stat"><small>Actors observed</small><strong>{actors.length}</strong></div>
       <div className="sw-stat"><small>Spend</small><strong>{money(spend)}{swarm.maxSpendUsd != null ? ` / ${money(swarm.maxSpendUsd)}` : ""}</strong></div>
       <div className="sw-stat"><small>Events</small><strong>{visible.length}</strong></div>
     </div>
