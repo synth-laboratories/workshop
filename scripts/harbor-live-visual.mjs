@@ -1,17 +1,16 @@
 #!/usr/bin/env node
 /** Harbor/Codex trial JSONL -> Workshop's declared, cursor-replayable visual stream.
  *
- * The loopback poll endpoint publishes only tool identity, status, duration and
+ * The loopback SSE endpoint publishes only tool identity, status, duration and
  * exit code. Raw commands, tool results, messages and reasoning are never sent
- * to the visual. On verifier completion the bridge replaces its ephemeral poll
+ * to the visual. On verifier completion the bridge replaces its ephemeral SSE
  * binding with the same retained envelopes inline, so reopening needs no
  * running sidecar or manual post-run bind.
  */
 import { createServer } from "node:http";
-import { open, readFile, readdir, stat } from "node:fs/promises";
+import { open, readFile, readdir, stat, watch } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const MAX_PAGE = 500;
 const MAX_READ_BYTES = 1024 * 1024;
 const MAX_EVENTS = 20_000;
 
@@ -53,7 +52,7 @@ async function sessionFiles(root, depth = 0) {
   return files.sort();
 }
 
-export function createHarborVisualFeed({ trialDir, visualId, title, connection, workspaceSource, intervalMs = 500 }) {
+export function createHarborVisualFeed({ trialDir, visualId, title, connection, workspaceSource }) {
   if (!trialDir || !visualId || !connection?.url || !connection?.token) throw new Error("trialDir, visualId and Workshop connection are required");
   const directory = resolve(trialDir);
   const events = [];
@@ -61,20 +60,35 @@ export function createHarborVisualFeed({ trialDir, visualId, title, connection, 
   let closed = false;
   let sealed = false;
   let ticking = false;
+  let tickAgain = false;
+  let tickPromise;
   let sourceMode;
-  let timer;
+  let watcherAbort;
+  let watcherTask;
   let server;
   let origin;
+  let terminalEvent;
+  const subscribers = new Set();
   const pathId = encodeURIComponent(visualId);
   const stop = async () => {
-    if (timer) clearInterval(timer);
+    watcherAbort?.abort();
+    if (watcherTask) await Promise.allSettled([watcherTask]);
+    for (const res of subscribers) res.end();
+    subscribers.clear();
     if (server?.listening) await new Promise((done) => server.close(done));
   };
 
+  const writeSse = (res, event) => {
+    if (event.sequence != null) res.write(`id: ${event.sequence}\n`);
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+  const publish = (event) => { for (const res of subscribers) writeSse(res, event); };
   const envelope = (kind, ts, payload) => {
     if (events.length >= MAX_EVENTS) throw new Error(`visual feed exceeded ${MAX_EVENTS} events`);
     const sequence = events.length + 1;
-    events.push({ schemaVersion: "evals.event-stream.v1", kind, sequence, ts, logical_time: sequence, payload });
+    const event = { schemaVersion: "evals.event-stream.v1", kind, sequence, ts, logical_time: sequence, payload };
+    events.push(event);
+    publish(event);
   };
 
   const requestVisual = async (path, method = "GET", body) => {
@@ -89,8 +103,7 @@ export function createHarborVisualFeed({ trialDir, visualId, title, connection, 
   };
 
   const liveBinding = () => ({ input: "stream", kind: "live_sse",
-    source: `${origin}/rollouts/${pathId}/stream`,
-    poll_url: `${origin}/rollouts/${pathId}/poll`, schema: "synth.trace-stream-event.v1" });
+    source: `${origin}/rollouts/${pathId}/stream`, schema: "synth.trace-stream-event.v1" });
   const inlineBinding = () => ({ input: "stream", kind: "inline", data: { events: [...events] } });
 
   const bind = async (final = false, failed = false) => {
@@ -181,53 +194,65 @@ export function createHarborVisualFeed({ trialDir, visualId, title, connection, 
       envelope("status", result.finished_at, { trial_id: visualId, status: "completed" });
     }
     closed = true;
+    terminalEvent = { schemaVersion: "evals.event-stream.v1", kind: "stream.closed",
+      sequence: events.length + 1, ts: result.finished_at, logical_time: events.length + 1,
+      payload: { trial_id: visualId, status: failed ? "failed" : "completed" } };
+    publish(terminalEvent);
+    for (const res of subscribers) res.end();
+    subscribers.clear();
     await bind(true, failed);
     sealed = true;
-    // The saved inline binding is durable. Keep the poll authority briefly
+    // The saved inline binding is durable. Keep the SSE authority briefly
     // for any in-flight renderer read, then release the ephemeral sidecar.
     setTimeout(() => { void stop(); }, 2000).unref();
   };
 
-  const tick = async () => {
-    if (ticking || sealed) return;
+  const tick = () => {
+    if (sealed) return;
+    if (ticking) { tickAgain = true; return tickPromise; }
     ticking = true;
-    try {
-      // Harbor streams codex.txt during execution but copies sessions JSONL
-      // to the host only after the agent stops. Choose one authority per
-      // trial, never both: switching sources would duplicate every tool.
-      const liveLog = `${directory}/agent/codex.txt`;
-      let hasLiveLog = false;
-      try { hasLiveLog = (await stat(liveLog)).isFile(); }
-      catch (error) { if (error.code !== "ENOENT") throw error; }
-      const archives = sourceMode === "live" ? [] : await sessionFiles(`${directory}/agent/sessions`);
-      sourceMode ??= hasLiveLog ? "live" : archives.length ? "archive" : undefined;
-      if (sourceMode === "live") await ingestFile(liveLog, true);
-      else if (sourceMode === "archive") for (const file of archives) await ingestFile(file);
-      await finish();
-    } finally { ticking = false; }
+    tickPromise = (async () => {
+      try {
+        do {
+          tickAgain = false;
+          // Harbor streams codex.txt during execution but copies sessions JSONL
+          // to the host only after the agent stops. Choose one authority per trial.
+          const liveLog = `${directory}/agent/codex.txt`;
+          let hasLiveLog = false;
+          try { hasLiveLog = (await stat(liveLog)).isFile(); }
+          catch (error) { if (error.code !== "ENOENT") throw error; }
+          const archives = sourceMode === "live" ? [] : await sessionFiles(`${directory}/agent/sessions`);
+          sourceMode ??= hasLiveLog ? "live" : archives.length ? "archive" : undefined;
+          if (sourceMode === "live") await ingestFile(liveLog, true);
+          else if (sourceMode === "archive") for (const file of archives) await ingestFile(file);
+          await finish();
+        } while (tickAgain && !sealed);
+      } finally { ticking = false; }
+    })();
+    return tickPromise;
   };
 
   const handler = (req, res) => {
     const url = new URL(req.url, origin);
-    if (req.method !== "GET" || url.pathname !== `/rollouts/${pathId}/poll`) {
+    if (req.method !== "GET" || url.pathname !== `/rollouts/${pathId}/stream`) {
       res.writeHead(404); res.end(); return;
     }
-    const after = Math.max(0, Number(url.searchParams.get("after")) || 0);
-    const limit = Math.min(MAX_PAGE, Math.max(1, Number(url.searchParams.get("limit")) || MAX_PAGE));
-    const rows = events.filter((event) => event.sequence > after).slice(0, limit);
-    const next = rows.at(-1)?.sequence ?? after;
-    const high = events.length;
-    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-    res.end(JSON.stringify({ events: [
-      ...(after === 0 ? [{ schemaVersion: "evals.event-stream.v1", kind: "stream.subscribed", sequence: null, ts: now(), payload: { ready: true, "stream.id": visualId } }] : []),
-      ...rows
-    ], cursor: { next, high_water: high, has_more: next < high, closed } }));
+    const after = Math.max(0, Number(req.headers["last-event-id"] ?? url.searchParams.get("after")) || 0);
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform",
+      connection: "keep-alive", "access-control-allow-origin": "*", "x-accel-buffering": "no" });
+    res.flushHeaders?.();
+    writeSse(res, { schemaVersion: "evals.event-stream.v1", kind: "stream.subscribed", sequence: null,
+      ts: now(), payload: { ready: true, "stream.id": visualId, after } });
+    for (const event of events) if (event.sequence > after) writeSse(res, event);
+    if (closed) { if (terminalEvent && terminalEvent.sequence > after) writeSse(res, terminalEvent); res.end(); return; }
+    subscribers.add(res);
+    req.on("close", () => subscribers.delete(res));
   };
 
   return {
     get events() { return [...events]; },
     get sealed() { return sealed; },
-    get pollUrl() { return `${origin}/rollouts/${pathId}/poll`; },
+    get streamUrl() { return `${origin}/rollouts/${pathId}/stream`; },
     tick,
     async start() {
       server = createServer(handler);
@@ -236,10 +261,15 @@ export function createHarborVisualFeed({ trialDir, visualId, title, connection, 
       try {
         envelope("trial.launched", now(), { trial_id: visualId, sandbox: "harbor-docker" });
         await bind(false);
+        watcherAbort = new AbortController();
+        watcherTask = (async () => {
+          try {
+            for await (const _change of watch(directory, { recursive: true, signal: watcherAbort.signal })) await tick();
+          } catch (error) { if (error?.name !== "AbortError") throw error; }
+        })().catch((error) => console.error(`Harbor live feed stopped: ${error.message}`));
         await tick();
-        timer = setInterval(() => { void tick().catch((error) => { console.error(`Harbor live feed stopped: ${error.message}`); clearInterval(timer); }); }, intervalMs);
       } catch (error) { await this.stop(); throw error; }
-      return this.pollUrl;
+      return this.streamUrl;
     },
     stop
   };

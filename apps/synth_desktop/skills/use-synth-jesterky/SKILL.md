@@ -12,11 +12,13 @@ capabilities and use only its verified `executable`. Validate the chosen spec,
 declare actor/model, concurrency, timeout, and aggregate paid bound before a
 provider-backed run. Fake-actor runs are deterministic and free. Write the
 native manifest and `--events-out` NDJSON under the scoped project/artifact
-directory. Start `scripts/jesterky-live-visual.mjs` with those exact spec,
-events, manifest, visual id, and Workshop connection-file paths before launch;
-it opens `workflow.jesterky.v1`, streams structural transitions, and seals the
-retained visual when the manifest lands. The bridge deliberately omits raw
-prompts and outputs. Replay is free only when reading the sealed manifest with
+directory. For a live Workshop visual, start
+`scripts/jesterky-live-visual.mjs` with `--events -`, then pipe a Jesterky run
+started with `--event-stream` into it. This reserves Jesterky stdout for flushed
+canonical NDJSON; the bridge projects each line immediately into its replaying
+SSE endpoint, opens `workflow.jesterky.v1`, and seals the retained visual when
+the manifest lands. Do not tail or poll the NDJSON file for live UI. The bridge
+deliberately omits raw prompts and outputs. Replay is free only when reading the sealed manifest with
 `jesterky replay`; changing actor/model/spec starts a new execution.
 
 1. Use `trace_manage` with a `synth.trace-query.v2` query and existing `evalJobIds`.

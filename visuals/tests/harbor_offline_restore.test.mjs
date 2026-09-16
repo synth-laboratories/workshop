@@ -13,8 +13,8 @@ test('terminal Harbor results survive an unavailable retained producer', async (
     const experiment={schemaVersion:'synth.experiment.overview.v1',status:'completed',
       aggregate:{lifecycle:'terminal',work:{planned:1,succeeded:1},meanReward:200},
       results:{rollouts:[{id:'rollout',label:'woodcutting',status:'completed',reward:200,traceId:'tracev5_retained'}]}};
-    const replay={streams:[{streamId:'recorded',pollUrl:'http://127.0.0.1:1/events'}],
-      poll:async()=>{throw new Error('recorded producer unavailable')}};
+    const replay={streams:[{streamId:'recorded',sseUrl:'http://127.0.0.1:1/stream'}],
+      subscribe:(_stream,handlers)=>{handlers.onError(new Error('recorded producer unavailable'));return()=>{}}};
     createRoot(document.getElementById('root')).render(<Shell experiment={experiment} replay={replay}/>);
   `, resolveDir: root, loader: 'tsx' }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: 'harbor.js' });
   const browser = await chromium.launch();

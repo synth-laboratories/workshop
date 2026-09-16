@@ -1,17 +1,18 @@
 # Contract: live template replay transport
 
-Governs `visuals/runtime/replayClient.ts`, `visuals/chrome/useLiveEvalStreams.ts`,
-and the `visual_stream_poll` Tauri command.
+Governs `visuals/runtime/replayClient.ts` and
+`visuals/chrome/useLiveEvalStreams.ts`.
 
 ## Who owns transport
 
 Workshop does. A live template receives a `ReplayClient` and consumes it:
 
 ```ts
-type ReplayStream = { streamId: string; pollUrl: string; sseUrl?: string };
+type ReplayStream = { streamId: string; sseUrl: string; pollUrl?: string };
 type ReplayClient = {
-  streams: ReplayStream[];                                    // required
-  poll(stream, after, limit): Promise<ReplayPage>;            // required
+  streams: ReplayStream[];
+  subscribe(stream, handlers): () => void;
+  poll?(stream, after, limit): Promise<ReplayPage>; // explicit snapshots only
 };
 ```
 
@@ -21,14 +22,19 @@ quietly: a template that derives its own transport can derive nothing and render
 as though nothing had been declared.
 
 The host builds the client in `TemplateVisualHost` from the resolved binding
-slots (see `visual_bindings.md`) and the native poll bridge.
+slots (see `visual_bindings.md`). Templates never construct an EventSource;
+the host-owned client does so outside the sourced-template sandbox.
 
-## Native polling
+## Push transport
 
-`visual_stream_poll` allowlists the requested URL against the visual's declared
-poll authorities, resolved through the same canonicaliser that writes them, then
-polls with `reqwest` — so replay does not depend on WKWebView's view of CORS or
-CSP. An undeclared URL is a binding defect and is reported as one.
+Live delivery is SSE only. There is no interval, long poll, or periodic snapshot
+fallback in the visual hook. An SSE authority persists an envelope before
+publishing it, replays committed history on a fresh connection, emits monotonic
+SSE `id` fields, and honors `Last-Event-ID` on reconnect. The browser's
+EventSource reconnect is therefore gap repair, not a best-effort notification.
+
+`pollUrl` and `visual_stream_poll` remain compatibility surfaces for explicit
+snapshot and seal operations. They are never scheduled by `useLiveEvalStreams`.
 
 ## The state machine
 
@@ -59,16 +65,14 @@ showing settled evidence.
 
 ## Replay semantics
 
-- Replay works from the durable poll authority alone. A closed EventSource is
-  never data loss, and a completed evaluation reopens without converting Trace
-  V5 into a different input schema.
-- Each stream keeps its own cursor. Cursors are not comparable across rollouts,
-  so a global maximum would strand a slower lane forever.
-- Every stream starts at cursor zero and relies on envelope-identity
-  de-duplication, so opening a visual after every stream is terminal replays the
-  whole history.
-- A cursor that regresses, fails to advance, or exceeds `REPLAY_PAGE_LIMIT_MAX`
-  pages is an error, not a retry.
+- Each SSE connection replays its durable prefix, then tails the live broadcast.
+- EventSource reconnects with the last received SSE id. Exact reconnect
+  duplicates are de-duplicated by envelope identity; conflicts and gaps remain
+  visible errors.
+- A fresh visual starts without `Last-Event-ID`, so the authority replays from
+  the beginning. A terminal authority includes `stream.closed` and closes only
+  after the retained manifest has been flushed.
+- Cursors remain stream-local and are never compared across rollouts.
 
 ## Page shapes
 
@@ -83,15 +87,14 @@ them once every producer emits `page` + `cursor`.
 
 ## Observability
 
-`visual_stream_poll` records `stream.poll.page` / `stream.poll.closed` on
-success and `stream.poll.failed` on error, carrying visual id, revision, cursor,
-row count, high water, status, and duration. Identifiers and integers only —
-envelope bodies carry model output and rollout payloads and never enter a
-diagnostic.
+The client records bounded subscription timeout and interruption diagnostics.
+Identifiers and integers only—envelope bodies carry model output and rollout
+payloads and never enter a diagnostic. A transient interruption preserves the
+last good prefix while EventSource reconnects.
 
-Success is recorded because its absence is evidence: without it, "the renderer
-never asked" and "the stream returned nothing" are the same empty pane and the
-same empty query.
+The first envelope clears the bounded subscription deadline. Without one,
+"the renderer never subscribed" and "the authority returned nothing" become
+the same named timeout rather than an indefinite placeholder.
 
 ## Harbor/Codex tool feed
 
@@ -109,14 +112,15 @@ node scripts/harbor-live-visual.mjs \
 ```
 
 The workspace source is optional. The producer binds a declared `live_sse`
-source and loopback poll URL, publishes cursor-ordered `tools` envelopes from
+source, publishes cursor-ordered `tools` envelopes from
 Harbor's continuously written `agent/codex.txt`, and uses archived session
 JSONL only if that live log is absent. It never publishes raw commands,
 outputs, instructions, messages, reasoning or credential values. Loopback
-polling carries sanitized tool identity/status/duration/exit code only.
+SSE carries sanitized tool identity/status/duration/exit code only. Filesystem
+notifications wake the producer; there is no interval tailer.
 
 After `verifier/reward.txt` and Harbor's `result.json` agree, the producer
-emits verifier and terminal status evidence, replaces its ephemeral poll
+emits verifier and terminal status evidence, replaces its ephemeral SSE
 binding with the retained envelopes inline, marks the visual saved, and
 releases its loopback listener. A reopened result no longer needs the sidecar
 or a manual score binding. Missing or contradictory scores fail closed.

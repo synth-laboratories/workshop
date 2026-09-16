@@ -2,19 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { LiveEvalEvent } from "../runtime/types.ts";
 import { reportVisualDiagnostic, VISUAL_STREAM_CODES } from "../runtime/diagnostics.ts";
 import { emptyLiveIngest, ingestLiveEnvelopeBatch } from "../runtime/liveStream.ts";
-import { acceptHostEvidence, type HostLiveEvidence } from "../runtime/hostLiveEvidence.ts";
-import {
-  REPLAY_FIRST_RESPONSE_TIMEOUT_MS,
-  REPLAY_PAGE_LIMIT,
-  REPLAY_PAGE_LIMIT_MAX,
-  type ReplayClient,
-  type TransportState
-} from "../runtime/replayClient.ts";
+import type { HostLiveEvidence } from "../runtime/hostLiveEvidence.ts";
+import { REPLAY_FIRST_RESPONSE_TIMEOUT_MS, type ReplayClient, type TransportState } from "../runtime/replayClient.ts";
 
 export type LiveEvalStreamsView = {
   events: LiveEvalEvent[];
   state: TransportState;
-  /** Streams that have reported closed, out of `client.streams.length`. */
   closed: number;
   ready: boolean;
   recovered: number;
@@ -22,10 +15,9 @@ export type LiveEvalStreamsView = {
   hostEvidence?: HostLiveEvidence;
 };
 
-const POLL_INTERVAL_MS = 500;
 const pixelCutPending = () => document.documentElement.hasAttribute("data-synth-review-capture")
   || document.documentElement.hasAttribute("data-synth-capture");
-type CapturePrefix = { events: LiveEvalEvent[]; hostEvidence?: HostLiveEvidence; ready: boolean; state: TransportState; closed: number };
+type CapturePrefix = { events: LiveEvalEvent[]; ready: boolean; state: TransportState; closed: number };
 const capturePrefixes = new Map<string, CapturePrefix>();
 const CAPTURE_PREFIX_LIMIT = 8;
 function retainCapturePrefix(key: string | null, value: CapturePrefix) {
@@ -35,23 +27,9 @@ function retainCapturePrefix(key: string | null, value: CapturePrefix) {
   while (capturePrefixes.size > CAPTURE_PREFIX_LIMIT) capturePrefixes.delete(capturePrefixes.keys().next().value!);
 }
 
-/**
- * Fold every declared rollout stream into one viewer from its durable poll
- * authority.
- *
- * A live visual has one semantic `stream` slot, but an eval can bind several
- * rollout-local authorities to it. Polling each one means a terminal
- * EventSource close is not data loss and a completed evaluation reopens without
- * converting Trace V5 into a different input schema.
- *
- * The state it reports is a state machine, not a ladder of derived strings.
- * That matters more than it sounds: the pane it replaces could rest forever at
- * `connecting` with streams declared and no poll ever issued, and nothing in
- * the type said that was impossible. Here it is impossible — `declared` without
- * a first response inside `REPLAY_FIRST_RESPONSE_TIMEOUT_MS` becomes `error`.
- *
- * See: docs/contracts/visual_replay_transport.md.
- */
+/** Fold every declared stream from its SSE authority. There is deliberately no
+ * timer and no poll fallback: producers replay their durable prefix on connect,
+ * then EventSource repairs disconnects with Last-Event-ID. */
 export function useLiveEvalStreams(
   client: ReplayClient,
   identity: { visualId?: string | null; revision?: number | null } = {}
@@ -62,11 +40,10 @@ export function useLiveEvalStreams(
   const [ready, setReady] = useState(false);
   const [recovered, setRecovered] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [hostEvidence, setHostEvidence] = useState<HostLiveEvidence>();
   const ingest = useRef(emptyLiveIngest());
   const clientRef = useRef(client);
   clientRef.current = client;
-  const streamKey = JSON.stringify(client.streams.map(({streamId, pollUrl, sseUrl}) => [streamId, pollUrl, sseUrl]));
+  const streamKey = JSON.stringify(client.streams.map(({ streamId, sseUrl }) => [streamId, sseUrl]));
   const { visualId, revision } = identity;
   const captureKey = visualId && revision != null ? JSON.stringify([visualId, revision, streamKey]) : null;
 
@@ -77,159 +54,78 @@ export function useLiveEvalStreams(
     setRecovered(0);
     setError(null);
     setClosed(0);
-    setHostEvidence(undefined);
-
     const streams = clientRef.current.streams;
-    if (streams.length === 0) {
-      setState("idle");
-      return;
-    }
-    // Review capture remounts the selected visual inside this same renderer.
-    // Its toolbar is operating an already-open pane whose native poll answers
-    // were retained here. Reuse only that exact visual/revision/stream prefix;
-    // a cold capture without one must still answer from authority or fail
-    // bounded, never certify an empty connecting placeholder.
+    if (streams.length === 0) { setState("idle"); return; }
+
     const prefix = pixelCutPending() && captureKey ? capturePrefixes.get(captureKey) : undefined;
     if (prefix) {
       ingest.current = ingestLiveEnvelopeBatch(emptyLiveIngest(), prefix.events);
-      setEvents(prefix.events);
-      setHostEvidence(prefix.hostEvidence);
-      setReady(prefix.ready);
-      setRecovered(prefix.events.length);
-      setClosed(prefix.closed);
-      setState(prefix.state);
-      return;
+      setEvents(prefix.events); setReady(prefix.ready); setRecovered(prefix.events.length);
+      setClosed(prefix.closed); setState(prefix.state); return;
     }
-    setState("declared");
 
+    setState("declared");
     let stopped = false;
     let answered = false;
-    let host: HostLiveEvidence | undefined;
-    let timer: number | undefined;
-    const cursors = new Map(streams.map((stream) => [stream.streamId, 0]));
     const closedStreams = new Set<string>();
-
-    const fail = (message: string, code: string) => {
-      if (stopped) return;
-      stopped = true; // A late sibling response must not erase this failure.
-      setError(message);
-      setState("error");
-      reportVisualDiagnostic({
-        severity: "error",
-        event: "stream.replay.failed",
-        code,
-        message,
-        retryable: true,
-        visualId,
-        details: { revision, declaredStreams: streams.length, closed: closedStreams.size }
-      });
-    };
-
-    // A declared stream that never answers is the failure this hook exists to
-    // make impossible to sit in quietly.
+    const unsubscribers: Array<() => void> = [];
     const deadline = window.setTimeout(() => {
       if (stopped || answered) return;
-      fail(
-        `No declared stream answered within ${Math.round(REPLAY_FIRST_RESPONSE_TIMEOUT_MS / 1000)}s (${streams.length} declared)`,
-        VISUAL_STREAM_CODES.streamSubscribeTimeout
-      );
+      const message = `No declared SSE stream answered within ${Math.round(REPLAY_FIRST_RESPONSE_TIMEOUT_MS / 1000)}s (${streams.length} declared)`;
+      setError(message); setState("error");
+      reportVisualDiagnostic({ severity: "error", event: "stream.subscribe.failed",
+        code: VISUAL_STREAM_CODES.streamSubscribeTimeout, message, retryable: true, visualId,
+        details: { revision, declaredStreams: streams.length } });
     }, REPLAY_FIRST_RESPONSE_TIMEOUT_MS);
 
-    const publish = (rows: Parameters<typeof ingestLiveEnvelopeBatch>[1]) => {
-      if (stopped || rows.length === 0) return;
+    const publish = (row: LiveEvalEvent) => {
+      if (stopped || row.kind === "stream.closed") return;
+      answered = true; window.clearTimeout(deadline);
       const before = ingest.current.events.length;
-      ingest.current = ingestLiveEnvelopeBatch(ingest.current, rows);
-      setEvents(ingest.current.events as LiveEvalEvent[]);
-      setReady(ingest.current.ready);
-      setRecovered((value) => value + Math.max(0, ingest.current.events.length - before));
-      if (ingest.current.conflicts.length) {
-        setError(ingest.current.conflicts.at(-1) ?? "Conflicting replay envelope");
-      } else if (ingest.current.gaps.length) {
-        setError(`Evidence gap after sequence ${ingest.current.gaps.at(-1)?.after}`);
-      } else {
-        setError(null);
-      }
-      retainCapturePrefix(captureKey, { events: ingest.current.events as LiveEvalEvent[],
-        hostEvidence: host, ready: host?.ready ?? ingest.current.ready, state: "live", closed: closedStreams.size });
+      ingest.current = ingestLiveEnvelopeBatch(ingest.current, [row]);
+      const next = ingest.current.events as LiveEvalEvent[];
+      setEvents(next); setReady(ingest.current.ready);
+      setRecovered((value) => value + Math.max(0, next.length - before));
+      const problem = ingest.current.conflicts.at(-1)
+        ?? (ingest.current.gaps.length ? `Evidence gap after sequence ${ingest.current.gaps.at(-1)?.after}` : null);
+      setError(problem); setState("live");
+      retainCapturePrefix(captureKey, { events: next, ready: ingest.current.ready, state: "live", closed: closedStreams.size });
     };
 
-    const pollOne = async (stream: (typeof streams)[number]) => {
-      let after = cursors.get(stream.streamId) ?? 0;
-      // Bound the pending batch while avoiding a full viewer reconstruction
-      // for every small durable page. Keep the first response immediate.
-      let pending: Parameters<typeof ingestLiveEnvelopeBatch>[1] = [];
-      for (let pageNumber = 0; pageNumber < REPLAY_PAGE_LIMIT_MAX; pageNumber++) {
-        if (stopped) return;
-        const page = await clientRef.current.poll(stream, after, REPLAY_PAGE_LIMIT);
-        if (stopped) return;
-        host = acceptHostEvidence(host, page, streams, { visualId, revision });
-        setHostEvidence(host);
-        const firstResponse = !answered;
-        answered = true;
-        pending.push(...page.events);
-        const { next, hasMore, closed: streamClosed } = page.cursor;
-        if (firstResponse || pending.length >= 5_000 || !hasMore) {
-          publish(pending);
-          pending = [];
-        }
-        if (next < after) {
-          throw new Error(`replay cursor regressed from ${after} to ${next} on ${stream.streamId}`);
-        }
-        cursors.set(stream.streamId, next);
-        // `closed` describes the producer, not this page. A terminal producer
-        // can still have several pages of durable history. Drain those pages
-        // before marking the stream closed or a reopened visual will freeze at
-        // the first page and render completed rollouts as still running.
-        if (hasMore) {
-          if (next === after) {
-            throw new Error(`replay made no progress after sequence ${after} on ${stream.streamId}`);
-          }
-          after = next;
-          continue;
-        }
-        if (streamClosed) closedStreams.add(stream.streamId);
-        return;
-      }
-      publish(pending);
-      throw new Error(`replay exceeded ${REPLAY_PAGE_LIMIT_MAX} pages on ${stream.streamId}`);
-    };
-
-    const pollAll = async () => {
-      if (stopped) return;
-      if (!answered) setState("replaying");
+    for (const stream of streams) {
       try {
-        await Promise.all(
-          streams.filter((stream) => !closedStreams.has(stream.streamId)).map(pollOne)
-        );
-        if (stopped) return;
-        setClosed(closedStreams.size);
-        const allClosed = closedStreams.size === streams.length;
-        setState(allClosed ? "terminal" : "live");
-        const retained = captureKey ? capturePrefixes.get(captureKey) : undefined;
-        if (retained) retainCapturePrefix(captureKey, { ...retained, state: allClosed ? "terminal" : "live", closed: closedStreams.size });
-        // A scoped pixel cut remounts this pane. Replay one authoritative
-        // prefix, then hold it until the capture barrier releases; otherwise
-        // a new tool event can repaint the DOM under a frozen checkpoint.
-        if (!allClosed && !pixelCutPending()) timer = window.setTimeout(() => void pollAll(), POLL_INTERVAL_MS);
+        unsubscribers.push(clientRef.current.subscribe(stream, {
+          onOpen: () => { if (!stopped && !answered) setState("replaying"); },
+          onEvent: (event) => publish(event as LiveEvalEvent),
+          onError: (reason) => {
+            if (stopped) return;
+            // EventSource reconnects automatically; preserve the last good prefix.
+            setError(reason.message);
+            reportVisualDiagnostic({ severity: "warn", event: "stream.sse.interrupted",
+              code: VISUAL_STREAM_CODES.streamInterrupted, message: reason.message,
+              retryable: true, visualId, details: { revision, streamId: stream.streamId } });
+          },
+          onClosed: () => {
+            if (stopped) return;
+            answered = true; window.clearTimeout(deadline); closedStreams.add(stream.streamId);
+            setClosed(closedStreams.size);
+            const terminal = closedStreams.size === streams.length;
+            setState(terminal ? "terminal" : "live"); setError(null);
+            retainCapturePrefix(captureKey, { events: ingest.current.events as LiveEvalEvent[],
+              ready: ingest.current.ready, state: terminal ? "terminal" : "live", closed: closedStreams.size });
+          }
+        }));
       } catch (reason) {
-        fail(reason instanceof Error ? reason.message : "replay error", VISUAL_STREAM_CODES.streamInterrupted);
+        setError(reason instanceof Error ? reason.message : "SSE subscription failed");
+        setState("error");
       }
-    };
-
-    void pollAll();
+    }
     return () => {
-      stopped = true;
-      window.clearTimeout(deadline);
-      if (timer != null) window.clearTimeout(timer);
+      stopped = true; window.clearTimeout(deadline);
+      for (const unsubscribe of unsubscribers) unsubscribe();
     };
-    // streamKey is the stable descriptor identity; hosts rebuild the array.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamKey, visualId, revision]);
+  }, [streamKey, visualId, revision, captureKey]);
 
-  // Selection and session-cut notifications do not change the retained data.
-  // Keep its identity so evidence serialization is paid only for a new cut.
-  return useMemo(() => ({ events, state, closed, ready: state !== "error" && (hostEvidence?.ready ?? ready),
-    recovered: hostEvidence?.recovered ?? recovered,
-    error: state === "error" ? error : hostEvidence ? hostEvidence.error : error, hostEvidence }),
-    [events, state, closed, ready, recovered, error, hostEvidence]);
+  return useMemo(() => ({ events, state, closed, ready: state !== "error" && ready,
+    recovered, error, hostEvidence: undefined }), [events, state, closed, ready, recovered, error]);
 }

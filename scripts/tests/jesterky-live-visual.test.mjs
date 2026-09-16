@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { PassThrough } from "node:stream";
 import { createJesterkyVisualFeed, projectJesterkyEvent, projectJesterkySpec } from "../jesterky-live-visual.mjs";
 
 const row = (kind, seq, payload = null) => ({ addr: { run_id: "run-1", node_path: [{ node: "fanout" }, { index: 2 }], iteration: 0, local_seq: seq }, kind: { kind }, payload, wall_ms: 1_789_000_000_000 + seq });
@@ -34,13 +35,26 @@ test("Jesterky feed advances live then seals the exact manifest event count", as
   });
   await new Promise((ready) => api.listen(0, "127.0.0.1", ready));
   const feed = createJesterkyVisualFeed({ specPath, eventsPath, manifestPath, visualId: "jesterky-test",
-    connection: { url: `http://127.0.0.1:${api.address().port}`, token: "token" }, intervalMs: 10_000 });
+    connection: { url: `http://127.0.0.1:${api.address().port}`, token: "token" } });
   try {
-    const poll = await feed.start();
+    const stream = await feed.start();
     assert.equal(visual.status, "live");
     assert.equal(visual.templateId, "workflow.jesterky.v1");
-    const page = await (await fetch(`${poll}?after=0`)).json();
-    assert.deepEqual(page.events.map((event) => event.kind), ["stream.subscribed", "jesterky.transition"]);
+    assert.equal(visual.bindings.inputs[0].source, stream);
+    assert.equal("poll_url" in visual.bindings.inputs[0], false);
+    const response = await fetch(stream);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    while ((text.match(/^data: /gm) ?? []).length < 2) {
+      const chunk = await reader.read();
+      assert.equal(chunk.done, false);
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    const kinds = text.split("\n").filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice(6)).kind);
+    assert.deepEqual(kinds, ["stream.subscribed", "jesterky.transition"]);
+    await reader.cancel();
     const manifestEvents = [row("workflow_started", 0), row("node_started", 1)];
     await writeFile(manifestPath, JSON.stringify({ run_id: "run-1", workflow_name: "demo", spec_hash: "abc", status: "completed", events: manifestEvents, recorded: [{}], checkpoints: [] }));
     await feed.tick();
@@ -50,6 +64,44 @@ test("Jesterky feed advances live then seals the exact manifest event count", as
     assert.equal(visual.bindings.inputs[0].data.events.length, 2);
     assert.equal(visual.bindings.inputs[1].data.eventCount, 2);
     assert.equal(visual.bindings.inputs[1].data.recordedCalls, 1);
+  } finally {
+    await feed.stop();
+    await new Promise((done) => api.close(done));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Jesterky's machine event pipe is pushed through SSE without polling", async () => {
+  const root = await mkdtemp(join(tmpdir(), "workshop-jesterky-pipe-"));
+  const specPath = join(root, "spec.json");
+  const manifestPath = join(root, "manifest.json");
+  await writeFile(specPath, JSON.stringify({ name: "pipe", entrypoint: ["one"], nodes: { one: { kind: "actor", actor: "worker" } } }));
+  let visual;
+  const api = createServer(async (req, res) => {
+    if (req.method === "GET" && !visual) { res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "not found" })); return; }
+    if (req.method !== "GET") { let body = ""; for await (const chunk of req) body += chunk; visual = { ...visual, ...JSON.parse(body), id: "pipe" }; }
+    res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ visual }));
+  });
+  await new Promise((ready) => api.listen(0, "127.0.0.1", ready));
+  const input = new PassThrough();
+  const feed = createJesterkyVisualFeed({ specPath, eventsPath: "-", manifestPath, visualId: "pipe",
+    eventInput: input, connection: { url: `http://127.0.0.1:${api.address().port}`, token: "token" } });
+  try {
+    const stream = await feed.start();
+    const response = await fetch(stream);
+    const reader = response.body.getReader();
+    input.write(`${JSON.stringify(row("workflow_started", 0))}\n`);
+    let received = "";
+    while (!received.includes("jesterky.transition")) received += new TextDecoder().decode((await reader.read()).value);
+    assert.match(received, /stream\.subscribed/);
+    assert.match(received, /jesterky\.transition/);
+    const manifestEvents = [row("workflow_started", 0)];
+    await writeFile(manifestPath, JSON.stringify({ run_id: "run-1", spec_hash: "abc", status: "completed", events: manifestEvents, recorded: [], checkpoints: [] }));
+    input.end();
+    for (let attempt = 0; attempt < 50 && !feed.sealed; attempt++) await new Promise((done) => setTimeout(done, 10));
+    assert.equal(feed.sealed, true);
+    assert.equal(visual.status, "saved");
+    await reader.cancel();
   } finally {
     await feed.stop();
     await new Promise((done) => api.close(done));

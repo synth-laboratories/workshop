@@ -6,6 +6,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHarborVisualFeed, projectCodexTool } from "../harbor-live-visual.mjs";
 
+async function readSseUntil(reader, text, kind) {
+  const decoder = new TextDecoder();
+  while (!text.includes(`\"kind\":\"${kind}\"`)) {
+    const chunk = await reader.read();
+    assert.equal(chunk.done, false);
+    text += decoder.decode(chunk.value, { stream: true });
+  }
+  return text;
+}
+
 test("Codex projection excludes raw commands, outputs and messages", () => {
   const row = { type: "event_msg", timestamp: "2026-09-15T00:00:00Z", payload: {
     type: "item_completed", item: { type: "CommandExecution", status: "completed", exit_code: 0,
@@ -48,21 +58,21 @@ test("Harbor feed advances a declared cursor and auto-seals reward.txt", async (
   const feed = createHarborVisualFeed({ trialDir: root, visualId: "feed-test",
     connection: { url: `http://127.0.0.1:${server.address().port}`, token: "test-token" }, intervalMs: 10_000 });
   try {
-    await feed.start();
+    const stream = await feed.start();
     assert.equal(visual.status, "live");
     assert.equal(visual.bindings.inputs[0].kind, "live_sse");
-    const first = await (await fetch(`${feed.pollUrl}?after=0&limit=1`)).json();
-    assert.equal(first.events[0].kind, "stream.subscribed");
-    assert.equal(first.events[1].kind, "trial.launched");
-    assert.equal(first.cursor.has_more, false);
+    assert.equal(visual.bindings.inputs[0].source, stream);
+    assert.equal("poll_url" in visual.bindings.inputs[0], false);
+    const response = await fetch(stream);
+    const reader = response.body.getReader();
+    let streamed = await readSseUntil(reader, "", "trial.launched");
+    assert.match(streamed, /stream\.subscribed/);
     const row = { type: "event_msg", timestamp: "2026-09-15T00:00:01Z", payload: { type: "item_completed",
       item: { type: "CommandExecution", status: "completed", exit_code: 0, command: "SECRET_COMMAND", aggregated_output: "SECRET_OUTPUT" } } };
     await appendFile(session, `${JSON.stringify(row)}\n`);
     await feed.tick();
-    const next = await (await fetch(`${feed.pollUrl}?after=1&limit=1`)).json();
-    assert.equal(next.events[0].kind, "tools");
-    assert.equal(next.cursor.next, 2);
-    assert.doesNotMatch(JSON.stringify(next), /SECRET/);
+    streamed = await readSseUntil(reader, streamed, "tools");
+    assert.doesNotMatch(streamed, /SECRET/);
     await writeFile(join(root, "verifier", "reward.txt"), "0.25\n");
     await writeFile(join(root, "result.json"), JSON.stringify({ finished_at: "2026-09-15T00:00:02Z",
       exception_info: null, verifier_result: { rewards: { reward: 0.25 } },
@@ -75,6 +85,7 @@ test("Harbor feed advances a declared cursor and auto-seals reward.txt", async (
       ["trial.launched", "tools", "verifier", "status"]);
     assert.equal(visual.bindings.inputs[0].data.events[2].payload["reward.txt"], 0.25);
     assert.doesNotMatch(JSON.stringify(visual), /SECRET/);
+    await reader.cancel();
   } finally {
     await feed.stop();
     await new Promise((done) => server.close(done));

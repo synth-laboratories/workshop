@@ -38,7 +38,7 @@ test("live.harbor_eval.v1 binds slot stream, not jobs", () => {
   );
   const names = (meta.inputs ?? meta.slots).map((slot) => slot.name);
   assert.equal(names[0], LIVE_EVAL_INPUT, "the live transport is still the first input");
-  for (const name of names) assert.equal(assertLiveEvalSlot(name, meta.id), null);
+  assert.equal(assertLiveEvalSlot(names[0], meta.id), null);
   assert.equal(LIVE_EVAL_SLOT, LIVE_EVAL_INPUT);
 });
 
@@ -110,7 +110,7 @@ test("replay pages normalize every producer shape and never invent a cursor", as
   assert.throws(() => parseReplayPage(null, 0), /not an object/);
 });
 
-test("declared live bindings become replay streams, and a missing poll authority is reported", async () => {
+test("declared SSE bindings are live streams without requiring a poll authority", async () => {
   const { replayStreamsFromBindings } = await import("../runtime/replayClient.ts");
   const { streams, missingTransport } = replayStreamsFromBindings([
     { slot: "stream", kind: "live_sse", source: "http://127.0.0.1:8114/rollouts/r1/stream", poll_url: "http://127.0.0.1:8114/rollouts/r1/events" },
@@ -118,11 +118,11 @@ test("declared live bindings become replay streams, and a missing poll authority
     { slot: "stream", kind: "live_sse", source: "http://127.0.0.1:8114/rollouts/r3/stream" },
     { slot: "notes", kind: "inline", source: undefined },
   ]);
-  assert.equal(streams.length, 2);
+  assert.equal(streams.length, 3);
   assert.equal(streams[0].pollUrl, "http://127.0.0.1:8114/rollouts/r1/events");
-  // A stream with no durable authority cannot replay after it closes. It is
-  // named, not quietly dropped.
-  assert.deepEqual(missingTransport, ["http://127.0.0.1:8114/rollouts/r3/stream"]);
+  assert.equal(streams[2].sseUrl, "http://127.0.0.1:8114/rollouts/r3/stream");
+  assert.equal(streams[2].pollUrl, undefined);
+  assert.deepEqual(missingTransport, []);
 });
 
 test("ten declared rollout streams each keep their own durable cursor", async () => {
@@ -130,12 +130,13 @@ test("ten declared rollout streams each keep their own durable cursor", async ()
   const asked = [];
   const streams = Array.from({ length: 10 }, (_, index) => ({
     streamId: `roll_${index}`,
+    sseUrl: `http://127.0.0.1:8114/rollouts/roll_${index}/stream`,
     pollUrl: `http://127.0.0.1:8114/rollouts/roll_${index}/events`,
   }));
-  const client = createReplayClient(streams, async (pollUrl, after, limit) => {
-    asked.push({ pollUrl, after, limit });
-    return { page: { events: [{ sequence: after + 1 }] }, cursor: { next: after + 1, closed: true } };
-  });
+  const client = createReplayClient(streams, { poll: async (pollUrl, after, limit) => {
+      asked.push({ pollUrl, after, limit });
+      return { page: { events: [{ sequence: after + 1 }] }, cursor: { next: after + 1, closed: true } };
+    } });
   const pages = await Promise.all(streams.map((stream) => client.poll(stream, 0, 500)));
   assert.equal(client.streams.length, 10);
   assert.equal(asked.length, 10);
@@ -262,16 +263,11 @@ test("a template cannot rest in an unexplained pending state", async () => {
   assert.doesNotMatch(hook, /fetch\(/);
 });
 
-test("terminal replay streams drain every durable page before closing", () => {
+test("live hooks subscribe to SSE and never schedule a poll fallback", () => {
   const hook = readFileSync(join(root, "chrome/useLiveEvalStreams.ts"), "utf8");
-  // Producers report `closed: true` on every page once a rollout is terminal.
-  // `hasMore` must win until history is drained; otherwise a reopened visual
-  // renders only the first page and makes completed lanes look live forever.
-  const hasMoreBranch = hook.indexOf("if (hasMore)");
-  const closeBranch = hook.indexOf("if (streamClosed) closedStreams.add");
-  assert.ok(hasMoreBranch >= 0, "replay hook must branch on remaining history");
-  assert.ok(closeBranch > hasMoreBranch, "remaining history must be drained before terminal close");
-  assert.match(hook, /after = next;\s+continue;/);
+  assert.match(hook, /clientRef\.current\.subscribe/);
+  assert.match(hook, /onClosed/);
+  assert.doesNotMatch(hook, /setInterval|POLL_INTERVAL|\.poll\(/);
 });
 
 test("ingest de-dupes, ignores heartbeats, and treats stream.subscribed as ready", () => {

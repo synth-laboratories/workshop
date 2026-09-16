@@ -8,6 +8,9 @@ import { useLiveEvalStreams, type LiveEvalStreamsView } from "./useLiveEvalStrea
 /** A client with nothing declared. Stable so the hook below keeps one identity. */
 const NO_STREAMS: ReplayClient = {
   streams: [],
+  subscribe: () => {
+    throw new Error("no SSE transport is declared for this visual");
+  },
   poll: async () => {
     throw new Error("no replay transport is declared for this visual");
   }

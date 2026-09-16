@@ -296,13 +296,11 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	);
 	const replayClient = useMemo(
 		() =>
-			// Native allowlisted polling when the host offers it. Outside the
-			// packaged app — browser preview, tests — the client falls back to
-			// fetch. The capability is checked, not assumed: a bridge without
-			// `pollStream` would otherwise throw on the first poll.
+			// Live delivery is push-only SSE. The optional native poll authority
+			// remains available for explicit snapshots/sealing, never as a timer.
 			createReplayClient(replay.streams, typeof bridges.visuals?.pollStream === "function"
-				? (pollUrl, after, limit) =>
-						bridges.visuals!.pollStream({ visualId: artifact.id, pollUrl, after, limit })
+				? { poll: (pollUrl, after, limit) =>
+						bridges.visuals!.pollStream({ visualId: artifact.id, pollUrl, after, limit }) }
 				: undefined),
 		[artifact.id, replay.streams]
 	);

@@ -11,9 +11,9 @@
  *
  * - `streams` is required and explicit. Zero declared streams is a state the
  *   template can render, not an absence it has to infer.
- * - `poll` is required. A template cannot silently lose it.
- * - Response-shape tolerance lives here, in one place, as declared
- *   compatibility rather than an inline ternary repeated per hook.
+ * - `subscribe` is required. A template cannot silently lose live delivery.
+ * - Optional poll parsing remains here for explicit snapshots and legacy
+ *   sealing. The live hook never schedules it.
  *
  * See: docs/contracts/visual_replay_transport.md.
  */
@@ -23,10 +23,10 @@ import type { LiveEnvelope } from "./liveStream.ts";
 export type ReplayStream = {
   /** Stable identity for diagnostics and cursor bookkeeping. */
   streamId: string;
-  /** Durable poll authority. Replay works from this alone. */
-  pollUrl: string;
-  /** Optional incremental transport. Its loss is never data loss. */
-  sseUrl?: string;
+  /** Optional explicit snapshot authority; never a live-delivery fallback. */
+  pollUrl?: string;
+  /** Push authority. Live streams must declare this URL. */
+  sseUrl: string;
 };
 
 export type ReplayCursor = {
@@ -89,7 +89,16 @@ export const HOST_POLL_SCHEMA = "synth.visual-stream-poll.v1";
 export type ReplayClient = {
   /** Declared streams, in binding order. Never inferred from a prop bag. */
   streams: ReplayStream[];
-  poll(stream: ReplayStream, after: number, limit: number): Promise<ReplayPage>;
+  poll?(stream: ReplayStream, after: number, limit: number): Promise<ReplayPage>;
+  subscribe(
+    stream: ReplayStream,
+    handlers: {
+      onOpen?: () => void;
+      onEvent: (event: LiveEnvelope) => void;
+      onError: (error: Error) => void;
+      onClosed: () => void;
+    }
+  ): () => void;
 };
 
 /** Transport lifecycle. `connecting` is not in it: see `TransportState`. */
@@ -184,23 +193,47 @@ export function parseReplayPage(body: unknown, after: number): ReplayPage {
 }
 
 /**
- * Build a client over a host-supplied transport.
- *
- * `transport` is the native allowlisted poll in Workshop. In a browser preview
- * there is none, and `fetch` stands in — the caller chooses, and the template
- * never learns which it got.
+ * Build a client over host-owned transports. The default subscriber is the
+ * renderer's EventSource, outside the sourced-template sandbox. An injected
+ * poll is retained only for explicit snapshot compatibility.
  */
 export function createReplayClient(
   streams: ReplayStream[],
-  transport?: (pollUrl: string, after: number, limit: number) => Promise<unknown>
+  transport?: {
+    poll?: (pollUrl: string, after: number, limit: number) => Promise<unknown>;
+    subscribe?: ReplayClient["subscribe"];
+  }
 ): ReplayClient {
+  const subscribe: ReplayClient["subscribe"] = transport?.subscribe ?? ((stream, handlers) => {
+    const source = new EventSource(stream.sseUrl);
+    source.onopen = () => handlers.onOpen?.();
+    source.onmessage = (message) => {
+      try {
+        const event = JSON.parse(message.data) as LiveEnvelope;
+        handlers.onEvent(event);
+        if (event.kind === "stream.closed") {
+          source.close();
+          handlers.onClosed();
+        }
+      } catch (reason) {
+        handlers.onError(reason instanceof Error ? reason : new Error("invalid SSE envelope"));
+      }
+    };
+    // EventSource reconnects with Last-Event-ID. Report the interruption but
+    // do not close it here; the durable SSE authority repairs the gap.
+    source.onerror = () => handlers.onError(new Error(`SSE connection interrupted for ${stream.streamId}`));
+    return () => source.close();
+  });
   return {
     streams,
+    subscribe,
     async poll(stream, after, limit) {
-      const body = transport
-        ? await transport(stream.pollUrl, after, limit)
+      if (!stream.pollUrl) throw new Error(`stream ${stream.streamId} has no snapshot authority`);
+      const pollUrl = stream.pollUrl;
+      const body = transport?.poll
+        ? await transport.poll(pollUrl, after, limit)
         : await (async () => {
-            const url = new URL(stream.pollUrl, stream.sseUrl);
+            const url = new URL(pollUrl, stream.sseUrl);
             url.searchParams.set("after", String(after));
             url.searchParams.set("limit", String(limit));
             const response = await fetch(url, { headers: { Accept: "application/json" } });
@@ -241,15 +274,13 @@ export function replayStreamsFromBindings(
   const streams: ReplayStream[] = [];
   const missingTransport: string[] = [];
   for (const [index, binding] of live.entries()) {
-    if (!binding.poll_url) {
-      // A stream with no durable poll authority cannot be replayed after it
-      // closes, so it is reported rather than quietly dropped.
+    if (!binding.source) {
       missingTransport.push(binding.source ?? `${binding.input ?? binding.slot}[${index}]`);
       continue;
     }
     streams.push({
-      streamId: binding.source ?? binding.poll_url,
-      pollUrl: binding.poll_url,
+      streamId: binding.source,
+      ...(binding.poll_url ? { pollUrl: binding.poll_url } : {}),
       sseUrl: binding.source
     });
   }
