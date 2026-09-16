@@ -30,6 +30,7 @@ import { DataPage } from "./components/DataPage";
 import { LandingPage } from "./components/LandingPage";
 import { ComputerUsePage } from "./components/ComputerUsePage";
 import { JesterkyPage } from "./components/JesterkyPage";
+import { SwarmsPage } from "./components/SwarmsPage";
 import { OptimizersPage } from "./components/OptimizersPage";
 import { EnvironmentQaPage } from "./components/EnvironmentQaPage";
 import { PaneResizeHandle } from "./components/PaneResizeHandle";
@@ -70,6 +71,7 @@ export type MainView =
 	| { kind: "experiments"; experimentId?: string }
 	| { kind: "optimizers" }
 	| { kind: "jesterky" }
+	| { kind: "swarms" }
 	| { kind: "environment-qa" }
 	| { kind: "computer-use" };
 
@@ -78,6 +80,7 @@ const INVENTORY_ORIGIN_KINDS = new Set<MainView["kind"]>([
 	"experiments",
 	"optimizers",
 	"jesterky",
+	"swarms",
 	"environment-qa",
 	"inventory",
 	"inference",
@@ -428,7 +431,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	const inventoryHost =
 		view.kind === "visuals" ||
 		view.kind === "experiments" ||
-		view.kind === "optimizers" || view.kind === "jesterky" ||
+		view.kind === "optimizers" || view.kind === "jesterky" || view.kind === "swarms" ||
 		view.kind === "environment-qa" ||
 		view.kind === "inventory" ||
 		view.kind === "inference" ||
@@ -503,7 +506,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	// Visuals owns its list/preview split; mounting the dock duplicates the visual.
 	const inventoryOwnsVisualPane = (view.kind === "inventory" && inventoryVisualId === openArtifactId && inventoryVisualId != null)
 		|| (view.kind === "experiments" && experimentSectionOwnsVisualPane)
-		|| view.kind === "optimizers" || view.kind === "jesterky";
+		|| view.kind === "optimizers" || view.kind === "jesterky" || view.kind === "swarms";
 	// Chat visuals belong to the dock. Hiding it must not remount the same
 	// visual as a standalone pane, which made the Hide control ineffective.
 	const visualPaneVisible = Boolean(openArtifact && inventoryOwnsVisualPane);
@@ -668,6 +671,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						/>
 					) : null}
 					{view.kind === "jesterky" ? <JesterkyPage pluginStatuses={pluginStatuses} onRefreshPlugins={refreshPluginStatuses} onBack={leavePluginToRecentChat} onOpenVisuals={() => setView({kind: "visuals"})} /> : null}
+					{view.kind === "swarms" ? <SwarmsPage onBack={leavePluginToRecentChat} onOpenVisual={openVisualRecord} /> : null}
 					{view.kind === "optimizers" ? (
 						<OptimizersPage
                             onEnsureApprovalSession={async () => {

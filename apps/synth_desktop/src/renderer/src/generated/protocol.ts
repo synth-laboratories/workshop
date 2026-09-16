@@ -36,6 +36,9 @@ export const commands = {
 	internSessionSend: (request: InternSessionSendRequest) => typedError<InternSendResult, AppError_Serialize>(__TAURI_INVOKE("intern_session_send", { request })),
 	internSessionControl: (request: InternSessionControlRequest) => typedError<InternControlResult, AppError_Serialize>(__TAURI_INVOKE("intern_session_control", { request })),
 	internSessionEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("intern_session_events_after", { sessionId, afterSequence, limit })),
+	cloudSwarmsSdkCall: (request: SwarmSdkPayload) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("cloud_swarms_sdk_call", { request })),
+	cloudSwarmsWatchStart: (request: SwarmWatchRequest) => typedError<SwarmWatchStarted, AppError_Serialize>(__TAURI_INVOKE("cloud_swarms_watch_start", { request })),
+	cloudSwarmsWatchStop: (subscriptionId: string) => typedError<boolean, AppError_Serialize>(__TAURI_INVOKE("cloud_swarms_watch_stop", { subscriptionId })),
 	dataContainersList: () => typedError<ContainerDeployment[], AppError_Serialize>(__TAURI_INVOKE("data_containers_list")),
 	dataContainersGet: (containerId: string) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_get", { containerId })),
 	dataContainersRegister: (request: ContainerRegisterRequest) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_register", { request })),
@@ -4746,6 +4749,24 @@ export type StreamTransportState =
 "terminal" |
 /**  The most recent observation was a refusal or a transport failure. */
 "error";
+
+export type SwarmSdkPayload = {
+	operation: string,
+	payload: unknown,
+};
+
+export type SwarmWatchRequest = {
+	subscriptionId: string | null,
+	swarmId: string,
+	lastEventId: string | null,
+	transcriptCursor: string | null,
+	timeoutSeconds: number | null,
+};
+
+export type SwarmWatchStarted = {
+	subscriptionId: string,
+	eventChannel: string,
+};
 
 /**
  *  One catalog entry as the renderer receives it — the same numbers the

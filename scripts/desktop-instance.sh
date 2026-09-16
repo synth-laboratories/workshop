@@ -1598,7 +1598,23 @@ dev_instance() {
       SYNTH_MLX_RL_PROJECT_ROOT="${SYNTH_MLX_RL_PROJECT_ROOT:-$REPO_SIBLING_ROOT/synth-mlx-rl}"
     fi
     export SYNTH_MLX_RL_PROJECT_ROOT
-    python3 "$ROOT/scripts/stage-trace-runtime.py"
+    if [[ -z "${SYNTH_AI_PROJECT_ROOT:-}" ]]; then
+      sdk_pin="$(<"$ROOT/apps/synth_desktop/src-tauri/synth-ai-revision.txt")"
+      for candidate_root in \
+        "$REPO_SIBLING_ROOT/synth-ai" \
+        "$REPO_SIBLING_ROOT"/wt-sdk-* \
+        "$REPO_SIBLING_ROOT"/worktrees/syn-*-sdk-*; do
+        [[ -d "$candidate_root/.git" || -f "$candidate_root/.git" ]] || continue
+        if [[ "$(git -C "$candidate_root" rev-parse HEAD 2>/dev/null)" == "$sdk_pin" \
+          && -z "$(git -C "$candidate_root" status --porcelain)" ]]; then
+          SYNTH_AI_PROJECT_ROOT="$candidate_root"
+          break
+        fi
+      done
+    fi
+    [[ -n "${SYNTH_AI_PROJECT_ROOT:-}" ]] || { echo "No clean Synth SDK checkout matches $sdk_pin" >&2; exit 1; }
+    export SYNTH_AI_PROJECT_ROOT
+    python3 "$ROOT/scripts/stage-trace-runtime.py" --synth-ai "$SYNTH_AI_PROJECT_ROOT"
     "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
     "$ROOT/scripts/stage-optimizer-runtime-distribution.sh"
     if [[ ! -x "$ROOT/services/victoria-logs/victoria-logs" ]]; then

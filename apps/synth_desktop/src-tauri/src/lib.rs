@@ -6049,6 +6049,7 @@ pub fn run() {
             app.manage(Arc::new(device_auth::DeviceAuthManager::new()));
             app.manage(Arc::new(codex_oauth::Manager::production()));
             app.manage(Arc::new(account_cloud::AccountCloudClient::open()));
+            app.manage(Arc::new(cloud::swarms::SwarmsSdkManager::default()));
             app.manage(telemetry);
             app.manage(laguna.clone());
             app.manage(optimizer_manager.clone());

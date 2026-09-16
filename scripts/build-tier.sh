@@ -63,6 +63,26 @@ resolve_containers_root() {
 }
 CONTAINERS_ROOT="$(resolve_containers_root)"
 export CONTAINERS_ROOT
+resolve_synth_ai_root() {
+  local requested="${SYNTH_AI_PROJECT_ROOT:-}"
+  if [[ -n "$requested" ]]; then printf '%s' "$requested"; return; fi
+  local pin candidate revision
+  pin="$(<"$APP_DIR/src-tauri/synth-ai-revision.txt")"
+  for candidate in \
+    "$REPO_SIBLING_ROOT/synth-ai" \
+    "$REPO_SIBLING_ROOT"/synth-ai-* \
+    "$REPO_SIBLING_ROOT"/wt-sdk-* \
+    "$REPO_SIBLING_ROOT"/worktrees/syn-*-sdk-*; do
+    [[ -d "$candidate/.git" || -f "$candidate/.git" ]] || continue
+    revision="$(git -C "$candidate" rev-parse HEAD 2>/dev/null || true)"
+    if [[ "$revision" == "$pin" && -z "$(git -C "$candidate" status --porcelain)" ]]; then
+      printf '%s' "$candidate"; return
+    fi
+  done
+  echo "No clean Synth SDK checkout matches $pin" >&2; return 1
+}
+SYNTH_AI_PROJECT_ROOT="$(resolve_synth_ai_root)"
+export SYNTH_AI_PROJECT_ROOT
 if [[ -z "${SYNTH_MLX_RL_PROJECT_ROOT:-}" ]]; then
   mlx_pin="$(rg -o 'MLX_RUNTIME_SOURCE_REVISION: &str = "([0-9a-f]{40})"' --replace '$1' -m1 \
     "$APP_DIR/src-tauri/src/optimizers/mlx_runtime.rs")"
@@ -74,7 +94,7 @@ if [[ -z "${SYNTH_MLX_RL_PROJECT_ROOT:-}" ]]; then
     fi
   done
 fi
-python3 "$ROOT/scripts/stage-trace-runtime.py" --containers "$CONTAINERS_ROOT"
+python3 "$ROOT/scripts/stage-trace-runtime.py" --containers "$CONTAINERS_ROOT" --synth-ai "$SYNTH_AI_PROJECT_ROOT"
 "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
 "$ROOT/scripts/stage-optimizer-runtime-distribution.sh"
 "$ROOT/scripts/build-browser-runtime.sh" assemble

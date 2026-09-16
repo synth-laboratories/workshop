@@ -203,6 +203,8 @@ export default function App() {
 						optimizersActive={c.view.kind === "optimizers"}
 						jesterkyActive={c.view.kind === "jesterky"}
 						onOpenJesterky={() => c.setView({kind:"jesterky"})}
+						swarmsActive={c.view.kind === "swarms"}
+						onOpenSwarms={() => c.setView({kind:"swarms"})}
 						environmentQaActive={c.view.kind === "environment-qa"}
 						computerUseActive={c.view.kind === "computer-use"}
 						visiblePluginIds={c.preferences.navigation.visiblePluginIds}

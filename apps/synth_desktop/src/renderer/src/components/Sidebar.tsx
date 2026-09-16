@@ -43,6 +43,7 @@ type Props = {
 	experimentsActive?: boolean;
 	optimizersActive?: boolean;
 	jesterkyActive?: boolean;
+	swarmsActive?: boolean;
 	environmentQaActive?: boolean;
 	computerUseActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
@@ -65,6 +66,7 @@ type Props = {
 	onOpenExperiments: () => void;
 	onOpenOptimizers: () => void;
 	onOpenJesterky?: () => void;
+	onOpenSwarms?: () => void;
 	onOpenEnvironmentQa?: () => void;
 	onOpenComputerUse: () => void;
 	onOpenPlugins: () => void;
@@ -234,6 +236,7 @@ const PLUGIN_NAV_ICONS: Record<PluginNavEntry["id"], () => ReactElement> = {
 	experiments: IconOptimizers,
 	optimizers: IconOptimizers,
 	jesterky: IconOptimizers,
+	swarms: IconOptimizers,
 	"environment-qa": IconReports,
 	inventory: IconInventory,
 	inference: IconInference,
@@ -253,6 +256,7 @@ export function Sidebar({
 	experimentsActive = false,
 	optimizersActive = false,
 	jesterkyActive = false,
+	swarmsActive = false,
 	environmentQaActive = false,
 	computerUseActive = false,
 	workingChatIds = new Set<string>(),
@@ -270,6 +274,7 @@ export function Sidebar({
 	onOpenExperiments,
 	onOpenOptimizers,
 	onOpenJesterky = () => {},
+	onOpenSwarms = () => {},
 	onOpenEnvironmentQa = () => {},
 	onOpenComputerUse,
 	onOpenPlugins,
@@ -382,6 +387,7 @@ export function Sidebar({
 		experiments: experimentsActive,
 		optimizers: optimizersActive,
 		jesterky: jesterkyActive,
+		swarms: swarmsActive,
 		"environment-qa": environmentQaActive,
 		inventory: inventoryActive,
 		inference: inferenceActive,
@@ -393,6 +399,7 @@ export function Sidebar({
 		experiments: onOpenExperiments,
 		optimizers: onOpenOptimizers,
 		jesterky: onOpenJesterky,
+		swarms: onOpenSwarms,
 		"environment-qa": onOpenEnvironmentQa,
 		inventory: onOpenInventory,
 		inference: onOpenInference,

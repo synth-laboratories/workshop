@@ -1,0 +1,26 @@
+{
+  "bindings": {
+    "schemaVersion": "synth.visual-bindings.v1",
+    "inputs": [
+      {
+        "input": "stream",
+        "kind": "inline",
+        "schema": "synth.visual.live_eval_events.v1",
+        "data": {
+          "events": [
+            {"run_id":"swarm-local-fixture","kind":"snapshot","sequence":"1","ts":"2026-09-16T12:00:00Z","payload":{"status":"running","event":"swarm_started"}},
+            {"run_id":"swarm-local-fixture","kind":"transcript","sequence":"2","ts":"2026-09-16T12:00:01Z","payload":{"actor_id":"researcher-1","event":"task_started","summary":"Inspecting the local fixture."}},
+            {"run_id":"swarm-local-fixture","kind":"heartbeat","sequence":"3","ts":"2026-09-16T12:00:02Z","payload":{"actor_id":"researcher-1","event":"evidence_found","spend_usd":0,"tokens":120}}
+          ]
+        }
+      },
+      {
+        "input": "swarm",
+        "kind": "inline",
+        "schema": "synth.research-swarm-summary.v1",
+        "data": {"swarmId":"swarm-local-fixture","objective":"Prove the local-slot SDK path without provider spend.","status":"running","maxSpendUsd":0,"maxConcurrentActors":2,"model":"gpt-5.6-luna","provider":"auto"}
+      }
+    ]
+  },
+  "props": {"title":"Local-slot swarm fixture"}
+}

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "live.synth_swarm.v1",
+  "title": "Synth swarm live",
+  "genre": "live",
+  "family": "swarms",
+  "version": "1.0.0",
+  "description": "Live, resumable view of a bounded Synth Cloud swarm with status, actors, usage, transcript activity, and retained replay evidence.",
+  "accent": "#6558D3",
+  "shell": "shell.tsx",
+  "tags": ["live", "swarms", "cloud", "sdk", "sse", "research"],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": ["idle", "declared", "replaying", "error", "connecting", "reconnecting"],
+      "minimumSemanticEventCount": 1,
+      "minimumTransportEnvelopeCount": 1,
+      "requireTerminal": false
+    }
+  },
+  "inputs": [
+    {
+      "name": "stream",
+      "description": "Host-forwarded Synth Swarms SDK SSE envelopes. Credentials never enter the binding.",
+      "accepts": ["live_sse", "fixture", "inline"],
+      "required": true,
+      "schema": "synth.visual.live_eval_events.v1"
+    },
+    {
+      "name": "swarm",
+      "description": "Sanitized swarm identity, objective, limits, and current lifecycle summary.",
+      "accepts": ["inline", "fixture", "local_cas"],
+      "required": true,
+      "schema": "synth.research-swarm-summary.v1"
+    }
+  ]
+}

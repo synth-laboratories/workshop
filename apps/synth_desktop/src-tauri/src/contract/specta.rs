@@ -118,6 +118,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::intern_session_send,
             crate::intern_session_control,
             crate::intern_session_events_after,
+            crate::cloud::swarms::cloud_swarms_sdk_call,
+            crate::cloud::swarms::cloud_swarms_watch_start,
+            crate::cloud::swarms::cloud_swarms_watch_stop,
             crate::data_containers_list,
             crate::data_containers_get,
             crate::data_containers_register,
@@ -631,8 +634,9 @@ mod tests {
         // 367 → 368: exact-picker source approval with optional conversation attachment.
         // 368 → 371: host-scoped live workspace status, directory listing,
         // and bounded read-only file preview.
+        // 371 → 374: Synth SDK swarm call plus resumable SSE watch start/stop.
         assert_eq!(
-            exported, 371,
+            exported, 374,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

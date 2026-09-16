@@ -51,6 +51,7 @@ const EXPECTED_IDS = [
   "live.eval_stream.v1",
   "live.harbor_eval.v1",
   "live.intern_acceptance.v1",
+  "live.synth_swarm.v1",
   "model.compare.v1",
   "optimizer.cispo.live.v1",
   "optimizer.eval.live.v1",
@@ -128,6 +129,12 @@ test("visuals package exposes the registered templates", () => {
         (meta.components ?? []).map((row) => row.id).sort(),
         ["detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
       );
+    }
+    if (id === "live.synth_swarm.v1") {
+      assert.deepEqual(declaredInputs(meta).map((input) => input.name), ["stream", "swarm"]);
+      assert.equal(meta.inputs[0].schema, "synth.visual.live_eval_events.v1");
+      assert.equal(meta.inputs[1].schema, "synth.research-swarm-summary.v1");
+      assert.equal(meta.observationContract.readiness.requireTerminal, false);
     }
     if (id === "analysis.annotation_workbench.v1") {
       assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["evidence", "trace", "rubric"]);
