@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "workflow.jesterky.v1",
+  "title": "Jesterky workflow",
+  "genre": "workflow",
+  "family": "jesterky",
+  "version": "1.0.0",
+  "description": "Live and retained Jesterky workflow graph with structural transitions, map shards, budgets, and replay identity.",
+  "accent": "#7C5CFC",
+  "shell": "shell.tsx",
+  "tags": ["jesterky", "workflow", "live", "replay", "swarm"],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": ["idle", "declared", "replaying", "error", "connecting", "reconnecting"],
+      "minimumSemanticEventCount": 1,
+      "minimumTransportEnvelopeCount": 1,
+      "requireTerminal": false
+    }
+  },
+  "inputs": [
+    {
+      "name": "stream",
+      "description": "Declared live or retained stream of sanitized Jesterky transition metadata.",
+      "accepts": ["live_sse", "fixture", "inline"],
+      "required": false,
+      "schema": "synth.trace-stream-event.v1"
+    },
+    {
+      "name": "workflow",
+      "description": "Sanitized workflow topology and retained run summary; never raw prompts or outputs.",
+      "accepts": ["inline", "fixture", "local_cas"],
+      "required": true,
+      "schema": "synth.jesterky-workflow.v1"
+    }
+  ]
+}

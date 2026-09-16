@@ -42,14 +42,14 @@ export function JesterkyPage({ pluginStatuses, onRefreshPlugins, onBack, onOpenV
   return <section className="ws-page" data-testid="jesterky-page">
     <button className="ws-back" onClick={onBack}>← Back</button>
     <h1 className="ws-title">Jesterky</h1>
-    <p className="ws-lede">Optional analysis for long traces and teams of agents.</p>
+    <p className="ws-lede">Replayable local workflows, live program visuals, and optional analysis for long traces and teams of agents.</p>
     <p data-testid="jesterky-phase">{pluginPresentation(status).label ?? "Loading status"}{installed ? ` · v${status?.installedVersion}` : ""}</p>
     <p>{status?.detail}</p>
     <div className="plugin-catalog-actions">
       <button className="ws-btn" disabled={busy || !status} onClick={() => void manage(installed ? "update" : "install")}>{installed ? "Update runtime" : "Download Jesterky"}</button>
       {installed && <button className="ws-btn" disabled={busy} onClick={() => void manage(status?.enabled ? "disable" : "enable")}>{status?.enabled ? "Disable" : "Enable"}</button>}
       {installed && <button className="ws-btn" disabled={busy} onClick={() => void manage("remove")}>Remove runtime</button>}
-      <button className="ws-btn" onClick={onOpenVisuals}>Open trace visuals</button>
+      <button className="ws-btn" onClick={onOpenVisuals}>Open Jesterky visuals</button>
     </div>
     <p role="status">{message}</p>
     <fieldset>
@@ -60,6 +60,15 @@ export function JesterkyPage({ pluginStatuses, onRefreshPlugins, onBack, onOpenV
         <option value="selected_evidence">Selected events only</option>
       </select></label>
       <p>This default applies when an agent prepares Jesterky analysis from your selection. Analysis is started separately with its own budget; evaluations are not rerun.</p>
+    </fieldset>
+    <fieldset>
+      <legend>Run local workflows</legend>
+      <p>Agents can use the installed runtime for explicitly scoped local Jesterky specs. Workshop’s workflow visual follows safe transition metadata live, then retains the sealed program graph for replay.</p>
+      <ul>
+        <li>Local fake-actor runs are deterministic and free.</li>
+        <li>Provider-backed actors keep their normal credential and aggregate cost controls.</li>
+        <li>Raw prompts, outputs, and credentials are not copied into the workflow visual.</li>
+      </ul>
     </fieldset>
     <ul>
       <li>Analysis defaults to Luna with low effort, independently of the model being evaluated.</li>

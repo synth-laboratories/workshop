@@ -71,6 +71,7 @@ const EXPECTED_IDS = [
   "trace.catalog.v1",
   "trace.rollout_inspector.v1",
   "trace.workbench.v1",
+  "workflow.jesterky.v1",
 ];
 
 test("visuals package exposes the registered templates", () => {
@@ -98,9 +99,9 @@ test("visuals package exposes the registered templates", () => {
       // reopened terminal run has no stream left to join.
       assert.deepEqual(
         declaredInputs(meta).map((slot) => slot.name),
-        ["stream", "experiment", "optimizer_run"]
+        ["stream", "workspace", "experiment", "optimizer_run"]
       );
-      assert.equal(declaredInputs(meta)[1].schema, "synth.experiment.overview.v1");
+      assert.equal(declaredInputs(meta)[2].schema, "synth.experiment.overview.v1");
       assert.ok(declaredInputs(meta).every((slot) => slot.required !== true));
     }
     if (id === "live.annotated_rollouts.v1") {

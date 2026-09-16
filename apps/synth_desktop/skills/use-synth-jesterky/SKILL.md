@@ -7,6 +7,18 @@ Use the optional Jesterky plugin for bulk trace analysis. `plugin_manage` with
 `plugin_id: jesterky` reports status, installs the catalog runtime, and exposes
 capabilities. Never invent download URLs or substitute a PATH executable.
 
+For an explicitly requested local workflow or swarm, first read plugin
+capabilities and use only its verified `executable`. Validate the chosen spec,
+declare actor/model, concurrency, timeout, and aggregate paid bound before a
+provider-backed run. Fake-actor runs are deterministic and free. Write the
+native manifest and `--events-out` NDJSON under the scoped project/artifact
+directory. Start `scripts/jesterky-live-visual.mjs` with those exact spec,
+events, manifest, visual id, and Workshop connection-file paths before launch;
+it opens `workflow.jesterky.v1`, streams structural transitions, and seals the
+retained visual when the manifest lands. The bridge deliberately omits raw
+prompts and outputs. Replay is free only when reading the sealed manifest with
+`jesterky replay`; changing actor/model/spec starts a new execution.
+
 1. Use `trace_manage` with a `synth.trace-query.v2` query and existing `evalJobIds`.
    Query rewards/configuration without requiring annotations or Jesterky.
 2. Page the saved snapshot. `jesterky_prepare` selects exact result IDs from the

@@ -70,7 +70,7 @@ fn phase(value: &'static str) {
         *phase = Some(value);
     }
 }
-const TEMPLATES: &[&str] = &["trace.catalog.v1", "trace.rollout_inspector.v1"];
+const TEMPLATES: &[&str] = &["trace.catalog.v1", "trace.rollout_inspector.v1", "workflow.jesterky.v1"];
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Artifact {
