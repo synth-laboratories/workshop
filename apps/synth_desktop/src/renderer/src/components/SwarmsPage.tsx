@@ -7,10 +7,7 @@ import { bridges } from "../runtime/desktopBridge";
 type Props = { onBack: () => void; onOpenVisual: (visual: VisualRecord) => void };
 const SWARM_VISUAL_TEMPLATE = "live.synth_swarm.v1";
 const SWARM_AGENT_MODEL = "gpt-5.6-luna";
-// Cloud swarms use the SDK-native harness so the control plane can inject the
-// selected provider/model without depending on a developer's Codex login in
-// the actor container.
-const SWARM_AGENT_HARNESS = "opencode_sdk";
+const SWARM_AGENT_HARNESS = "codex";
 
 function swarmIdOf(value: Record<string, unknown> | null): string | null {
 	const candidate = value?.swarm_id ?? value?.run_id;
