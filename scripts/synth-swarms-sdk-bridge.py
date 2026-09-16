@@ -108,7 +108,7 @@ def _execution_target(value: Any):
     raise ValueError("executionTarget.kind must be platform_resolved or bound_runtime")
 
 
-def _spec(value: Any) -> SwarmSpec:
+def _spec(value: Any, *, hosted: bool = False) -> SwarmSpec:
     if not isinstance(value, Mapping):
         raise ValueError("spec must be an object")
     allowed = {
@@ -119,7 +119,12 @@ def _spec(value: Any) -> SwarmSpec:
     unknown = set(value) - allowed
     if unknown:
         raise ValueError(f"unsupported spec fields: {', '.join(sorted(unknown))}")
-    providers = value.get("provider")
+    # Public hosted runbooks own the exact actor model, harness, and provider
+    # through their reviewed preset. Raw selections are an internal/local
+    # control and the production API rejects them. Keep the explicit fields on
+    # loopback so Workshop's local-slot QA still proves the Codex app-server
+    # path without weakening the public API boundary.
+    providers = None if hosted else value.get("provider")
     if isinstance(providers, list):
         provider: Any = tuple(InferenceProvider(item) for item in providers)
     elif providers is None:
@@ -131,8 +136,8 @@ def _spec(value: Any) -> SwarmSpec:
         work_mode=WorkMode(value["workMode"]) if value.get("workMode") else None,
         runbook=Runbook(value["runbook"]) if value.get("runbook") else None,
         timebox_seconds=value.get("timeboxSeconds"),
-        agent_model=ActiveActorModel(value["agentModel"]) if value.get("agentModel") else None,
-        agent_harness=ActorHarness(value["agentHarness"]) if value.get("agentHarness") else None,
+        agent_model=(ActiveActorModel(value["agentModel"]) if value.get("agentModel") and not hosted else None),
+        agent_harness=(ActorHarness(value["agentHarness"]) if value.get("agentHarness") and not hosted else None),
         provider=provider,
         required_capabilities=tuple(value.get("requiredCapabilities") or ()),
         idempotency_key=_optional_text(value.get("idempotencyKey"), "spec.idempotencyKey"),
@@ -143,6 +148,7 @@ def _spec(value: Any) -> SwarmSpec:
 
 async def _run(operation: str, request: dict[str, Any]) -> None:
     base_url = _required_text(request.get("baseUrl"), "baseUrl")
+    hosted = not base_url.startswith(("http://127.0.0.1", "http://localhost", "http://[::1]"))
     api_key = _required_text(request.get("apiKey"), "apiKey")
     payload = request.get("payload") or {}
     if not isinstance(payload, Mapping):
@@ -163,10 +169,10 @@ async def _run(operation: str, request: dict[str, Any]) -> None:
                 ],
             }
         elif operation == "preflight":
-            result = _wire(await api.preflight(_spec(payload.get("spec")), project_id=project_id))
+            result = _wire(await api.preflight(_spec(payload.get("spec"), hosted=hosted), project_id=project_id))
         elif operation == "create":
             handle = await api.create(
-                _spec(payload.get("spec")),
+                _spec(payload.get("spec"), hosted=hosted),
                 project_id=project_id,
                 runtime_binding_context_id=payload.get("runtimeBindingContextId"),
             )

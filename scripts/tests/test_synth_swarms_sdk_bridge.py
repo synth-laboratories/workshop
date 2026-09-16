@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import unittest
+import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -140,6 +141,27 @@ class BridgeLocalSlotTest(unittest.TestCase):
         self.assertEqual(trigger["body"]["limit"]["max_spend_usd"], 0)
         stream = next(item for item in SlotHandler.requests if item["method"] == "GET")
         self.assertEqual(stream["last_event_id"], "evt-1")
+
+    def test_hosted_spec_defers_model_harness_and_provider_to_backend_preset(self):
+        sys.path.insert(0, str(SDK_ROOT))
+        spec = importlib.util.spec_from_file_location("workshop_swarms_bridge", BRIDGE)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        value = module._spec({
+            "objective": "Exercise the hosted Workshop SDK path",
+            "runbook": "lite",
+            "agentModel": "gpt-5.6-luna",
+            "agentHarness": "codex",
+            "provider": "auto",
+            "executionTarget": {"kind": "platform_resolved"},
+        }, hosted=True)
+        wire = value.to_wire()
+        self.assertNotIn("agent_model", wire)
+        self.assertNotIn("agent_harness", wire)
+        self.assertNotIn("provider", wire)
+        self.assertEqual(wire["runbook"], "lite")
 
 
 if __name__ == "__main__":
