@@ -31,4 +31,13 @@ test("Jesterky workflow renders program state, shards, and retained identity", a
   await viewer.getByRole("button", { name: /research/i }).click();
   await expect(viewer.getByLabel("Selected node")).toContainText("Actor calls");
   await expect(viewer.getByLabel("Recent transitions")).toContainText("map_item_started");
+  await page.setViewportSize({ width: 900, height: 800 });
+  const compactOverflow = await viewer.locator(".jk-graph").evaluate((graph) => {
+    const parent = graph.getBoundingClientRect();
+    return { clientWidth: graph.clientWidth, scrollWidth: graph.scrollWidth,
+      nodes: [...graph.children].map((node) => { const rect = node.getBoundingClientRect();
+        return { left: rect.left - parent.left, right: rect.right - parent.left }; }) };
+  });
+  expect(compactOverflow.scrollWidth).toBeLessThanOrEqual(compactOverflow.clientWidth + 1);
+  expect(compactOverflow.nodes.every((node) => node.left >= 0 && node.right <= compactOverflow.clientWidth + 1)).toBe(true);
 });

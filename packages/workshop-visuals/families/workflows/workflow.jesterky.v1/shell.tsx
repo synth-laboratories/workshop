@@ -52,7 +52,7 @@ export function Shell(props:ShellProps){
       <div className="jk-stat"><small>Transitions</small><strong>{transitions.length}{workflow.eventCount?` / ${workflow.eventCount}`:""}</strong></div>
       <div className="jk-stat"><small>Recorded calls</small><strong>{workflow.recordedCalls??[...states.values()].reduce((sum,row)=>sum+row.actorCalls,0)}</strong></div>
     </div>
-    <section className="sv-section" aria-label="Workflow graph"><div className="sv-section-head"><h3>Program</h3><span className="sv-mono">{workflow.runId??workflow.specHash?.slice(0,12)??"awaiting run"}</span></div>
+    <section className="sv-section jk-program" aria-label="Workflow graph"><div className="sv-section-head"><h3>Program</h3><span className="sv-mono">{workflow.runId??workflow.specHash?.slice(0,12)??"awaiting run"}</span></div>
       <div className="jk-graph">{nodes.map((node)=>{const state=states.get(node.id)??{state:"queued",events:0,actorCalls:0,shards:new Map()};return <button type="button" className="jk-node" key={node.id} data-state={state.state} data-selected={selected===node.id} onClick={()=>setSelected(node.id)}>
         <span className="jk-node-head"><strong>{node.id}</strong><span className="jk-state">{state.state}</span></span><p>{node.kind}{node.actor?` · ${node.actor}`:""}{node.concurrency?` · ×${node.concurrency}`:""}</p>
         {state.shards.size>0?<span className="jk-shards" aria-label={`${state.shards.size} shards`}>{[...state.shards].sort(([a],[b])=>a-b).map(([id,value])=><span key={id} className="jk-shard" data-state={value} title={`shard ${id}: ${value}`}/>)}</span>:null}
