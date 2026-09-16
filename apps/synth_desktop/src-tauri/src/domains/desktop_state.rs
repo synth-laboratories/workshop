@@ -86,7 +86,11 @@ pub fn write(core: &CoreRuntime, input: Write, agent: bool) -> Result<Entry> {
         anyhow::ensure!(revision == input.expected_revision, "desktop_state_conflict: read the current revision before retrying");
         if input.key == "synth.preferences.v1" {
             let next: serde_json::Value = serde_json::from_str(input.value.as_deref().ok_or_else(|| anyhow::anyhow!("preferences cannot be deleted"))?)?;
-            anyhow::ensure!(next.is_object() && next["schemaVersion"] == defaults()["schemaVersion"], "preferences must use the current desktop schemaVersion 6");
+            anyhow::ensure!(
+                next.is_object() && next["schemaVersion"] == defaults()["schemaVersion"],
+                "preferences must use the current desktop schemaVersion {}",
+                defaults()["schemaVersion"]
+            );
             if agent {
                 let previous: serde_json::Value = current.as_ref().and_then(|entry| entry.value.as_deref()).map(serde_json::from_str).transpose()?.unwrap_or_else(defaults);
                 for key in ["approvalMode", "approvalPolicy", "sandboxMode"] {
