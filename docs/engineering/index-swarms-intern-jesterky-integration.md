@@ -1,4 +1,4 @@
-# Workshop: Index, Swarms, and Intern integration
+# Workshop: Index, Swarms, Intern, and Jesterky integration
 
 **Status date:** 2026-09-16  
 **Target baseline:** local `dev` / `v0.11.1` at `bf09f473`  
@@ -7,15 +7,17 @@
 ## Executive summary
 
 Workshop already has meaningful implementation work for Synth Index, Swarms,
-and Intern, but it is split across divergent branches. The current local
-`dev` and `v0.11.1` contain the live Harbor workspace/tool-stream work and are
+Intern, and Jesterky, but it is split across divergent branches and adjacent
+repositories. The current local `dev` and `v0.11.1` contain the live Harbor
+workspace/tool-stream work and are
 clean, but they do not contain the product work described below.
 
 | Product | Existing implementation | Current conclusion |
 | --- | --- | --- |
 | **Index** | Rust contribution client/export pipeline and a Reports “Prepare Contribution” panel on `codex/synth-index-fast-mvp` | A credible contribution MVP exists, but it is not on current `dev` and needs reconciliation and release QA. |
-| **Intern** | Rust sync/async client, pollers, ingestion, scoped runtime, durable mailbox, and Workshop panel on `codex/swarms-intern-index-consolidated-20260914` | The Desktop transport is the most complete of the three. Real worker-produced staging output remains the principal external qualification gate. |
+| **Intern** | Rust sync/async client, pollers, ingestion, scoped runtime, durable mailbox, and Workshop panel on `codex/swarms-intern-index-consolidated-20260914` | The Desktop transport is the most complete of the four. Real worker-produced staging output remains the principal external qualification gate. |
 | **Swarms** | Backend contract pin, durable swarm checkpoint primitives, rollout listing contract, and shared benchmark observations on the consolidated branch | Foundations and read-side visualization exist. A first-class launch/control/recovery workspace does not yet exist. |
+| **Jesterky** | Public record/replay runtime, run manifests, Trace V5 import adapters, transition events, and experimental optimizer/annotation integrations | The runtime and evidence vocabulary exist outside the current Workshop release. Workshop needs a first-class workflow/replay visual and an admitted execution adapter. |
 
 The branch named `codex/swarms-intern-index-consolidated-20260914` does **not**
 contain the separate Index contribution MVP commit. “Index” in parts of that
@@ -24,15 +26,15 @@ must therefore be integrated explicitly from `codex/synth-index-fast-mvp`.
 
 ## Product boundary
 
-The three products are related, but they must keep distinct authorities:
+The four products are related, but they must keep distinct authorities:
 
 ```text
-Intern                         Swarms                         Index
-cloud agent mailbox           multi-rollout execution       contribution publication
-sync + background work        pool/run orchestration        draft/review/release flow
-          \                         |                         /
-           \                        |                        /
-            +---- Workshop Rust CoreRuntime + journal -----+
+Intern                    Swarms                    Jesterky                   Index
+cloud agent mailbox      multi-rollout execution  replayable workflow        contribution publication
+sync + background work   pool/run orchestration   program + trace evidence   draft/review/release flow
+          \                    |                       |                         /
+           \                   |                       |                        /
+            +----------- Workshop Rust CoreRuntime + journal -----------------+
                          |
                          +-- chat/session projections
                          +-- right-panel live visuals
@@ -44,10 +46,13 @@ sync + background work        pool/run orchestration        draft/review/release
   idempotency, account scope, and journal commits.
 - React projects typed state. It never calls Synth cloud endpoints directly
   and never owns a second mailbox, swarm ledger, or publication state machine.
-- Codex, Intern, Swarms, evals, and Harbor may all produce evidence, but they
-  converge on the same session/run journal and visual binding contracts.
+- Codex, Intern, Swarms, Jesterky, evals, and Harbor may all produce evidence,
+  but they converge on the same session/run journal and visual binding
+  contracts.
 - Index publishes selected, reviewed contribution assets. It must never infer
   that all project files are eligible for upload.
+- Jesterky is a workflow program and record/replay authority. It is not an
+  Intern mode, a second mailbox, or a synonym for Swarms.
 
 ## Current baseline
 
@@ -65,7 +70,8 @@ This baseline contains:
 - retained inline evidence after the producer exits;
 - coherent native pixel capture of live-stream evidence.
 
-It does not yet contain the feature branches catalogued below.
+It does not yet contain the feature branches or Jesterky adapter/visual work
+catalogued below.
 
 ## Existing Index work
 
@@ -219,6 +225,67 @@ The current work is not a complete Swarms integration. It still needs:
 - selection of a rollout into the right-panel trace/workspace visual;
 - terminal retained evidence and Index handoff.
 
+## Existing Jesterky work
+
+### Source and identity
+
+- Public runtime: `synth-laboratories/jesterky`
+- Package surfaces: `jesterky-cli` on crates.io and `jesterky` on PyPI
+- Native manifest vocabulary: `jesterky.run-manifest.v1`
+- Trace workload identity: `WorkloadKind::JESTERKY`
+- Application event family: `jesterky.transition`
+
+Jesterky runs dynamic agent workflows as replayable programs. Its durable
+object is the workflow run/manifest and its transition evidence—not a chat
+mailbox. Workshop must preserve that identity even when Intern launches a
+workflow or Swarms executes many Jesterky programs in parallel.
+
+### Existing adjacent integration
+
+The surrounding Synth repositories already include:
+
+- native Trace V5 import of Jesterky run manifests;
+- application-event adapters for Jesterky transitions;
+- process-tree evidence projections used by GEPA proposer workspaces;
+- manifest summaries, trace rows, optimizer triples, and evidence references;
+- an experimental Jesterky runner for map/reduce trace annotations;
+- actor/model/concurrency/timeout bounds for that runner;
+- proof workflows for launch, inspect, replay, and compare;
+- deterministic comparison evidence, including `node_diff_count=0` cases.
+
+Earlier Workshop release notes correctly kept Jesterky V5 annotations disabled
+because the V4→V5 transition and annotation-policy lane were not release
+qualified. Those old deferrals are evidence of the required gate, not a reason
+to omit the product now.
+
+### Missing first-class Workshop integration
+
+- a capability probe for the installed Jesterky CLI/runtime and supported
+  manifest version;
+- an admitted, bounded execution adapter with typed actor/model/provider,
+  concurrency, timeout, and spend limits;
+- cursor-safe live ingestion of workflow transitions;
+- durable run/manifest identity and restart reconciliation;
+- a first-class workflow visual instead of flattening transitions into a
+  transcript;
+- deterministic replay and original-versus-replay comparison;
+- node-level input/output/evidence inspection with redaction;
+- exact links from workflow nodes to Trace V5 spans, artifacts, verifier
+  results, and workspace files;
+- clear failure/refusal states for invalid manifests, unsupported versions,
+  unavailable actors, timeouts, and partial replays;
+- installed-app proof for launch → inspect → replay → compare.
+
+### Relationship to Intern and Swarms
+
+- **Intern may author, launch, supervise, pause, or explain a Jesterky run.**
+  Intern remains the mailbox authority; Jesterky remains the workflow authority.
+- **Swarms may execute many Jesterky workflows or use one inside each rollout.**
+  Swarms owns aggregate orchestration; each Jesterky run owns its program graph
+  and replay evidence.
+- **Index may publish a selected Jesterky manifest, report, traces, and replay
+  proof.** Index does not implicitly publish the entire workspace.
+
 ## Target Workshop experience
 
 ### Intern
@@ -240,6 +307,21 @@ The current work is not a complete Swarms integration. It still needs:
 - Keep aggregate state and individual rollout evidence distinct.
 - On completion, retain a sealed run summary and every referenced rollout cut.
 
+### Jesterky
+
+- Open a clean workflow graph with the active node and traversed edges visible
+  while execution is live.
+- Scrub backward and forward through transitions without mutating the run.
+- Select a node to inspect its bounded inputs, outputs, tools, artifacts,
+  timing, retry state, and exact Trace V5 evidence.
+- Replay the same manifest with an explicitly selected actor/model/runtime.
+- Compare original and replay graphs, highlighting only changed nodes, edges,
+  outputs, scores, or stop reasons.
+- State deterministic equality directly when supported; do not infer it from
+  visually similar output.
+- Retain the manifest and evidence cut so a reopened visual needs no running
+  sidecar.
+
 ### Index
 
 - From Reports or a sealed run, choose **Prepare Contribution**.
@@ -252,14 +334,73 @@ The current work is not a complete Swarms integration. It still needs:
 ### Combined journey
 
 ```text
-Intern or local Codex defines the experiment
-  → Swarms executes bounded parallel rollouts
-  → Workshop streams lane/tool/workspace evidence live
+Intern or local Codex defines the experiment or workflow
+  → Jesterky records the executable program and transitions
+  → Swarms optionally executes bounded parallel workflow/rollout lanes
+  → Workshop streams lane/node/tool/workspace evidence live
   → verifier and usage settle
   → report/visuals retain exact evidence cuts
   → user prepares a selected Index contribution
   → private draft → explicit submit → independent review status
 ```
+
+## Right-panel visual system
+
+Beautiful visuals are a functional requirement: these products are too
+structured to collapse into chat text or a generic table. They should share
+Workshop chrome, evidence contracts, capture behavior, and selection state,
+while retaining product-specific information architecture.
+
+### Proposed visual families
+
+| Template | Purpose | Primary interaction |
+| --- | --- | --- |
+| `live.swarm_run.v1` | Live aggregate swarm status, workers, rollout lanes, budget, usage, and failures | Select/cycle a rollout and follow its live evidence |
+| `analysis.swarm_compare.v1` | Compare selected rollouts or policy variants | Pin strongest/weakest or baseline/candidate lanes |
+| `workflow.jesterky.v1` | Live and retained workflow graph | Select a node or scrub to a transition |
+| `workflow.jesterky_replay_diff.v1` | Original-versus-replay comparison | Highlight changed nodes/edges and inspect exact evidence |
+
+### Swarms composition
+
+The default Swarms panel should feel like a compact mission-control surface:
+
+1. A restrained header shows lifecycle, completed/planned rollouts,
+   concurrency, provisional/final spend, and aggregate score status.
+2. A topology or lane strip shows workers and rollout state without giving
+   every peer a decorative color.
+3. The selected rollout occupies the main evidence region with tabs for trace,
+   workspace, tools, verifier, and retained artifacts.
+4. Keyboard next/previous controls cycle live lanes while preserving the
+   current evidence tab.
+5. Terminal state replaces ephemeral bindings with retained evidence cuts.
+
+The visual must distinguish aggregate swarm status from an individual rollout.
+One worker failure must not silently mark the entire swarm failed, and one
+successful rollout must not imply aggregate success.
+
+### Jesterky composition
+
+The default Jesterky panel should feel like a time-travel debugger:
+
+1. A readable workflow DAG dominates the panel. The active node, completed
+   path, queued branches, fan-out/fan-in, retry, and failure states use labels
+   and shapes as well as color.
+2. A transition scrubber moves through retained states without rerunning code.
+3. Selecting a node opens its exact input/output contract and evidence in a
+   subordinate inspector; raw secrets and unbounded tool output never render.
+4. Replay mode keeps the original graph as the reference and overlays changed
+   nodes/edges rather than showing two unrelated diagrams.
+5. The comparison summary reports manifest/runtime identity, deterministic
+   equality when proven, `node_diff_count`, score changes, and stop reasons.
+
+### Responsive behavior
+
+- Wide panel: graph/topology plus subordinate evidence inspector.
+- Standard right panel: dominant graph/lane view above a tabbed inspector.
+- Narrow panel: list/tree projection with the same selection and evidence;
+  never shrink node labels until unreadable.
+- Native pixel capture freezes one authoritative cursor/evidence cut and fails
+  boundedly rather than certifying a connecting or partially repainted frame.
 
 ## Integration strategy
 
@@ -307,7 +448,17 @@ Exit gate: a multi-rollout CyberneticsBench run streams multiple lanes, cycles
 their right-panel evidence live, respects budget/concurrency bounds, recovers
 after restart, and seals exact verifier/usage results.
 
-### Phase 4 — Index
+### Phase 4 — Jesterky
+
+Add capability discovery and a bounded Jesterky execution adapter. Ingest
+native manifests and transitions into the shared journal, then ship workflow
+and replay-diff visual families on retained Trace V5 evidence.
+
+Exit gate: an installed-app run can launch a fixture and a provider-backed
+workflow, stream node transitions, survive restart, replay the sealed manifest,
+and compare original/replay without invented determinism or leaked tool data.
+
+### Phase 5 — Index
 
 Port the contribution MVP by hand onto the current generated command and
 Reports architecture. Add durable receipts and account-scope fencing.
@@ -315,12 +466,13 @@ Reports architecture. Add durable receipts and account-scope fencing.
 Exit gate: preview makes zero network calls; private upload is resumable and
 byte/digest exact; submit is separate; status reflects independent review.
 
-### Phase 5 — Cross-product polish
+### Phase 6 — Cross-product polish
 
 - Consistent nouns and status colors across mailbox, swarm, eval, report, and
   contribution surfaces.
 - One right-panel visual host and one retained evidence grammar.
-- Deep links from swarm → rollout → trace/workspace → report → contribution.
+- Deep links from Intern → swarm → rollout → Jesterky workflow/node →
+  trace/workspace → report → contribution.
 - Accessibility, keyboard navigation, narrow-panel behavior, and native pixel
   capture for every live surface.
 - Remove obsolete transitional adapters only after evidence-backed parity.
@@ -332,8 +484,9 @@ byte/digest exact; submit is separate; status reflects independent review.
 | Shared cloud | identity generation, transaction rollback, outbox retry, cursor fencing, redaction | signed-out boot; sign-in/out/in with no cross-account rows |
 | Intern | fixture client, dedupe, receipts, restart, singleton background binding | real sync response; background checkpoint/result; intervene; pause/resume/cancel; restart |
 | Swarms | contract decode, bounded launch, cursor recovery, worker failure, usage/settlement, terminal seal | multi-rollout CyberneticsBench run with live lane cycling and exact final scores |
+| Jesterky | manifest/version validation, transition fold, restart, timeout/refusal, node evidence, deterministic diff | launch fixture and paid workflow; inspect; replay; compare; verify retained graph after restart |
 | Index | path containment, selected-file only, digest checks, preview offline, idempotent retry, audience/rights validation | private draft upload, restart/resume, explicit submit, reviewer status |
-| Visuals | replay gaps/conflicts, no invented missing values, capture freeze, retained evidence | right panel updates during execution; native pixel capture contains live rows; reopen works without producer |
+| Visuals | replay gaps/conflicts, no invented missing values, graph/lane selection, capture freeze, retained evidence | right panel updates during execution; native pixel capture contains live lanes/nodes; reopen works without producer |
 | Security | log redaction, bounded errors, no renderer credentials, account scope | inspect process args/logs/storage; confirm no keys or raw tool content leaked |
 
 ### Required non-regressions
@@ -353,8 +506,8 @@ byte/digest exact; submit is separate; status reflects independent review.
 - Workshop must present the aggregate maximum before execution and preserve the
   actual settled cost afterward.
 - Product-enforced paid-compute gates remain authoritative.
-- Evals and Swarms should support a first-class bounded QA mode so programmatic
-  acceptance does not require repetitive source/recipe prompts.
+- Evals, Swarms, and Jesterky should support a first-class bounded QA mode so
+  programmatic acceptance does not require repetitive source/recipe prompts.
 - QA mode must narrow capabilities; it must not bypass credentials, account
   scope, spend limits, or destructive-operation confirmation.
 
@@ -366,6 +519,12 @@ byte/digest exact; submit is separate; status reflects independent review.
   project-local environment or Workshop secrets proxy.
 - Live visual tool feeds expose sanitized tool name/status/duration/exit code,
   never raw commands, stdout, instructions, reasoning, or credential values.
+- Treat Jesterky manifests, node labels, tool arguments, outputs, and artifact
+  references as untrusted input. Validate versions and paths in Rust, redact
+  before projection, and never execute content merely because it was replayed.
+- A Jesterky replay is a new bounded execution unless it is a read-only scrub
+  over already retained transitions. Make that distinction explicit in UI and
+  approval accounting.
 - Index sends only explicitly selected files and displays an exact preview.
 - Public Index release is always a request requiring explicit user confirmation
   and independent review.
@@ -376,21 +535,25 @@ byte/digest exact; submit is separate; status reflects independent review.
 
 This integration is complete only when:
 
-1. Index, Swarms, and Intern live on the same current release branch.
+1. Index, Swarms, Intern, and Jesterky live on the same current release branch.
 2. Local/signed-out Workshop remains usable with no cloud configuration.
 3. Intern Live and Background produce real worker output and survive restart.
 4. Swarms can launch and control a bounded multi-rollout run and stream each
    rollout into the right panel while it is running.
-5. Final scores, usage, spend, stop reasons, and evidence are retained exactly;
+5. Jesterky can launch, stream, inspect, replay, and compare a versioned
+   workflow with node-level retained evidence.
+6. Swarm and Jesterky right-panel visuals remain readable at wide, standard,
+   and narrow widths and support keyboard selection/cycling.
+7. Final scores, usage, spend, stop reasons, and evidence are retained exactly;
    missing data is never rendered as zero.
-6. A sealed run/report can become a selected private Index draft without
+8. A sealed run/report can become a selected private Index draft without
    leaking unselected project data.
-7. Submission is explicit and review/publication status is truthful.
-8. Identity switching, cancellation, retry, crash/restart, and partial network
+9. Submission is explicit and review/publication status is truthful.
+10. Identity switching, cancellation, retry, crash/restart, and partial network
    failure have deterministic tests and installed-app evidence.
-9. No credential or raw sensitive tool content appears in UI evidence, logs,
+11. No credential or raw sensitive tool content appears in UI evidence, logs,
    traces, or contribution uploads.
-10. The current Harbor/live-visual and native capture behavior remains intact.
+12. The current Harbor/live-visual and native capture behavior remains intact.
 
 ## Branch and commit ledger
 
@@ -402,6 +565,7 @@ This integration is complete only when:
 | Swarm rollout contract pin | `2c9e2ff6` |
 | Shared benchmark visual projection | `5bc6f7a1` |
 | Synth Index contribution MVP | `codex/synth-index-fast-mvp`; merge `037af1eb`; tip `8281089c` |
+| Jesterky runtime/evidence inputs | `synth-laboratories/jesterky`; Trace V5 native Jesterky adapters in Synth Containers; historical Workshop V5 annotation lane remains unmerged/deferred |
 
 These references are inputs to a controlled port. They are not, by themselves,
 proof that the features are present or release-qualified on current Workshop.
