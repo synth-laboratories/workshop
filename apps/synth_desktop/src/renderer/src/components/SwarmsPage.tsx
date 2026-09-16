@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
-import { swarmSdkCall, watchSwarm, type SwarmEventEnvelope } from "../runtime/cloudSwarms";
+import { isTerminalSwarmState, mergeSwarmEvent, swarmEventState, swarmSdkCall, watchSwarm, type SwarmEventEnvelope } from "../runtime/cloudSwarms";
 import { bridges } from "../runtime/desktopBridge";
 
 type Props = { onBack: () => void; onOpenVisual: (visual: VisualRecord) => void };
@@ -10,8 +10,32 @@ const SWARM_AGENT_MODEL = "gpt-5.6-luna";
 const SWARM_AGENT_HARNESS = "codex";
 
 function swarmIdOf(value: Record<string, unknown> | null): string | null {
-	const candidate = value?.swarm_id ?? value?.run_id;
+	const candidate = value?.swarm_id ?? value?.run_id ?? value?.swarmId;
 	return typeof candidate === "string" ? candidate : null;
+}
+
+const record = (value: unknown): Record<string, unknown> | null =>
+	value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+const text = (value: unknown): string | null => typeof value === "string" && value.trim() ? value.trim() : null;
+
+function configurationFacts(swarm: Record<string, unknown>) {
+	const snapshot = record(record(swarm.configuration)?.snapshot);
+	const resolved = record(snapshot?.resolved_actor_profile);
+	return {
+		model: text(snapshot?.agent_model) ?? text(resolved?.model) ?? SWARM_AGENT_MODEL,
+		harness: text(snapshot?.agent_harness) ?? text(snapshot?.agent_kind) ?? text(resolved?.agent_harness) ?? SWARM_AGENT_HARNESS
+	};
+}
+
+function visualInputs(visual: VisualRecord): Record<string, Record<string, unknown>> {
+	const bindings = record(visual.bindings);
+	const inputs = Array.isArray(bindings?.inputs) ? bindings.inputs : [];
+	return Object.fromEntries(inputs.flatMap((input) => {
+		const row = record(input);
+		const name = text(row?.input);
+		const data = record(row?.data);
+		return name && data ? [[name, data]] : [];
+	}));
 }
 
 function visualBindings(
@@ -22,6 +46,7 @@ function visualBindings(
 	maxSpendUsd: number,
 	maxConcurrentActors: number
 ) {
+	const configuration = configurationFacts(swarm);
 	return {
 		schemaVersion: "synth.visual-bindings.v1",
 		inputs: [
@@ -43,8 +68,8 @@ function visualBindings(
 					projectId: swarm.project_id ?? swarm.projectId ?? null,
 					maxSpendUsd,
 					maxConcurrentActors,
-					model: SWARM_AGENT_MODEL,
-					harness: SWARM_AGENT_HARNESS,
+					model: configuration.model,
+					harness: configuration.harness,
 					provider: "auto",
 					streamState,
 					usage: swarm.usage ?? null
@@ -70,11 +95,46 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 	const latest = events.at(-1);
 
 	useEffect(() => {
+		if (!bridges.visuals) return;
+		let disposed = false;
+		void bridges.visuals.list({ templateId: SWARM_VISUAL_TEMPLATE, status: "live", limit: 100 }).then(async (visuals) => {
+			let resumable: { visual: VisualRecord; summary: Record<string, unknown>; events: SwarmEventEnvelope[] } | null = null;
+			for (const visual of visuals) {
+				const inputs = visualInputs(visual);
+				const priorEvents = Array.isArray(inputs.stream?.events) ? inputs.stream.events as SwarmEventEnvelope[] : [];
+				const terminalState = priorEvents.length ? swarmEventState(priorEvents.at(-1)!) : "";
+				if (isTerminalSwarmState(terminalState)) {
+					await bridges.visuals?.update(visual.id, {
+						status: terminalState === "failed" ? "failed" : "saved",
+						bumpRevision: true,
+						metadata: { ...record(visual.metadata), streamState: "closed", recoveredAt: new Date().toISOString() }
+					});
+				} else if (!resumable && inputs.swarm && swarmIdOf(inputs.swarm)) {
+					resumable = { visual, summary: inputs.swarm, events: priorEvents };
+				}
+			}
+			if (!disposed && resumable) {
+				const { visual, summary, events: priorEvents } = resumable;
+				setVisualId(visual.id);
+				setSwarm({ ...summary, swarm_id: swarmIdOf(summary) });
+				setEvents(priorEvents.slice(-500));
+				setObjective(text(summary.objective) ?? objective);
+				if (typeof summary.maxSpendUsd === "number") setMaxSpend(String(summary.maxSpendUsd));
+				if (typeof summary.maxConcurrentActors === "number") setConcurrency(String(summary.maxConcurrentActors));
+				setStreamState("reconnecting");
+			}
+		}).catch((reason) => { if (!disposed) setError(publicError(reason)); });
+		return () => { disposed = true; };
+	// Reconcile once at mount. The recovered objective is intentionally not a dependency.
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	useEffect(() => {
 		if (!swarmId) return;
 		let dispose: (() => void) | undefined;
 		void watchSwarm(
 			swarmId,
-			(event) => setEvents((current) => [...current.slice(-499), event]),
+			(event) => setEvents((current) => mergeSwarmEvent(current, event)),
 			(state, detail) => {
 				setStreamState(state);
 				if (detail) setError(detail);
@@ -135,14 +195,19 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 				throw new Error(blockers);
 			}
 			const createdSwarm = await swarmSdkCall("create", payload);
-			setSwarm(createdSwarm);
+			const createdSwarmId = swarmIdOf(createdSwarm);
+			const configuration = createdSwarmId
+				? await swarmSdkCall("configuration", { swarmId: createdSwarmId }).catch(() => null)
+				: null;
+			const hydratedSwarm = configuration ? { ...createdSwarm, configuration } : createdSwarm;
+			setSwarm(hydratedSwarm);
 			if (bridges.visuals) {
 				const title = objective.trim().length > 72 ? `${objective.trim().slice(0, 69)}…` : objective.trim();
 				const visual = await bridges.visuals.create({
 					templateId: SWARM_VISUAL_TEMPLATE,
 					title,
 					status: "live",
-					bindings: visualBindings(createdSwarm, [], "idle", objective.trim(), Number(maxSpend), Number(concurrency)),
+					bindings: visualBindings(hydratedSwarm, [], "idle", objective.trim(), Number(maxSpend), Number(concurrency)),
 					metadata: { swarmId: swarmIdOf(createdSwarm), transport: "sdk_sse", source: "synth-cloud-swarms-sdk" }
 				});
 				setVisualId(visual.id);
@@ -156,7 +221,10 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 	async function control(operation: "pause" | "resume" | "cancel") {
 		if (!swarmId) return;
 		setBusy(true); setError(null);
-		try { setSwarm(await swarmSdkCall(operation, { swarmId })); }
+		try {
+			const next = await swarmSdkCall(operation, { swarmId });
+			setSwarm((current) => ({ ...next, configuration: current?.configuration }));
+		}
 		catch (reason) { setError(publicError(reason)); }
 		finally { setBusy(false); }
 	}

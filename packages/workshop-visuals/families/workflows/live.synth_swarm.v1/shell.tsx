@@ -14,6 +14,7 @@ type SwarmSummary = {
   maxSpendUsd?: number;
   maxConcurrentActors?: number;
   model?: string;
+  harness?: string;
   provider?: string;
   streamState?: string;
   usage?: Record<string, unknown> | null;
@@ -35,8 +36,8 @@ const statusOf = (events: LiveEvalEvent[], fallback?: string) => {
     const timeline = record(payload.timeline);
     const lifecycle = record(timeline?.lifecycle);
     const found = text(payload.status) ?? text(payload.state) ?? text(payload.swarm_status)
-      ?? (text(lifecycle?.terminal_phase)?.toLowerCase() === "terminal" ? "completed" : null)
-      ?? text(timeline?.authority_state) ?? text(timeline?.authority_persisted_state);
+      ?? text(timeline?.authority_state) ?? text(timeline?.authority_persisted_state)
+      ?? (text(lifecycle?.terminal_phase)?.toLowerCase() === "terminal" ? "completed" : null);
     if (found) return found;
   }
   const latestActors = [...events].reverse().map(snapshotActors).find((actors) => actors.length > 0) ?? [];
@@ -107,6 +108,7 @@ export function Shell(props: ShellProps) {
       <div className="sw-stat"><small>Spend</small><strong>{money(spend)}{swarm.maxSpendUsd != null ? ` / ${money(swarm.maxSpendUsd)}` : ""}</strong></div>
       <div className="sw-stat"><small>Events</small><strong>{visible.length}</strong></div>
     </div>
+    <p className="sv-mono">{swarm.harness ?? "backend preset"} · {swarm.model ?? "backend-selected model"} · SDK SSE</p>
     <section className="sw-stage" aria-label="Swarm activity">
       <div className="sv-section-head"><h3>Live activity</h3><span className="sv-mono">{swarm.swarmId ?? visible[0]?.run_id ?? "awaiting id"}</span></div>
       <div className="sw-actors">

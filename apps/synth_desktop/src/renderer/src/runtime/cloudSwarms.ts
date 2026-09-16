@@ -13,6 +13,32 @@ export type SwarmEventEnvelope = {
 	transcript_cursor: string | null;
 };
 
+const TERMINAL_SWARM_STATES = new Set(["completed", "failed", "cancelled", "canceled", "succeeded", "timed_out"]);
+
+export function swarmEventState(event: SwarmEventEnvelope): string {
+	const timeline = event.payload.timeline && typeof event.payload.timeline === "object"
+		? event.payload.timeline as Record<string, unknown>
+		: null;
+	const lifecycle = timeline?.lifecycle && typeof timeline.lifecycle === "object"
+		? timeline.lifecycle as Record<string, unknown>
+		: null;
+	const authority = String(
+		event.payload.status ?? event.payload.state ?? event.payload.swarm_status
+		?? timeline?.authority_state ?? timeline?.authority_persisted_state ?? ""
+	).toLowerCase();
+	if (authority) return authority;
+	return String(lifecycle?.terminal_phase ?? "").toLowerCase() === "terminal" ? "completed" : "";
+}
+
+export function isTerminalSwarmState(state: string): boolean {
+	return TERMINAL_SWARM_STATES.has(state.toLowerCase());
+}
+
+export function mergeSwarmEvent(current: SwarmEventEnvelope[], event: SwarmEventEnvelope): SwarmEventEnvelope[] {
+	if (current.some((candidate) => candidate.sequence === event.sequence)) return current;
+	return [...current.slice(-499), event];
+}
+
 export async function swarmSdkCall(operation: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
 	return await fromGenerated(commands.cloudSwarmsSdkCall({ operation, payload })) as Record<string, unknown>;
 }
@@ -30,17 +56,6 @@ export async function watchSwarm(
 	let transcriptCursor = resume?.transcriptCursor;
 	let reconnectAttempt = 0;
 	let reconnectTimer: number | null = null;
-	const terminalStates = new Set(["completed", "failed", "cancelled", "canceled", "succeeded", "timed_out"]);
-	const eventState = (event: SwarmEventEnvelope) => {
-		const timeline = event.payload.timeline && typeof event.payload.timeline === "object"
-			? event.payload.timeline as Record<string, unknown>
-			: null;
-		const lifecycle = timeline?.lifecycle && typeof timeline.lifecycle === "object"
-			? timeline.lifecycle as Record<string, unknown>
-			: null;
-		if (String(lifecycle?.terminal_phase ?? "").toLowerCase() === "terminal") return "completed";
-		return String(event.payload.status ?? event.payload.state ?? event.payload.swarm_status ?? timeline?.authority_state ?? timeline?.authority_persisted_state ?? "").toLowerCase();
-	};
 	const scheduleReconnect = () => {
 		if (disposed || terminal || reconnectTimer !== null) return;
 		onState("reconnecting");
@@ -59,8 +74,8 @@ export async function watchSwarm(
 			const event = payload.event as SwarmEventEnvelope;
 			lastEventId = event.sequence || lastEventId;
 			transcriptCursor = event.transcript_cursor ?? transcriptCursor;
-			const state = eventState(event);
-			terminal = terminalStates.has(state);
+			const state = swarmEventState(event);
+			terminal = isTerminalSwarmState(state);
 			onEvent(event);
 			if (terminal) {
 				onState("closed");
