@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useVisualSessionClient, useVisualEvidence } from "@synth/visuals-react";
+import { useVisualSessionClient, useVisualEvidence, useVisualSessionSnapshot } from "@synth/visuals-react";
 import type { LiveEvalEvent } from "../runtime/types.ts";
 import { emptyLiveIngest, ingestLiveEnvelopeBatch, type LiveEnvelope } from "../runtime/liveStream.ts";
 import type { ReplayClient, TransportState } from "../runtime/replayClient.ts";
@@ -38,6 +38,7 @@ export function useLiveEvalStream(options: {
 }): LiveEvalStreamsView {
   const { replay, fixtureEvents, replayMs = 800, visualId, revision } = options;
   const hosted=Boolean(useVisualSessionClient());
+  const session=useVisualSessionSnapshot();
   const declared = (replay?.streams.length ?? 0) > 0;
   const live = useLiveEvalStreams(declared ? replay! : NO_STREAMS, { visualId, revision });
   const fixture = useFixtureReplay(
@@ -50,6 +51,15 @@ export function useLiveEvalStream(options: {
   const cut=useVisualEvidence("live-streams",current.ready?current:undefined);
   if(!hosted)return current;
   if(cut.ready&&cut.value)return cut.value;
+  // Evidence cuts are retained asynchronously. A bursty SSE producer can
+  // advance again before the previous cut is committed, so making the cut a
+  // prerequisite for ordinary rendering leaves a healthy stream frozen at
+  // "connecting" until it seals. Replay and pixel capture still require the
+  // retained cut; normal live viewing renders the current deterministic fold
+  // while persistence catches up in the background.
+  const capture=document.documentElement.hasAttribute("data-synth-review-capture")
+    || document.documentElement.hasAttribute("data-synth-capture");
+  if(current.ready&&!session?.state.replay&&!capture)return current;
   return {...current,events:[],ready:false,state:cut.error?"error":"replaying",error:cut.error??current.error};
 }
 
