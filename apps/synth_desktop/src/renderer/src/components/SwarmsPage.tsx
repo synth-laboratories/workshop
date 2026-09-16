@@ -71,6 +71,7 @@ function visualBindings(
 					model: configuration.model,
 					harness: configuration.harness,
 					provider: "auto",
+					runbookPreset: text(swarm.runbook_preset) ?? text(swarm.runbook) ?? null,
 					streamState,
 					usage: swarm.usage ?? null
 				}
@@ -82,6 +83,7 @@ function visualBindings(
 export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 	const [objective, setObjective] = useState("Investigate the selected task and return evidence-backed results.");
 	const [projectId, setProjectId] = useState("");
+	const [runbookPreset, setRunbookPreset] = useState("standard");
 	const [maxSpend, setMaxSpend] = useState("5");
 	const [concurrency, setConcurrency] = useState("4");
 	const [busy, setBusy] = useState(false);
@@ -135,6 +137,7 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 				setObjective(text(summary.objective) ?? objective);
 				if (typeof summary.maxSpendUsd === "number") setMaxSpend(String(summary.maxSpendUsd));
 				if (typeof summary.maxConcurrentActors === "number") setConcurrency(String(summary.maxConcurrentActors));
+				if (text(summary.runbookPreset)) setRunbookPreset(text(summary.runbookPreset)!);
 				setStreamState("reconnecting");
 			}
 		}).catch((reason) => { if (!disposed) setError(publicError(reason)); });
@@ -152,6 +155,11 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 			(state, detail) => {
 				setStreamState(state);
 				if (detail) setError(detail);
+				if (state === "connected") {
+					void swarmSdkCall("configuration", { swarmId }).then((configuration) => {
+						setSwarm((current) => current ? { ...current, configuration } : current);
+					}).catch(() => undefined);
+				}
 				if (state === "closed") {
 					void swarmSdkCall("usage", { swarmId }).then((usage) => {
 						setSwarm((current) => current ? { ...current, usage } : current);
@@ -170,22 +178,24 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 		const sequence = ++visualUpdateSequence.current;
 		const timer = window.setTimeout(() => {
 			if (sequence !== visualUpdateSequence.current) return;
+			const latestState = events.length ? swarmEventState(events.at(-1)!) : "";
 			void bridges.visuals?.update(visualId, {
 				bindings: visualBindings(swarm, events, streamState, objective.trim(), Number(maxSpend), Number(concurrency)),
-				status: streamState === "error" ? "failed" : streamState === "closed" ? "saved" : "live",
+				status: streamState === "error" || latestState === "failed" ? "failed" : streamState === "closed" ? "saved" : "live",
 				// The visual host reconciles updates by revision. Persist each debounced
 				// SSE frame as a revision so the open pane advances live and the Visuals
 				// registry can replay the same state after navigation or restart.
 				bumpRevision: true,
-				metadata: { swarmId, streamState, eventCount: events.length, transport: "sdk_sse" }
+				metadata: { swarmId, streamState, eventCount: events.length, transport: "sdk_sse", deployment }
 			}).catch((reason) => setError(publicError(reason)));
 		}, 1_000);
 		return () => window.clearTimeout(timer);
-	}, [concurrency, events, maxSpend, objective, streamState, swarm, swarmId, visualId]);
+	}, [concurrency, deployment, events, maxSpend, objective, streamState, swarm, swarmId, visualId]);
 
 	const spec = useMemo(() => ({
 		objective: objective.trim(),
-		runbook: "lite",
+		runbook: runbookPreset,
+		runbookPreset,
 		timeboxSeconds: 900,
 		agentModel: SWARM_AGENT_MODEL,
 		agentHarness: SWARM_AGENT_HARNESS,
@@ -197,7 +207,7 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 			maxWallclockSeconds: 900
 		},
 		executionTarget: { kind: "platform_resolved" }
-	}), [objective, maxSpend, concurrency]);
+	}), [objective, maxSpend, concurrency, runbookPreset]);
 
 	async function launch() {
 		setBusy(true); setError(null); setEvents([]);
@@ -255,6 +265,7 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 			<h2>New swarm</h2>
 			<label className="settings-field"><span>Objective</span><textarea value={objective} onChange={(event) => setObjective(event.target.value)} rows={4} /></label>
 			<label className="settings-field"><span>Project ID <small>(optional)</small></span><input value={projectId} onChange={(event) => setProjectId(event.target.value)} placeholder="One-off when empty" /></label>
+			<label className="settings-field"><span>Runbook preset</span><select value={runbookPreset} onChange={(event) => setRunbookPreset(event.target.value)}><option value="lite">Lite</option><option value="standard">Standard</option><option value="heavy">Heavy</option><option value="overnight">Overnight</option><option value="continuous">Continuous</option></select></label>
 			<div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12}}>
 				<label className="settings-field"><span>Maximum spend (USD)</span><input type="number" min="0" step="0.25" value={maxSpend} onChange={(event) => setMaxSpend(event.target.value)} /></label>
 				<label className="settings-field"><span>Maximum concurrent actors</span><input type="number" min="1" max="64" value={concurrency} onChange={(event) => setConcurrency(event.target.value)} /></label>

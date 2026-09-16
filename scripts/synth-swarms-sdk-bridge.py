@@ -112,7 +112,7 @@ def _spec(value: Any, *, hosted: bool = False) -> SwarmSpec:
     if not isinstance(value, Mapping):
         raise ValueError("spec must be an object")
     allowed = {
-        "objective", "workMode", "runbook", "timeboxSeconds", "agentModel",
+        "objective", "workMode", "runbook", "runbookPreset", "timeboxSeconds", "agentModel",
         "agentHarness", "provider", "requiredCapabilities", "idempotencyKey",
         "limit", "executionTarget",
     }
@@ -134,7 +134,8 @@ def _spec(value: Any, *, hosted: bool = False) -> SwarmSpec:
     return SwarmSpec(
         objective=_required_text(value.get("objective"), "spec.objective"),
         work_mode=WorkMode(value["workMode"]) if value.get("workMode") else None,
-        runbook=Runbook(value["runbook"]) if value.get("runbook") else None,
+        runbook=Runbook(value["runbook"]) if value.get("runbook") and not hosted else None,
+        runbook_preset=_optional_text(value.get("runbookPreset"), "spec.runbookPreset") if hosted else None,
         timebox_seconds=value.get("timeboxSeconds"),
         agent_model=(ActiveActorModel(value["agentModel"]) if value.get("agentModel") and not hosted else None),
         agent_harness=(ActorHarness(value["agentHarness"]) if value.get("agentHarness") and not hosted else None),

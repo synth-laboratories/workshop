@@ -125,6 +125,7 @@ class BridgeLocalSlotTest(unittest.TestCase):
         spec = {
             "objective": "Exercise the Workshop local slot SDK path",
             "runbook": "lite",
+            "runbookPreset": "lite",
             "timeboxSeconds": 120,
             "agentModel": "gpt-5.6-luna",
             "provider": "auto",
@@ -154,6 +155,7 @@ class BridgeLocalSlotTest(unittest.TestCase):
         value = module._spec({
             "objective": "Exercise the hosted Workshop SDK path",
             "runbook": "lite",
+            "runbookPreset": "lite",
             "agentModel": "gpt-5.6-luna",
             "agentHarness": "codex",
             "provider": "auto",
@@ -163,7 +165,8 @@ class BridgeLocalSlotTest(unittest.TestCase):
         self.assertNotIn("agent_model", wire)
         self.assertNotIn("agent_harness", wire)
         self.assertNotIn("provider", wire)
-        self.assertEqual(wire["runbook"], "lite")
+        self.assertNotIn("runbook", wire)
+        self.assertEqual(wire["runbook_preset"], "lite")
 
 
 if __name__ == "__main__":

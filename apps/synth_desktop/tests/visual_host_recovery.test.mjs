@@ -55,6 +55,8 @@ test("live swarm SSE frames advance the durable visual revision", () => {
 	assert.match(swarms, /transport: "sdk_sse"/);
 	assert.match(swarms, /recoveryReason: "legacy_or_other_deployment"/);
 	assert.match(swarms, /deployment: launchDeployment/);
+	assert.match(swarms, /runbookPreset/);
+	assert.match(swarms, /swarmSdkCall\("configuration", \{ swarmId \}\)/);
 	assert.match(swarms, /bumpRevision: true/);
 	assert.match(swarms, /}, 1_000\);/);
 	assert.equal(swarms.includes("bumpRevision: false"), false);
