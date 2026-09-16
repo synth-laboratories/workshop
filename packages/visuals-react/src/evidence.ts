@@ -1,4 +1,4 @@
-import {useEffect,useMemo,useState} from "react";
+import {useEffect,useMemo,useRef,useState} from "react";
 import {canonicalDigest,stableSerialize} from "@synth/visuals-sdk";
 import {useVisualState,useVisualSessionClient,useVisualSessionSnapshot} from "./session.ts";
 
@@ -15,6 +15,10 @@ export function useVisualEvidence<T>(owner:string,input:T|undefined):{value:T|un
  const value=useMemo(()=>input,[key]);
  const [loaded,setLoaded]=useState<{digest:string;value:T}>();
  const [error,setError]=useState<string>();
+ const pending=useRef<{client:NonNullable<typeof client>;key:string;value:T}|null>(null);
+ const draining=useRef(false);
+ const activeClient=useRef(client);
+ activeClient.current=client;
  const replay=Boolean(session?.state.replay);
  const capture=document.documentElement.hasAttribute('data-synth-review-capture')
   || document.documentElement.hasAttribute('data-synth-capture');
@@ -23,18 +27,29 @@ export function useVisualEvidence<T>(owner:string,input:T|undefined):{value:T|un
   // digest. It must read that cut, never commit a fresher live-poll value while
   // the capture barrier holds the presentation frozen.
   if(!client?.supportsEvidenceCuts||!session?.ready||value===undefined||replay||capture)return;
-  let cancelled=false;setError(undefined);
+  pending.current={client,key:key!,value};setError(undefined);
+  if(draining.current)return;
+  draining.current=true;
   void(async()=>{
-   const digest=await canonicalDigest(value);
-   if(cancelled)return;
-   if(client.getSnapshot().state.values[`source.${owner}`]===digest){setLoaded({digest,value});return;}
-   const committed=await client.commitEvidence(`source.${owner}`,value);
-   if(committed===undefined)return;
-   if(committed!==digest)throw new Error("Evidence digest disagrees with native host");
-   if(cancelled||client.getSnapshot().state.replay)return;
-   setLoaded({digest,value});
-  })().catch(reason=>{if(!cancelled)setError(String(reason));});
-  return()=>{cancelled=true;};
+   // Live streams can advance faster than a native evidence write. Keep one
+   // write in flight and replace the queued value with the newest fold instead
+   // of building an unbounded queue of obsolete prefixes.
+   while(pending.current){
+    const next=pending.current;pending.current=null;
+    const nextClient=next.client;
+    try{
+     const digest=await canonicalDigest(next.value);
+     if(nextClient.getSnapshot().state.values[`source.${owner}`]!==digest){
+      const committed=await nextClient.commitEvidence(`source.${owner}`,next.value);
+      if(committed===undefined)continue;
+      if(committed!==digest)throw new Error("Evidence digest disagrees with native host");
+     }
+     if(activeClient.current===nextClient&&!nextClient.getSnapshot().state.replay)setLoaded({digest,value:next.value});
+    }catch(reason){
+     if(activeClient.current===nextClient)setError(String(reason));
+    }
+   }
+  })().finally(()=>{draining.current=false;});
  },[client,session?.ready,owner,key,replay,capture]);
  useEffect(()=>{
   if(!client?.supportsEvidenceCuts||!cut||loaded?.digest===cut)return;

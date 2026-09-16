@@ -82,7 +82,8 @@ test("the library card shows a bundled-preview badge instead of three dashes", (
 	assert.match(page, /visualCardIdentity\(visual\.displayName\?\.trim\(\) \|\| visual\.title\)/);
 	assert.match(page, /<strong>\{identity\.name\}<\/strong>/);
 	assert.match(page, /evidenceMode === "unbound" \?/);
-	assert.match(page, /Not bound/);
+	assert.match(page, /Standalone/);
+	assert.doesNotMatch(page, /Not bound/);
 	// Bound cards keep one short source line; the full triple stays in the
 	// preview's details-and-provenance disclosure.
 	assert.match(page, /testId=\{`visual-ops-\$\{visual\.id\}`\}\s*\n\s*compact\s*\n\s*oneLine/);

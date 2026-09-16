@@ -51,7 +51,7 @@ export function projectJesterkySpec(spec) {
   return { schemaVersion: "synth.jesterky-workflow.v1", workflowName: spec.name, entrypoint, nodes, budgets: caps };
 }
 
-export function createJesterkyVisualFeed({ specPath, eventsPath, manifestPath, visualId, title, connection, eventInput = process.stdin }) {
+export function createJesterkyVisualFeed({ specPath, eventsPath, manifestPath, visualId, title, connection, eventInput = process.stdin, terminalHandoffMs = 500 }) {
   if (!specPath || !eventsPath || !manifestPath || !visualId || !connection?.url || !connection?.token) throw new Error("spec, events, manifest, visual id, and Workshop connection are required");
   const piped = eventsPath === "-";
   const files = { spec: resolve(specPath), events: piped ? null : resolve(eventsPath), manifest: resolve(manifestPath) };
@@ -161,10 +161,13 @@ export function createJesterkyVisualFeed({ specPath, eventsPath, manifestPath, v
     publish(terminalEvent);
     for (const res of subscribers) res.end();
     subscribers.clear();
+    // Let the SSE consumer commit its terminal evidence cut and scene before
+    // the saved inline revision replaces it. This is a bounded push handoff,
+    // not transport polling.
+    if (terminalHandoffMs > 0) await new Promise((done) => setTimeout(done, terminalHandoffMs));
     await bind(true);
     sealed = true;
-    // The saved inline binding is the retained authority. Give the renderer a
-    // short window to consume stream.closed, then release the loopback server.
+    // The saved inline binding is now the retained authority.
     setTimeout(() => { void stop(); }, 2000).unref();
   };
   const tick = () => {

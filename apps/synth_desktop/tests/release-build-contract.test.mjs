@@ -78,9 +78,11 @@ test("the single-envelope build does not request removed Cargo tier features", (
   assert.doesNotMatch(build, /--features|WORKSHOP_TIER=/);
 });
 
-test("packaging builds and installs adapters before browser finalization and staging", () => {
+test("packaging verifies and installs the adapters built by Tauri before browser finalization and staging", () => {
   assert.match(build, /source "\$ROOT\/scripts\/mcp-adapters.sh"/);
-  assert.match(build, /cargo build --locked[\s\S]*--bins/);
+  assert.match(build, /npx tauri build/);
+  assert.doesNotMatch(build, /cargo build --locked/);
+  assert.match(build, /\[\[ -x "\$TARGET_ROOT\/\$PROFILE\/\$adapter" \]\]/);
   const copy = build.indexOf('Contents/MacOS/$adapter');
   const finalize = build.indexOf('"$ROOT/scripts/finalize-browser-app.sh"');
   const stage = build.indexOf('ditto "$bundle_dir/$product.app" "$out_dir/$product.app"');

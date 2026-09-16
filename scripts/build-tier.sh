@@ -33,6 +33,36 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' || {
 # Shared packaged resources (same for every tier); stage once. Resolve the
 # MLX release checkout by the catalog revision, not by a historical name.
 REPO_SIBLING_ROOT="$(dirname "$ROOT")"
+GIT_COMMON_DIR="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [[ -n "$GIT_COMMON_DIR" ]]; then
+  PRIMARY_REPO_SIBLING_ROOT="$(dirname "$(dirname "$GIT_COMMON_DIR")")"
+  if [[ -d "$PRIMARY_REPO_SIBLING_ROOT/synth-cookbooks-public" ]]; then
+    REPO_SIBLING_ROOT="$PRIMARY_REPO_SIBLING_ROOT"
+  fi
+fi
+resolve_containers_root() {
+  local requested="${CONTAINERS_ROOT:-${SYNTH_CONTAINERS_PROJECT_ROOT:-}}"
+  if [[ -n "$requested" ]]; then
+    printf '%s' "$requested"
+    return
+  fi
+  local pin candidate version
+  pin="$(<"$APP_DIR/src-tauri/synth-containers-version.txt")"
+  for candidate in \
+    "$REPO_SIBLING_ROOT/containers" \
+    "$REPO_SIBLING_ROOT"/containers-* \
+    "$REPO_SIBLING_ROOT"/wt-containers-*; do
+    [[ -f "$candidate/pyproject.toml" ]] || continue
+    version="$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' "$candidate/pyproject.toml")"
+    if [[ "$version" == "$pin" ]]; then
+      printf '%s' "$candidate"
+      return
+    fi
+  done
+  printf '%s' "$REPO_SIBLING_ROOT/containers"
+}
+CONTAINERS_ROOT="$(resolve_containers_root)"
+export CONTAINERS_ROOT
 if [[ -z "${SYNTH_MLX_RL_PROJECT_ROOT:-}" ]]; then
   mlx_pin="$(rg -o 'MLX_RUNTIME_SOURCE_REVISION: &str = "([0-9a-f]{40})"' --replace '$1' -m1 \
     "$APP_DIR/src-tauri/src/optimizers/mlx_runtime.rs")"
@@ -44,7 +74,7 @@ if [[ -z "${SYNTH_MLX_RL_PROJECT_ROOT:-}" ]]; then
     fi
   done
 fi
-python3 "$ROOT/scripts/stage-trace-runtime.py" --containers "${SYNTH_CONTAINERS_PROJECT_ROOT:-$ROOT/../containers}"
+python3 "$ROOT/scripts/stage-trace-runtime.py" --containers "$CONTAINERS_ROOT"
 "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
 "$ROOT/scripts/stage-optimizer-runtime-distribution.sh"
 "$ROOT/scripts/build-browser-runtime.sh" assemble
@@ -80,11 +110,9 @@ build_one() {
 
   bundle_dir="$TARGET_ROOT/$PROFILE/bundle/macos"
   [[ -d "$bundle_dir/$product.app" ]] || { echo "[build-tier] expected bundle missing: $bundle_dir/$product.app" >&2; exit 1; }
-  # Tauri's main app alone does not prove the agent adapters were built/copied.
-  local cargo_profile=()
-  [[ "$PROFILE" == release ]] && cargo_profile=(--release)
-  cargo build --locked --manifest-path "$APP_DIR/src-tauri/Cargo.toml" \
-    --bins ${cargo_profile[@]+"${cargo_profile[@]}"}
+  # Tauri builds every binary with the production feature/Rust flag envelope.
+  # Verify and copy those exact outputs; rebuilding here can produce a second,
+  # ambient-flag-dependent variant and doubles a cold production build.
   local adapter
   for adapter in "${SYNTH_MCP_ADAPTERS[@]}"; do
     [[ -x "$TARGET_ROOT/$PROFILE/$adapter" ]] || { echo "missing adapter: $adapter" >&2; exit 1; }

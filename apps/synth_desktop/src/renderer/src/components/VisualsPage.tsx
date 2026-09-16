@@ -479,7 +479,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 								</span>
 							) : evidenceMode === "unbound" ? (
 								<span className="visual-ops-line visual-ops-compact visual-ops-one-line" data-testid={`visual-ops-${visual.id}`}>
-									<span className="visuals-card-evidence">Not bound</span>
+									<span className="visuals-card-evidence">Standalone</span>
 								</span>
 							) : (
 								<VisualOpsLine
@@ -553,8 +553,8 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack }: 
 									</p>
 								) : cardEvidenceMode(selected) === "unbound" ? (
 									<p className="visuals-preview-evidence" data-testid="visuals-preview-evidence">
-										<span className="visuals-card-evidence">Not bound</span>
-										{" "}This visual is not currently attached to a session, run, trace, or bundled fixture.
+										<span className="visuals-card-evidence">Standalone</span>
+										{" "}This visual uses its declared inputs directly and is not attached to a chat session, run, or trace.
 									</p>
 								) : null}
 								<VisualOpsLine

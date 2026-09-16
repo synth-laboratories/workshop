@@ -61,3 +61,28 @@ test('rendered evidence restores its saved cut instead of following newer input'
   assert.equal(await page.locator('output').getAttribute('data-ready'),'true');
  }finally{await browser.close();}
 });
+
+test('rapid live evidence coalesces obsolete prefixes and retains the newest fold',async()=>{
+ const bundle=await build({absWorkingDir:fileURLToPath(new URL('../../',import.meta.url)),stdin:{resolveDir:fileURLToPath(new URL('../../',import.meta.url)),loader:'tsx',contents:`
+ import React,{useState} from 'react';import {createRoot} from 'react-dom/client';
+ import {VisualSession,VisualSessionClient,initialSession,canonicalDigest} from '@synth/visuals-sdk';
+ import {VisualSessionProvider,useVisualEvidence} from '@synth/visuals-react';
+ const s=new VisualSession(initialSession({visualId:'burst',revision:1,viewKey:'default'},{id:'burst',version:'1'}));const blobs=new Map();let puts=0;
+ const client=new VisualSessionClient(s.state,{evidenceCuts:true,async request(r){
+  if(r.operation==='attach'){for(const c of r.controls??[])s.register(c,r.defaults[c.id]);return {state:s.state};}
+  if(r.operation==='evidence.put'){puts++;await new Promise(resolve=>setTimeout(resolve,25));const digest=await canonicalDigest(r.value);blobs.set(digest,r.value);return {digest};}
+  if(r.operation==='evidence.read')return {value:blobs.get(r.digest)};
+  if(r.operation==='act')return s.execute(r.action);return {state:s.state};
+ }});
+ window.puts=()=>puts;window.retained=()=>s.state.values['source.live'];
+ function App(){const [count,setCount]=useState(0);window.burst=()=>{for(let i=1;i<=40;i++)setCount(i)};const cut=useVisualEvidence('live',{count});return <output>{cut.ready?cut.value.count:'loading'}</output>}
+ createRoot(document.getElementById('root')).render(<VisualSessionProvider client={client}><App/></VisualSessionProvider>);
+ `},bundle:true,write:false,format:'iife'});
+ const browser=await chromium.launch();try{
+  const page=await browser.newPage();await page.route('http://localhost/**',route=>route.fulfill({contentType:'text/html',body:'<div id="root"></div>'}));await page.goto('http://localhost/');await page.addScriptTag({content:bundle.outputFiles[0].text});
+  await page.waitForFunction(()=>document.querySelector('output')?.textContent==='0');await page.evaluate(()=>window.burst());
+  await page.waitForFunction(()=>document.querySelector('output')?.textContent==='40');
+  assert.ok(await page.evaluate(()=>window.retained()),'latest live cut is retained');
+  assert.ok(await page.evaluate(()=>window.puts())<=3,'obsolete prefixes are coalesced');
+ }finally{await browser.close();}
+});

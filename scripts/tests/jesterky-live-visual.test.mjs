@@ -35,7 +35,7 @@ test("Jesterky feed advances live then seals the exact manifest event count", as
   });
   await new Promise((ready) => api.listen(0, "127.0.0.1", ready));
   const feed = createJesterkyVisualFeed({ specPath, eventsPath, manifestPath, visualId: "jesterky-test",
-    connection: { url: `http://127.0.0.1:${api.address().port}`, token: "token" } });
+    connection: { url: `http://127.0.0.1:${api.address().port}`, token: "token" }, terminalHandoffMs: 0 });
   try {
     const stream = await feed.start();
     assert.equal(visual.status, "live");
@@ -85,7 +85,7 @@ test("Jesterky's machine event pipe is pushed through SSE without polling", asyn
   await new Promise((ready) => api.listen(0, "127.0.0.1", ready));
   const input = new PassThrough();
   const feed = createJesterkyVisualFeed({ specPath, eventsPath: "-", manifestPath, visualId: "pipe",
-    eventInput: input, connection: { url: `http://127.0.0.1:${api.address().port}`, token: "token" } });
+    eventInput: input, connection: { url: `http://127.0.0.1:${api.address().port}`, token: "token" }, terminalHandoffMs: 0 });
   try {
     const stream = await feed.start();
     const response = await fetch(stream);

@@ -45,6 +45,7 @@ export function Shell(props:ShellProps){
   const terminal=["completed","failed"].includes(String(workflow.status??"").toLowerCase());
   return <VisualChrome kicker="Jesterky · Workflow" live={liveStream.state==="live"&&!terminal} title={props.title??workflow.workflowName??"Jesterky workflow"}
     lede={props.lede??"Replayable program structure, transitions, and retained execution evidence."} testId="visual-workflow-jesterky"
+    observation={{transportState:terminal?"terminal":liveStream.state,semanticEventCount:visible.length,terminal,error:liveStream.error}}
     captureBlocked={Boolean(props.replay?.streams.length)&&!liveStream.ready} footer="workflow.jesterky.v1 · structural metadata only; raw prompts and outputs stay out of the visual">
     <div className="jk-summary">
       <div className="jk-stat"><small>Status</small><strong>{workflow.status??(liveStream.ready?liveStream.state:"connecting")}</strong></div>

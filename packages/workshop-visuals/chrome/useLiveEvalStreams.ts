@@ -126,6 +126,9 @@ export function useLiveEvalStreams(
     };
   }, [streamKey, visualId, revision, captureKey]);
 
+  // Evidence cuts are canonical JSON. Omit unavailable optional fields instead
+  // of materializing `undefined`, which makes the live fold impossible to
+  // digest and leaves the retained source control unanchored.
   return useMemo(() => ({ events, state, closed, ready: state !== "error" && ready,
-    recovered, error, hostEvidence: undefined }), [events, state, closed, ready, recovered, error]);
+    recovered, error }), [events, state, closed, ready, recovered, error]);
 }

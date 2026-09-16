@@ -35,7 +35,7 @@ test("browser SSE reconnects with Last-Event-ID and reaches terminal without pol
     import {createReplayClient} from './packages/workshop-visuals/runtime/replayClient.ts';
     import {useLiveEvalStreams} from './packages/workshop-visuals/chrome/useLiveEvalStreams.ts';
     const client=createReplayClient([{streamId:'jesterky',sseUrl:${JSON.stringify(streamUrl)}}]);
-    function App(){const view=useLiveEvalStreams(client);return <output data-testid="state">{view.state}:{view.events.length}:{String(view.ready)}:{view.error??''}</output>}
+    function App(){const view=useLiveEvalStreams(client);const jsonSafe=Object.values(view).every(value=>value!==undefined);return <output data-testid="state">{view.state}:{view.events.length}:{String(view.ready)}:{view.error??''}:{String(jsonSafe)}</output>}
     createRoot(document.getElementById('root')).render(<App/>);
   `, resolveDir: root, loader: "tsx" }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", outfile: "sse.js" });
   const browser = await chromium.launch();
@@ -43,7 +43,7 @@ test("browser SSE reconnects with Last-Event-ID and reaches terminal without pol
     const page = await browser.newPage();
     await page.setContent('<div id="root"></div>');
     await page.addScriptTag({ content: bundle.outputFiles.find((file) => file.path.endsWith(".js")).text });
-    await page.getByTestId("state").filter({ hasText: "terminal:2:true:" }).waitFor({ timeout: 10_000 });
+    await page.getByTestId("state").filter({ hasText: "terminal:2:true::true" }).waitFor({ timeout: 10_000 });
     assert.equal(connections, 2);
     assert.equal(resumedFrom, "1");
     assert.equal(pollRequests, 0);

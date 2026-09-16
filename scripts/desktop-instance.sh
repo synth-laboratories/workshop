@@ -27,7 +27,30 @@ if [[ -n "$GIT_COMMON_DIR" ]]; then
     REPO_SIBLING_ROOT="$PRIMARY_REPO_SIBLING_ROOT"
   fi
 fi
-CONTAINERS_ROOT="${CONTAINERS_ROOT:-${SYNTH_CONTAINERS_PROJECT_ROOT:-$REPO_SIBLING_ROOT/containers}}"
+resolve_containers_root() {
+  local requested="${CONTAINERS_ROOT:-${SYNTH_CONTAINERS_PROJECT_ROOT:-}}"
+  if [[ -n "$requested" ]]; then
+    printf '%s' "$requested"
+    return
+  fi
+  local pin candidate version
+  pin="$(<"$ROOT/apps/synth_desktop/src-tauri/synth-containers-version.txt")"
+  for candidate in \
+    "$REPO_SIBLING_ROOT/containers" \
+    "$REPO_SIBLING_ROOT"/containers-* \
+    "$REPO_SIBLING_ROOT"/wt-containers-*; do
+    [[ -f "$candidate/pyproject.toml" ]] || continue
+    version="$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' "$candidate/pyproject.toml")"
+    if [[ "$version" == "$pin" ]]; then
+      printf '%s' "$candidate"
+      return
+    fi
+  done
+  # Preserve the canonical error path when no exact checkout exists: the
+  # staging authority reports both observed and pinned versions.
+  printf '%s' "$REPO_SIBLING_ROOT/containers"
+}
+CONTAINERS_ROOT="$(resolve_containers_root)"
 export CONTAINERS_ROOT
 COMMAND="dev"
 if [[ $# -gt 0 ]]; then

@@ -21,7 +21,7 @@ test("chat, terminal, and right panel each use one soft frame with ergonomic tog
 	assert.equal(titlebar.match(/data-testid="toggle-inference-rail"/g)?.length, 1);
 	assert.match(app, /sidePanelOpen=\{c\.showSidePanel\}/);
 	assert.match(app, /const next = !c\.showSidePanel/);
-	assert.match(app, /c\.activeLocalModel \? "inference" : "outputs"/);
+	assert.match(app, /if \(next && c\.openArtifactId\) c\.setSidePanelTab\("visual"\)/);
 	assert.match(app, /\{c\.view\.kind === "chat" \? null : appTitlebar\}/);
 	assert.match(app, /chatTitlebar=\{c\.view\.kind === "chat" \? appTitlebar : null\}/);
 	assert.doesNotMatch(css, /\.main-pane \{[^}]*(?:border-radius|box-shadow):/);
