@@ -120,6 +120,8 @@ class BridgeLocalSlotTest(unittest.TestCase):
         return [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
 
     def test_preflight_create_and_resume_sse_on_a_local_slot(self):
+        capabilities = self.call("capabilities", {})[0]
+        self.assertEqual(capabilities["result"]["deployment"], "local")
         spec = {
             "objective": "Exercise the Workshop local slot SDK path",
             "runbook": "lite",

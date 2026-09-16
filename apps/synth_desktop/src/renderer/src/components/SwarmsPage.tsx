@@ -90,6 +90,7 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 	const [events, setEvents] = useState<SwarmEventEnvelope[]>([]);
 	const [streamState, setStreamState] = useState<"idle" | "connected" | "reconnecting" | "closed" | "error">("idle");
 	const [visualId, setVisualId] = useState<string | null>(null);
+	const [deployment, setDeployment] = useState<string | null>(null);
 	const visualUpdateSequence = useRef(0);
 	const swarmId = swarmIdOf(swarm);
 	const latest = events.at(-1);
@@ -97,17 +98,30 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 	useEffect(() => {
 		if (!bridges.visuals) return;
 		let disposed = false;
-		void bridges.visuals.list({ templateId: SWARM_VISUAL_TEMPLATE, status: "live", limit: 100 }).then(async (visuals) => {
+		void Promise.all([
+			swarmSdkCall("capabilities", {}),
+			bridges.visuals.list({ templateId: SWARM_VISUAL_TEMPLATE, status: "live", limit: 100 })
+		]).then(async ([capabilities, visuals]) => {
+			const currentDeployment = text(capabilities.deployment) ?? "unknown";
+			setDeployment(currentDeployment);
 			let resumable: { visual: VisualRecord; summary: Record<string, unknown>; events: SwarmEventEnvelope[] } | null = null;
 			for (const visual of visuals) {
+				const metadata = record(visual.metadata);
+				const visualDeployment = text(metadata?.deployment);
 				const inputs = visualInputs(visual);
 				const priorEvents = Array.isArray(inputs.stream?.events) ? inputs.stream.events as SwarmEventEnvelope[] : [];
 				const terminalState = priorEvents.length ? swarmEventState(priorEvents.at(-1)!) : "";
-				if (isTerminalSwarmState(terminalState)) {
+				if (!visualDeployment || visualDeployment !== currentDeployment) {
+					await bridges.visuals?.update(visual.id, {
+						status: "saved",
+						bumpRevision: true,
+						metadata: { ...metadata, streamState: "closed", recoveryReason: "legacy_or_other_deployment", recoveredAt: new Date().toISOString() }
+					});
+				} else if (isTerminalSwarmState(terminalState)) {
 					await bridges.visuals?.update(visual.id, {
 						status: terminalState === "failed" ? "failed" : "saved",
 						bumpRevision: true,
-						metadata: { ...record(visual.metadata), streamState: "closed", recoveredAt: new Date().toISOString() }
+						metadata: { ...metadata, streamState: "closed", recoveredAt: new Date().toISOString() }
 					});
 				} else if (!resumable && inputs.swarm && swarmIdOf(inputs.swarm)) {
 					resumable = { visual, summary: inputs.swarm, events: priorEvents };
@@ -189,6 +203,9 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 		setBusy(true); setError(null); setEvents([]);
 		try {
 			const payload = { projectId: projectId.trim() || undefined, spec };
+			const capabilities = await swarmSdkCall("capabilities", {});
+			const launchDeployment = text(capabilities.deployment) ?? deployment ?? "unknown";
+			setDeployment(launchDeployment);
 			const preflight = await swarmSdkCall("preflight", payload);
 			if (preflight.clear_to_trigger !== true) {
 				const blockers = Array.isArray(preflight.blockers) ? preflight.blockers.join(" · ") : "Swarm preflight was refused";
@@ -208,7 +225,7 @@ export function SwarmsPage({ onBack, onOpenVisual }: Props) {
 					title,
 					status: "live",
 					bindings: visualBindings(hydratedSwarm, [], "idle", objective.trim(), Number(maxSpend), Number(concurrency)),
-					metadata: { swarmId: swarmIdOf(createdSwarm), transport: "sdk_sse", source: "synth-cloud-swarms-sdk" }
+					metadata: { swarmId: swarmIdOf(createdSwarm), transport: "sdk_sse", source: "synth-cloud-swarms-sdk", deployment: launchDeployment }
 				});
 				setVisualId(visual.id);
 				const shown = await bridges.visuals.show(visual.id).catch(() => visual);

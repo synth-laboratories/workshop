@@ -162,6 +162,7 @@ async def _run(operation: str, request: dict[str, Any]) -> None:
                 "schemaVersion": "workshop.swarms-sdk-bridge.v1",
                 "transport": "synth-ai-sdk",
                 "stream": "sse",
+                "deployment": "hosted" if hosted else "local",
                 "operations": [
                     "preflight", "create", "list", "retrieve", "configuration",
                     "status", "activity", "usage", "evidence", "pause", "resume",
