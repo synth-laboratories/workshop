@@ -1,5 +1,5 @@
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
 	DesktopInstanceDiagnostics,
 	LagunaStatus,
@@ -36,6 +36,7 @@ import { ProjectSourcesSettings } from "./ProjectSourcesSettings";
 import { WorkspaceAccessSettings } from "./WorkspaceAccessSettings";
 import { CapabilityManifest } from "./CapabilityManifest";
 import { PluginVisibilitySettings } from "./PluginVisibilitySettings";
+import { IndexSearchPanel, createIndexSearchClientForConnection } from "./IndexSearchPanel";
 
 type Props = {
 	onBack: () => void;
@@ -473,6 +474,13 @@ export function SettingsPage({
 		SECTIONS.some((entry) => entry.id === initialSection) ? initialSection : "general"
 	);
 	const [desktopIdentity, setDesktopIdentity] = useState<DesktopInstanceDiagnostics | null>(null);
+	// The Index client only depends on the backend URL; keying on it keeps
+	// re-renders from building a new client (and re-reading capabilities).
+	const indexBackendUrl = account.connection?.backendUrl ?? null;
+	const indexSearchClient = useMemo(
+		() => createIndexSearchClientForConnection(indexBackendUrl === null ? null : account.connection),
+		[indexBackendUrl]
+	);
 	const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
 
 	// Deep links (e.g. the inference panel's gear) retarget an already-open
@@ -594,6 +602,16 @@ export function SettingsPage({
 							onRefresh={account.onRefresh}
 							onOpenDeviceUsage={account.onOpenDeviceUsage}
 						/>
+					) : null}
+					{section === "account" ? (
+						<SettingsCard
+							title="Synth Index search"
+							description="Search the public Index from this desktop. Price, limits and retention come from the backend's capabilities."
+							testId="account-index-search"
+							className="settings-card-embed"
+						>
+							<IndexSearchPanel client={indexSearchClient} />
+						</SettingsCard>
 					) : null}
 					{section === "secrets" ? <SecretsSettings /> : null}
 					{section === "about" ? (
