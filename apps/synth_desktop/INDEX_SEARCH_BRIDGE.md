@@ -22,32 +22,31 @@ The panel is a renderer surface, and the packaged WebKit CSP allows
 native boundary. The adapter (`runtime/indexSearch/`) therefore takes an
 `IndexSearchTransport` function and speaks the raw contract itself:
 
-- `fetchTransport(baseUrl)` — direct HTTP; valid for `127.0.0.1`/`localhost`
-  backends (dev profile) and tests. This is what ships in this export.
-- native relay — a Tauri command (`index_public_search_request`) that forwards
-  the same `{method, path, headers, body, identity}` envelope through
-  `http.rs` and attaches the operator's key from the secrets proxy when
-  `identity === "account"`. It needs a regenerated `protocol.ts`, which belongs
-  to the release-engineering checkout, so it is not in this change.
+- `fetchTransport(baseUrl)` — direct HTTP for loopback development backends.
+- `nativePublicSearchTransport` — the implemented Tauri command
+  `index_public_search_request`, using the configured backend URL without
+  resolving an account key. Hosted requests require HTTPS; redirects are
+  disabled. Only anonymous public capabilities, create, poll and cancel routes
+  are allowed. Request/response bodies are bounded; only the per-search token
+  may be forwarded, and only on its matching lifecycle route.
+
+The command is registered in the canonical Specta command list. The renderer
+uses a narrow direct `invoke` edge, so it does not depend on a hand-edited
+`protocol.ts`. Release engineering must regenerate the generated protocol in
+its packaging checkout before the desktop release. This source candidate is
+0.10.2; it has not been built or accepted.
 
 MCP was rejected for the panel because it would put a Python process between a
 button and an HTTP call; the MCP tool is the agent surface, not the operator's.
 
 ## Identity
 
-Public search is anonymous by default (`identity: "anonymous"`). The renderer
-never holds an API key: `fetchTransport` fails closed with
-`index_identity_unavailable` for `account`, and only the native relay may attach
-credentials (project-local `.env` via the secrets proxy; never Keychain).
-
-Identity also selects the capabilities route. The bare
-`GET /api/v1/index/capabilities` answers 401 without a credential, so the
-anonymous client reads `GET /api/v1/index/public/capabilities`
-(`INDEX_PUBLIC_CAPABILITIES_PATH`); only `identity: "account"` reads the
-authenticated route (`INDEX_ACCOUNT_CAPABILITIES_PATH`). Both carry the same
-`public_search` block (`enabled`, `modes`, `limits`, `price_cents`,
-`retention`, `privacy_copy`), so `parseCapabilities` and `copy.ts` are shared.
-`capabilitiesPathFor(identity)` is the single place that picks.
+Public search is anonymous (`identity: "anonymous"`). Both transports reject
+account identity; this relay never reads API keys or the Keychain. The panel
+reads `/api/v1/index/public/capabilities` and uses the free public route even
+when the operator is signed in. Authenticated paid/private search remains a
+separate future surface; this change does not silently route a free request
+through it.
 
 ## Search token
 
@@ -79,11 +78,20 @@ capabilities read (`/api/v1/index/public/capabilities` anonymously, see
 Identity); absent capability → `null` → the row is not rendered. A test scans the adapter and the panel source for price/limit
 literals.
 
+## Retry and cancellation
+
+A transient poll failure preserves the opaque handle in memory. Explicit retry
+with the same query/mode/idempotency key resumes polling instead of starting a
+second search. Tokens are not persisted across closing/reloading the panel.
+Budget and rate-limit Retry-After headers gate manual retry; there is no
+automatic retry loop. Stopping locally requests backend cancellation on a
+best-effort basis and does not claim the server confirmed cancellation.
+Public deliveries must report a zero customer charge.
+
 ## Private (authenticated) search later
 
-Same adapter: construct `IndexSearchClient` with `identity: "account"` and the
-native relay transport; add the private endpoint path constants next to the
-public ones and a `visibility` field on `IndexSearchRequest`. No panel change.
+An authenticated transport and paid/private endpoint require their own reviewed
+contract and acceptance. This anonymous relay cannot be used as that transport.
 
 ## Verification
 
@@ -98,4 +106,4 @@ node scripts/lint-app-css.mjs
 
 - Errors are FastAPI-style `{"detail": {"code", "scope"?}}`; 429 carries `Retry-After` as a header.
 - Capabilities limits are `limits.{fast,deep}.{peer_per_minute, peer_per_day, global_per_minute, global_per_day}`.
-- `poll_url` is only followed when it is a relative path; the fetch transport refuses any absolute URL whose origin differs from the backend, so the search token never leaves the backend host.
+- `poll_url` is only followed when it equals the canonical lifecycle path for the accepted search ID; the fetch transport refuses any absolute URL whose origin differs from the backend, so the search token never leaves the backend host.

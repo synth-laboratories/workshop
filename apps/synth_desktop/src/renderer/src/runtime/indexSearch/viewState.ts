@@ -10,7 +10,7 @@ export type IndexSearchViewState =
 	| { phase: "searching"; mode: IndexSearchMode; searchId: string | null; pollAttempt: number }
 	| { phase: "complete"; envelope: IndexSearchEnvelope }
 	| { phase: "rate_limited"; scope: string | null; retryAtMs: number | null; detail: string }
-	| { phase: "unavailable"; code: string; detail: string }
+	| { phase: "unavailable"; code: string; detail: string; retryAtMs: number | null }
 	| { phase: "disabled"; detail: string }
 	| { phase: "too_large"; detail: string }
 	| { phase: "cancelled" }
@@ -35,14 +35,14 @@ export function viewStateFromError(error: IndexSearchError, nowMs: number): Inde
 		case "index_search_cancelled":
 			return { phase: "cancelled" };
 		default:
-			if (UNAVAILABLE_CODES.has(error.code)) return { phase: "unavailable", code: error.code, detail: error.detail };
+			if (UNAVAILABLE_CODES.has(error.code)) return { phase: "unavailable", code: error.code, detail: error.detail, retryAtMs: error.retryAfterS === null ? null : nowMs + Math.max(0, error.retryAfterS) * 1000 };
 			return { phase: "failed", code: error.code, detail: error.detail };
 	}
 }
 
 /** Whole seconds until a rate limit lifts; 0 once it has. `null` when the backend gave no Retry-After. */
 export function rateLimitSecondsRemaining(state: IndexSearchViewState, nowMs: number): number | null {
-	if (state.phase !== "rate_limited") return null;
+	if (state.phase !== "rate_limited" && state.phase !== "unavailable") return null;
 	if (state.retryAtMs === null) return null;
 	return Math.max(0, Math.ceil((state.retryAtMs - nowMs) / 1000));
 }
@@ -52,10 +52,11 @@ export function canSubmit(state: IndexSearchViewState, nowMs: number): boolean {
 	switch (state.phase) {
 		case "searching":
 		case "disabled":
-		case "unavailable":
 			return false;
+		case "unavailable":
+			return state.retryAtMs === null || rateLimitSecondsRemaining(state, nowMs) === 0;
 		case "rate_limited":
-			return rateLimitSecondsRemaining(state, nowMs) === 0;
+			return state.retryAtMs === null || rateLimitSecondsRemaining(state, nowMs) === 0;
 		default:
 			return true;
 	}

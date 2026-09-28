@@ -312,6 +312,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::model_catalog_refresh,
             crate::synth_config_update,
             crate::model_performance_get,
+            crate::index_search::index_public_search_request,
             crate::account_begin_sign_in,
             crate::account_get_summary,
             crate::account_refresh,

@@ -9,6 +9,7 @@
 pub struct Commands;
 
 impl Commands {
+    pub const INDEX_PUBLIC_SEARCH_REQUEST: &'static str = "index_public_search_request";
     pub const DATA_TRACE_RESEARCH_REQUEST: &'static str = "data_trace_research_request";
     pub const CORE_DIAGNOSTICS: &'static str = "core_diagnostics";
     pub const CORE_EVENTS_AFTER: &'static str = "core_events_after";

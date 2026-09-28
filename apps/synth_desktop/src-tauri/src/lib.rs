@@ -40,6 +40,7 @@ pub mod error;
 mod eval_driver;
 pub mod experiments;
 mod http;
+mod index_search;
 pub mod human_annotations;
 mod instance;
 mod intern_api;

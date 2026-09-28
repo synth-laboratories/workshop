@@ -336,7 +336,7 @@ test("view state maps each error code to its UI state and counts the 429 down", 
 	for (const code of ["index_public_budget_exhausted", "index_rate_store_unavailable", "monitor_unavailable"] as const) {
 		const state = viewStateFromError(new IndexSearchError({ code, detail: "down" }), now);
 		assert.equal(state.phase, "unavailable");
-		assert.equal(canSubmit(state, now), false, `${code} fails closed`);
+		assert.equal(canSubmit(state, now), true, `${code} permits an explicit retry, never an automatic loop`);
 	}
 	assert.equal(viewStateFromError(new IndexSearchError({ code: "index_public_search_disabled", detail: "off" }), now).phase, "disabled");
 	assert.equal(viewStateFromError(new IndexSearchError({ code: "index_request_too_large", detail: "big" }), now).phase, "too_large");
@@ -356,7 +356,7 @@ test("capabilities parse and drive every price, limit, retention and privacy sen
 	assert.equal(copy.priceLabel("fast"), "0¢ per search");
 	assert.equal(copy.priceLabel("deep"), "$2.50 per search");
 	assert.equal(copy.limitsLabel("fast"), "12/min · 340/day per device");
-	assert.equal(copy.retentionLabel(), "public queries kept 30 days · private processing 60 minutes");
+	assert.equal(copy.retentionLabel(), "public queries kept 30 days · processing state expires after 60 minutes");
 	assert.equal(copy.privacyCopy(), "Queries are retained for abuse review only.");
 	const changed = parseCapabilities({ ...CAPABILITIES_BODY, public_search: { ...CAPABILITIES_BODY.public_search, price_cents: { fast: 5, deep: 900 } } });
 	assert.equal(indexSearchCopy(changed).priceLabel("fast"), "5¢ per search");
@@ -472,7 +472,7 @@ test("a 200 poll still reporting running keeps polling", async () => {
 test("an off-origin poll_url is never followed with the token", async () => {
 	assert.equal(safePollPath("https://evil.example/steal", "srch_d"), "/api/v1/index/public/searches/srch_d");
 	assert.equal(safePollPath("//evil.example/steal", "srch_d"), "/api/v1/index/public/searches/srch_d");
-	assert.equal(safePollPath("/api/v1/index/public/searches/srch_d", "x"), "/api/v1/index/public/searches/srch_d");
+	assert.equal(safePollPath("/api/v1/index/public/searches/srch_d", "x"), "/api/v1/index/public/searches/x");
 	const { transport, calls } = scripted((_request, index) => {
 		if (index === 0) return json(202, { ...DEEP_START, poll_url: "https://evil.example/steal" });
 		return json(200, { ...COMPLETED_BODY, search_id: "srch_d", mode: "deep" });
@@ -491,4 +491,32 @@ test("an off-origin poll_url is never followed with the token", async () => {
 	});
 	await assert.rejects(http({ method: "GET", path: "https://evil.example/x", headers: { "X-Search-Token": TOKEN }, identity: "anonymous" }));
 	assert.equal(fetched, 0, "the token never left for another host");
+});
+
+
+test("explicit retry resumes an accepted Deep search after transport interruption", async () => {
+ const { transport, calls } = scripted((_request, index) => {
+  if (index === 0) return json(202, DEEP_START);
+  if (index === 1) throw new IndexSearchError({ code: "index_transport_failed", detail: "interrupted" });
+  return json(200, { ...COMPLETED_BODY, mode: "deep" });
+ });
+ const client = new IndexSearchClient({ transport, sleep: noSleep });
+ const request = { query: "q", mode: "deep" as const, idempotencyKey: "retry-original" };
+ await assert.rejects(client.search(request));
+ await assert.rejects(client.search({ ...request, query: "changed" }));
+ const handle = await client.search(request);
+ assert.equal(calls.filter(call => call.method === "POST").length, 1);
+ assert.equal(calls[2].headers["X-Search-Token"], TOKEN);
+ assert.ok(!JSON.stringify(handle).includes(TOKEN));
+});
+
+test("budget Retry-After blocks manual resubmission until the deadline", () => {
+ const state = viewStateFromError(errorFromResponse(json(503, { detail: { code: "index_public_budget_exhausted", scope: "deep_concurrency" } }, { "retry-after": "15" })), 1000);
+ assert.equal(canSubmit(state, 1000), false);
+ assert.equal(canSubmit(state, 16000), true);
+});
+
+test("public delivery refuses a nonzero customer charge", async () => {
+ const { transport } = scripted(() => json(200, { ...COMPLETED_BODY, usage: { customer_charge_cents: 1 } }));
+ await assert.rejects(new IndexSearchClient({ transport }).search({ query: "q", mode: "fast" }), (error: unknown) => error instanceof IndexSearchError && error.code === "index_malformed_response");
 });

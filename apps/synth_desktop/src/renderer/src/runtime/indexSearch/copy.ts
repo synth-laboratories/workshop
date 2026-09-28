@@ -41,8 +41,10 @@ export function indexSearchCopy(capabilities: IndexSearchCapabilities | null): I
 			const retention = search?.retention;
 			if (!retention) return null;
 			const parts: string[] = [];
-			if (retention.publicQueryDays !== null) parts.push(`public queries kept ${retention.publicQueryDays} days`);
-			if (retention.privateProcessingMinutes !== null) parts.push(`private processing ${retention.privateProcessingMinutes} minutes`);
+			if (retention.publicQueryDays !== null) parts.push(retention.publicQueryDays === 0
+				? "public query content is not retained in durable storage"
+				: `public queries kept ${retention.publicQueryDays} days`);
+			if (retention.privateProcessingMinutes !== null) parts.push(`processing state expires after ${retention.privateProcessingMinutes} minutes`);
 			return parts.length ? parts.join(" · ") : null;
 		},
 		privacyCopy() {

@@ -1098,7 +1098,15 @@ fn multi_agent_version_name(value: MultiAgentVersion) -> &'static str {
     }
 }
 
-pub fn resolve() -> Result<ResolvedBackend> {
+struct BackendRouting {
+    config_path: PathBuf,
+    document: toml::Value,
+    profile: String,
+    endpoint: String,
+    allow_development_override: bool,
+}
+
+fn resolve_backend_routing() -> Result<BackendRouting> {
     let config_path = config_path();
     let document = read_toml(&config_path)?;
     let intern = document.get("intern").and_then(toml::Value::as_table);
@@ -1125,6 +1133,29 @@ pub fn resolve() -> Result<ResolvedBackend> {
         env::var("SYNTH_BACKEND_URL").ok(),
         configured_endpoint,
     )?;
+    Ok(BackendRouting {
+        config_path,
+        document,
+        profile,
+        endpoint: validate_url(&endpoint)?,
+        allow_development_override,
+    })
+}
+
+/// Resolve anonymous HTTP routing without reading credentials or a secrets registry.
+pub fn public_backend_url() -> Result<String> {
+    Ok(resolve_backend_routing()?.endpoint)
+}
+
+pub fn resolve() -> Result<ResolvedBackend> {
+    let BackendRouting {
+        config_path,
+        document,
+        profile,
+        endpoint,
+        allow_development_override,
+    } = resolve_backend_routing()?;
+    let intern = document.get("intern").and_then(toml::Value::as_table);
     // Named development instances may point their isolated cloud lane at a
     // disposable local Responses backend. Canonical apps retain source-owned
     // routing and deliberately ignore this process override.

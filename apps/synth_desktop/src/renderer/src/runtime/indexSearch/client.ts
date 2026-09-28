@@ -143,14 +143,19 @@ export function errorFromResponse(response: TransportResponse): IndexSearchError
 	const rawCode = optionalString(detailRow.code);
 	const detailText = optionalString(body.detail);
 	const code: IndexSearchErrorCode = rawCode && KNOWN_ERROR_CODES.has(rawCode) ? (rawCode as IndexSearchErrorCode) : "index_unexpected_status";
-	const detail = detailText ?? (rawCode ? `Index search failed with HTTP ${response.status} (${rawCode}).` : `Index search failed with HTTP ${response.status}.`);
+	const budgetDetail = rawCode === "index_public_budget_exhausted"
+		? detailRow.scope === "deep_concurrency" ? "All shared Deep slots are busy." : detailRow.scope === "daily_cents" ? "The shared public-search daily budget is exhausted." : "Public search capacity is unavailable."
+		: null;
+	const detail = budgetDetail ?? detailText ?? (rawCode ? `Index search failed with HTTP ${response.status} (${rawCode}).` : `Index search failed with HTTP ${response.status}.`);
 	const retryHeader = response.headers["retry-after"];
-	const retryAfterS = retryHeader !== undefined && retryHeader.trim() !== "" ? finiteNumber(Number(retryHeader)) : null;
+	const numericRetry = retryHeader && /^\d{1,7}$/.test(retryHeader.trim()) ? Number(retryHeader) : null;
+	const dateRetry = retryHeader ? Date.parse(retryHeader) : NaN;
+	const retryAfterS = numericRetry ?? (Number.isFinite(dateRetry) ? Math.max(0, Math.ceil((dateRetry - Date.now()) / 1000)) : null);
 	return new IndexSearchError({
 		code,
 		detail,
 		status: response.status,
-		retryAfterS: code === "index_public_rate_limited" ? retryAfterS : null,
+		retryAfterS: code === "index_public_rate_limited" || code === "index_public_budget_exhausted" ? retryAfterS : null,
 		scope: optionalString(detailRow.scope)
 	});
 }
@@ -206,8 +211,8 @@ export function parseCompleted(
 			? Number(chargeHeader)
 			: null
 		: (finiteNumber(usage.customer_charge_cents) ?? finiteNumber(row.amount_cents));
-	if (charge === null) {
-		throw new IndexSearchError({ code: "index_malformed_response", detail: "search response omitted the customer charge." });
+	if (charge === null || !Number.isSafeInteger(charge) || charge !== 0) {
+		throw new IndexSearchError({ code: "index_malformed_response", detail: "Public search must report a zero customer charge." });
 	}
 	const searchIdHeader = headers[SEARCH_ID_HEADER]?.trim();
 	return {
@@ -251,7 +256,7 @@ function terminalLifecycleError(row: Record<string, unknown>, state: "failed" | 
 export function safePollPath(pollUrl: string | null, searchId: string): string {
 	const fallback = `${INDEX_PUBLIC_SEARCHES_PATH}/${encodeURIComponent(searchId)}`;
 	if (!pollUrl) return fallback;
-	if (!pollUrl.startsWith("/") || pollUrl.startsWith("//") || pollUrl.includes("\\")) return fallback;
+	if (pollUrl !== fallback) return fallback;
 	return pollUrl;
 }
 
@@ -304,6 +309,9 @@ export class IndexSearchClient {
 	readonly identity: IndexSearchIdentity;
 	private readonly transport: IndexSearchTransport;
 	private readonly sleep: SleepFn;
+	// Opaque handles survive a transient poll error inside this client only.
+	// Map entries are never part of view state or a serialized handle.
+	private readonly pending = new Map<string, { searchId: string; token: string; pollPath: string; fingerprint: string }>();
 
 	constructor(options: IndexSearchClientOptions) {
 		this.transport = options.transport;
@@ -324,16 +332,26 @@ export class IndexSearchClient {
 		const body: Record<string, unknown> = { mode: request.mode, query: request.query };
 		if (request.maxResults !== undefined) body.max_results = request.maxResults;
 		if (request.idempotencyKey !== undefined) body.idempotency_key = request.idempotencyKey;
-		const response = await this.transport({ method: "POST", path: INDEX_PUBLIC_SEARCH_PATH, headers: {}, body, identity: this.identity, signal });
-		if (response.status === 200) {
-			const completed = parseCompleted(response.body, request.mode, response.headers);
-			return this.handle(completed.envelope, completed.token);
+		const key = request.idempotencyKey ?? crypto.randomUUID();
+		body.idempotency_key = key;
+		const fingerprint = JSON.stringify({ mode: request.mode, query: request.query, maxResults: request.maxResults });
+		let pending = this.pending.get(key);
+		if (pending && pending.fingerprint !== fingerprint) throw new IndexSearchError({ code: "index_malformed_response", detail: "A retry key must keep its original query and mode." });
+		if (!pending) {
+			const response = await this.transport({ method: "POST", path: INDEX_PUBLIC_SEARCH_PATH, headers: {}, body, identity: this.identity, signal });
+			if (response.status === 200) {
+				const completed = parseCompleted(response.body, request.mode, response.headers);
+				return this.handle(completed.envelope, completed.token);
+			}
+			if (response.status !== 202) throw errorFromResponse(response);
+			const accepted = record(response.body, "accepted search");
+			const searchId = str(accepted, "search_id", "accepted search");
+			const token = str(accepted, "search_token", "accepted search");
+			const pollPath = safePollPath(optionalString(accepted.poll_url), searchId);
+			pending = { searchId, token, pollPath, fingerprint };
+			this.pending.set(key, pending);
 		}
-		if (response.status !== 202) throw errorFromResponse(response);
-		const accepted = record(response.body, "accepted search");
-		const searchId = str(accepted, "search_id", "accepted search");
-		const token = str(accepted, "search_token", "accepted search");
-		const pollPath = safePollPath(optionalString(accepted.poll_url), searchId);
+		const { searchId, token, pollPath } = pending;
 		onProgress?.({ kind: "accepted", searchId });
 		try {
 			for (let attempt = 1; attempt <= DEEP_POLL_MAX_ATTEMPTS; attempt += 1) {
@@ -348,12 +366,15 @@ export class IndexSearchClient {
 				if (state === "failed" || state === "cancelled") throw terminalLifecycleError(row, state);
 				if (state === "queued" || state === "running") continue;
 				const completed = parseCompleted(row, request.mode, poll.headers);
+				this.pending.delete(key);
 				return this.handle(completed.envelope, completed.token ?? token);
 			}
 		} catch (error) {
 			if (signal?.aborted || (error instanceof IndexSearchError && error.code === "index_search_cancelled" && error.status === null)) {
 				await this.cancelOnBackend(searchId, token);
+				this.pending.delete(key);
 			}
+			if (error instanceof IndexSearchError && ["index_search_not_found", "index_search_failed", "index_search_cancelled"].includes(error.code)) this.pending.delete(key);
 			throw error;
 		}
 		throw new IndexSearchError({ code: "index_transport_failed", detail: "Deep search did not finish within the polling budget.", status: 202 });

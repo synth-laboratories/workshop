@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { SynthBackendSettings } from "../bridge";
+import { nativeIndexTransport } from "../runtime/indexSearch/nativeTransport.ts";
 import {
 	IndexSearchClient,
 	IndexSearchError,
@@ -22,7 +23,11 @@ import {
  * changing this file.
  */
 export function createIndexSearchClientForConnection(connection: SynthBackendSettings | null): IndexSearchClient | null {
-	if (!connection || !isLoopbackBackend(connection.backendUrl)) return null;
+	if (!connection) return null;
+	if (window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window) {
+		return new IndexSearchClient({ transport: nativeIndexTransport, identity: "anonymous" });
+	}
+	if (!isLoopbackBackend(connection.backendUrl)) return null;
 	return new IndexSearchClient({ transport: fetchTransport(connection.backendUrl, (url, init) => fetch(url, init)), identity: "anonymous" });
 }
 
@@ -42,6 +47,7 @@ export function IndexSearchPanel({ client, onInsertCitation, now = wallClock }: 
 	const [state, setState] = useState<IndexSearchViewState>({ phase: "idle" });
 	const [tick, setTick] = useState(0);
 	const inflight = useRef<AbortController | null>(null);
+	const attempt = useRef<{ fingerprint: string; key: string } | null>(null);
 
 	useEffect(() => {
 		if (!client) return;
@@ -65,12 +71,16 @@ export function IndexSearchPanel({ client, onInsertCitation, now = wallClock }: 
 
 	// Drive the 429 countdown once a second while it is visible.
 	useEffect(() => {
-		if (state.phase !== "rate_limited" || rateLimitSecondsRemaining(state, now()) === 0) return;
+		if ((state.phase !== "rate_limited" && state.phase !== "unavailable") || rateLimitSecondsRemaining(state, now()) === 0) return;
 		const timer = setInterval(() => setTick((value) => value + 1), 1000);
 		return () => clearInterval(timer);
 	}, [state, now, tick]);
 
-	useEffect(() => () => inflight.current?.abort(), []);
+	useEffect(() => () => {
+		inflight.current?.abort();
+		inflight.current = null;
+		attempt.current = null;
+	}, [client]);
 
 	const copy = indexSearchCopy(capabilities);
 	const nowMs = now();
@@ -84,19 +94,25 @@ export function IndexSearchPanel({ client, onInsertCitation, now = wallClock }: 
 		const controller = new AbortController();
 		inflight.current = controller;
 		setState({ phase: "searching", mode, searchId: null, pollAttempt: 0 });
+		const fingerprint = JSON.stringify({ query: query.trim(), mode });
+		if (attempt.current?.fingerprint !== fingerprint) attempt.current = { fingerprint, key: crypto.randomUUID() };
 		try {
 			const handle = await client.search(
-				{ query: query.trim(), mode },
+				{ query: query.trim(), mode, idempotencyKey: attempt.current.key },
 				{
 					signal: controller.signal,
 					onProgress: (progress) =>
-						setState({ phase: "searching", mode, searchId: progress.searchId, pollAttempt: progress.kind === "polling" ? progress.attempt : 0 })
+						{ if (inflight.current === controller && !controller.signal.aborted) setState({ phase: "searching", mode, searchId: progress.searchId, pollAttempt: progress.kind === "polling" ? progress.attempt : 0 }); }
 				}
 			);
-			if (!controller.signal.aborted) setState({ phase: "complete", envelope: handle.envelope });
+			if (inflight.current === controller && !controller.signal.aborted) {
+				attempt.current = null;
+				setState({ phase: "complete", envelope: handle.envelope });
+			}
 		} catch (error) {
+			if (inflight.current !== controller || controller.signal.aborted) return;
 			if (error instanceof IndexSearchError) setState(viewStateFromError(error, now()));
-			else setState({ phase: "failed", code: "index_transport_failed", detail: error instanceof Error ? error.message : String(error) });
+			else setState({ phase: "failed", code: "index_transport_failed", detail: "Index transport is unavailable. Retry to resume the same search." });
 		} finally {
 			if (inflight.current === controller) inflight.current = null;
 		}
@@ -105,6 +121,7 @@ export function IndexSearchPanel({ client, onInsertCitation, now = wallClock }: 
 	const cancel = () => {
 		inflight.current?.abort();
 		inflight.current = null;
+		attempt.current = null;
 		setState({ phase: "cancelled" });
 	};
 
@@ -194,13 +211,15 @@ function statusLine(state: IndexSearchViewState, nowMs: number): string {
 			return remaining === 0 ? `Rate limit lifted${scope}. Search again.` : `Rate limited${scope}. Retry in ${remaining}s.`;
 		}
 		case "unavailable":
-			return `Index search is unavailable (${state.code}). ${state.detail}`;
+			return state.code === "index_public_budget_exhausted"
+				? state.detail + (rateLimitSecondsRemaining(state, nowMs) === null ? "" : ` Retry in ${rateLimitSecondsRemaining(state, nowMs)}s.`)
+				: `Index search is unavailable (${state.code}). ${state.detail}`;
 		case "disabled":
 			return `Public Index search is disabled on this backend. ${state.detail}`;
 		case "too_large":
 			return `Query too large. ${state.detail}`;
 		case "cancelled":
-			return "Search cancelled.";
+			return "Stopped waiting. Server cancellation was requested; the search may still be finishing.";
 		case "failed":
 			return `Search failed (${state.code}). ${state.detail}`;
 	}
