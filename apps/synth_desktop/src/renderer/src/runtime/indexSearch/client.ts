@@ -21,6 +21,14 @@ export const INDEX_PUBLIC_SEARCH_PATH = "/api/v1/index/public/search";
 export const INDEX_PUBLIC_SEARCHES_PATH = "/api/v1/index/public/searches";
 export const INDEX_CAPABILITIES_PATH = "/api/v1/index/capabilities";
 const SEARCH_TOKEN_HEADER = "X-Search-Token";
+/**
+ * The Monitor's release decision travels as a response header, never in the
+ * body (reviewed bytes must equal delivered bytes); the body's
+ * `monitor.release_id` is null and `monitor.release_header` names this header.
+ * Transport header names are lower-cased.
+ */
+export const MONITOR_RELEASE_HEADER = "x-index-monitor-release";
+export const MONITOR_DELIVERY_HEADER = "x-index-monitor-delivery";
 
 /** Poll cadence for Deep searches; bounded so a stuck search cannot spin. */
 export const DEEP_POLL_DELAYS_MS = [500, 1000, 2000, 3000, 5000];
@@ -132,8 +140,21 @@ export function parseResult(value: unknown): IndexSearchResult {
 	};
 }
 
-/** Parse a Fast 200 / completed Deep body. Returns the envelope and the token separately. */
-export function parseCompleted(value: unknown, mode: IndexSearchMode): { envelope: IndexSearchEnvelope; token: string | null } {
+function releaseIdFrom(headers: Record<string, string>, monitor: Record<string, unknown>): string | null {
+	const fromHeader = headers[MONITOR_RELEASE_HEADER]?.trim();
+	return fromHeader ? fromHeader : optionalString(monitor.release_id);
+}
+
+/**
+ * Parse a Fast 200 / completed Deep body. Returns the envelope and the token
+ * separately. `headers` are the response headers (lower-cased): the Monitor
+ * release id is read from `X-Index-Monitor-Release` first, then the body.
+ */
+export function parseCompleted(
+	value: unknown,
+	mode: IndexSearchMode,
+	headers: Record<string, string> = {}
+): { envelope: IndexSearchEnvelope; token: string | null } {
 	const row = record(value, "search response");
 	const results = row.results;
 	if (!Array.isArray(results)) {
@@ -150,7 +171,7 @@ export function parseCompleted(value: unknown, mode: IndexSearchMode): { envelop
 			searchId: str(row, "search_id", "search response"),
 			mode,
 			results: results.map(parseResult),
-			monitor: { releaseId: optionalString(monitor.release_id) },
+			monitor: { releaseId: releaseIdFrom(headers, monitor) },
 			usage: { customerChargeCents: charge }
 		},
 		token: optionalString(row.search_token)
@@ -228,7 +249,7 @@ export class IndexSearchClient {
 		if (request.idempotencyKey !== undefined) body.idempotency_key = request.idempotencyKey;
 		const response = await this.transport({ method: "POST", path: INDEX_PUBLIC_SEARCH_PATH, headers: {}, body, identity: this.identity, signal });
 		if (response.status === 200) {
-			const completed = parseCompleted(response.body, request.mode);
+			const completed = parseCompleted(response.body, request.mode, response.headers);
 			return this.handle(completed.envelope, completed.token);
 		}
 		if (response.status !== 202) throw errorFromResponse(response);
@@ -244,7 +265,7 @@ export class IndexSearchClient {
 			const poll = await this.transport({ method: "GET", path: pollUrl, headers: { [SEARCH_TOKEN_HEADER]: token }, identity: this.identity, signal });
 			if (poll.status === 202) continue;
 			if (poll.status !== 200) throw errorFromResponse(poll);
-			const completed = parseCompleted(poll.body, request.mode);
+			const completed = parseCompleted(poll.body, request.mode, poll.headers);
 			return this.handle(completed.envelope, completed.token ?? token);
 		}
 		throw new IndexSearchError({ code: "index_transport_failed", detail: "Deep search did not finish within the polling budget.", status: 202 });
@@ -270,7 +291,7 @@ export class IndexSearchClient {
 					signal
 				});
 				if (response.status !== 200) throw errorFromResponse(response);
-				return parseCompleted(response.body, mode).envelope;
+				return parseCompleted(response.body, mode, response.headers).envelope;
 			},
 			toJSON() {
 				return envelope;

@@ -29,6 +29,7 @@ export type IndexSearchEnvelope = {
 	searchId: string;
 	mode: IndexSearchMode;
 	results: IndexSearchResult[];
+	/** Release id from the `X-Index-Monitor-Release` response header, else the body's `monitor.release_id`. */
 	monitor: { releaseId: string | null };
 	usage: { customerChargeCents: number };
 };

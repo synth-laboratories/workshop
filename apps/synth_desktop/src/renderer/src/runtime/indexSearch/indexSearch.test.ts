@@ -77,6 +77,34 @@ test("fast search returns a typed envelope and keeps the token out of the handle
 	assert.ok(!Object.keys(handle).some((key) => /token/i.test(key)));
 });
 
+test("fast search reads the Monitor release id from the response header before the body", async () => {
+	const body = { ...COMPLETED_BODY, monitor: { release_id: null, release_header: "X-Index-Monitor-Release" } };
+	const { transport } = scripted(() => json(200, body, { "x-index-monitor-release": "rel_hdr_1", "x-index-monitor-delivery": "released" }));
+	const client = new IndexSearchClient({ transport, sleep: noSleep });
+	const handle = await client.search({ query: "q", mode: "fast" });
+	assert.equal(handle.envelope.monitor.releaseId, "rel_hdr_1");
+	const both = scripted(() => json(200, COMPLETED_BODY, { "x-index-monitor-release": "rel_hdr_2" }));
+	const preferHeader = await new IndexSearchClient({ transport: both.transport, sleep: noSleep }).search({ query: "q", mode: "fast" });
+	assert.equal(preferHeader.envelope.monitor.releaseId, "rel_hdr_2");
+	const neither = scripted(() => json(200, body));
+	const absent = await new IndexSearchClient({ transport: neither.transport, sleep: noSleep }).search({ query: "q", mode: "fast" });
+	assert.equal(absent.envelope.monitor.releaseId, null);
+});
+
+test("deep completion poll reads the Monitor release id from the response header", async () => {
+	const { transport } = scripted((_request, index) => {
+		if (index === 0) return json(202, { search_id: "srch_d", search_token: TOKEN });
+		if (index === 1) return json(202, { search_id: "srch_d", state: "running", status: "running" });
+		return json(200, { ...COMPLETED_BODY, search_id: "srch_d", status: "completed", monitor: { release_id: null } }, { "x-index-monitor-release": "rel_hdr_deep" });
+	});
+	const client = new IndexSearchClient({ transport, sleep: noSleep });
+	const handle = await client.search({ query: "q", mode: "deep" });
+	assert.equal(handle.envelope.searchId, "srch_d");
+	assert.equal(handle.envelope.monitor.releaseId, "rel_hdr_deep");
+	const again = await handle.refetch();
+	assert.equal(again.monitor.releaseId, "rel_hdr_deep");
+});
+
 test("refetch sends the per-search token as a header only", async () => {
 	const { transport, calls } = scripted((_request, index) => (index === 0 ? json(200, COMPLETED_BODY) : json(200, COMPLETED_BODY)));
 	const client = new IndexSearchClient({ transport, sleep: noSleep });
