@@ -1,6 +1,8 @@
 /**
  * Every price, limit, retention and privacy sentence Workshop shows for Index
- * search is derived from `GET /api/v1/index/capabilities`. Nothing here knows
+ * search is derived from the Index capabilities (`GET
+ * /api/v1/index/public/capabilities` anonymously, `/api/v1/index/capabilities`
+ * with an account; same `public_search` block). Nothing here knows
  * what the Index costs; a missing capability yields `null`, never a default.
  */
 import type { IndexSearchCapabilities, IndexSearchMode } from "./types.ts";

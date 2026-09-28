@@ -19,7 +19,17 @@ import {
 
 export const INDEX_PUBLIC_SEARCH_PATH = "/api/v1/index/public/search";
 export const INDEX_PUBLIC_SEARCHES_PATH = "/api/v1/index/public/searches";
-export const INDEX_CAPABILITIES_PATH = "/api/v1/index/capabilities";
+/**
+ * Capabilities: the anonymous-capable route is `/public/capabilities`; the
+ * bare `/capabilities` route answers 401 without a credential. Both carry the
+ * same `public_search` block, so `identity` alone picks the path.
+ */
+export const INDEX_PUBLIC_CAPABILITIES_PATH = "/api/v1/index/public/capabilities";
+export const INDEX_ACCOUNT_CAPABILITIES_PATH = "/api/v1/index/capabilities";
+
+export function capabilitiesPathFor(identity: IndexSearchIdentity): string {
+	return identity === "account" ? INDEX_ACCOUNT_CAPABILITIES_PATH : INDEX_PUBLIC_CAPABILITIES_PATH;
+}
 const SEARCH_TOKEN_HEADER = "X-Search-Token";
 /**
  * The Monitor's release decision travels as a response header, never in the
@@ -236,7 +246,7 @@ export class IndexSearchClient {
 
 	async capabilities(signal?: AbortSignal): Promise<IndexSearchCapabilities> {
 		throwIfAborted(signal);
-		const response = await this.transport({ method: "GET", path: INDEX_CAPABILITIES_PATH, headers: {}, identity: this.identity, signal });
+		const response = await this.transport({ method: "GET", path: capabilitiesPathFor(this.identity), headers: {}, identity: this.identity, signal });
 		if (response.status !== 200) throw errorFromResponse(response);
 		return parseCapabilities(response.body);
 	}

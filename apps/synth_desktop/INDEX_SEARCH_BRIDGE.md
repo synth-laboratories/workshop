@@ -38,6 +38,15 @@ never holds an API key: `fetchTransport` fails closed with
 `index_identity_unavailable` for `account`, and only the native relay may attach
 credentials (project-local `.env` via the secrets proxy; never Keychain).
 
+Identity also selects the capabilities route. The bare
+`GET /api/v1/index/capabilities` answers 401 without a credential, so the
+anonymous client reads `GET /api/v1/index/public/capabilities`
+(`INDEX_PUBLIC_CAPABILITIES_PATH`); only `identity: "account"` reads the
+authenticated route (`INDEX_ACCOUNT_CAPABILITIES_PATH`). Both carry the same
+`public_search` block (`enabled`, `modes`, `limits`, `price_cents`,
+`retention`, `privacy_copy`), so `parseCapabilities` and `copy.ts` are shared.
+`capabilitiesPathFor(identity)` is the single place that picks.
+
 ## Search token
 
 `search_token` is per search, 60 minutes, memory only. `IndexSearchClient`
@@ -61,9 +70,9 @@ state the panel holds) is built from the envelope. Polling sends it only as
 
 ## Copy
 
-`copy.ts` derives every price, limit, retention and privacy sentence from
-`GET /api/v1/index/capabilities`; absent capability → `null` → the row is not
-rendered. A test scans the adapter and the panel source for price/limit
+`copy.ts` derives every price, limit, retention and privacy sentence from the
+capabilities read (`/api/v1/index/public/capabilities` anonymously, see
+Identity); absent capability → `null` → the row is not rendered. A test scans the adapter and the panel source for price/limit
 literals.
 
 ## Private (authenticated) search later

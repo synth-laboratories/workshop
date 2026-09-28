@@ -5,7 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	DEEP_POLL_MAX_ATTEMPTS,
-	INDEX_CAPABILITIES_PATH,
+	INDEX_ACCOUNT_CAPABILITIES_PATH,
+	INDEX_PUBLIC_CAPABILITIES_PATH,
 	INDEX_PUBLIC_SEARCH_PATH,
 	IndexSearchClient,
 	errorFromResponse,
@@ -242,7 +243,7 @@ test("capabilities parse and drive every price, limit, retention and privacy sen
 	const { transport, calls } = scripted(() => json(200, CAPABILITIES_BODY));
 	const client = new IndexSearchClient({ transport, sleep: noSleep });
 	const capabilities = await client.capabilities();
-	assert.equal(calls[0].path, INDEX_CAPABILITIES_PATH);
+	assert.equal(calls[0].path, INDEX_PUBLIC_CAPABILITIES_PATH);
 	assert.deepEqual(capabilities.publicSearch.modes, ["fast", "deep"]);
 	assert.equal(capabilities.publicSearch.limits.deep?.peerDay, 41);
 	const copy = indexSearchCopy(capabilities);
@@ -259,6 +260,23 @@ test("capabilities parse and drive every price, limit, retention and privacy sen
 	assert.equal(absent.limitsLabel("deep"), null);
 	assert.equal(absent.retentionLabel(), null);
 	assert.equal(absent.privacyCopy(), null);
+});
+
+test("anonymous capabilities read the public route; only an account reads the authenticated one", async () => {
+	assert.equal(INDEX_PUBLIC_CAPABILITIES_PATH, "/api/v1/index/public/capabilities");
+	assert.equal(INDEX_ACCOUNT_CAPABILITIES_PATH, "/api/v1/index/capabilities");
+	const anonymous = scripted(() => json(200, CAPABILITIES_BODY));
+	await new IndexSearchClient({ transport: anonymous.transport, sleep: noSleep }).capabilities();
+	assert.equal(anonymous.calls.length, 1);
+	assert.equal(anonymous.calls[0].method, "GET");
+	assert.equal(anonymous.calls[0].path, INDEX_PUBLIC_CAPABILITIES_PATH);
+	assert.equal(anonymous.calls[0].identity, "anonymous");
+	// The bare route answers 401 anonymously; the default identity must never reach it.
+	assert.notEqual(anonymous.calls[0].path, INDEX_ACCOUNT_CAPABILITIES_PATH);
+	const account = scripted(() => json(200, CAPABILITIES_BODY));
+	await new IndexSearchClient({ transport: account.transport, sleep: noSleep, identity: "account" }).capabilities();
+	assert.equal(account.calls[0].path, INDEX_ACCOUNT_CAPABILITIES_PATH);
+	assert.equal(account.calls[0].identity, "account");
 });
 
 test("no price, limit or retention literal is hardcoded in the bridge or its panel", () => {
@@ -282,7 +300,7 @@ test("fetch transport fails closed for account identity and never reaches the ne
 		called += 1;
 		return { status: 200, headers: { forEach() {} }, text: async () => "{}" };
 	});
-	await assert.rejects(transport({ method: "GET", path: INDEX_CAPABILITIES_PATH, headers: {}, identity: "account" }), (error: unknown) => error instanceof IndexSearchError && error.code === "index_identity_unavailable");
+	await assert.rejects(transport({ method: "GET", path: INDEX_ACCOUNT_CAPABILITIES_PATH, headers: {}, identity: "account" }), (error: unknown) => error instanceof IndexSearchError && error.code === "index_identity_unavailable");
 	assert.equal(called, 0);
 });
 

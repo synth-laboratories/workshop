@@ -2,7 +2,9 @@
  * Synth Index public search: the one typed contract Workshop speaks.
  *
  * Wire shapes mirror the backend spec (`POST /api/v1/index/public/search`,
- * `GET /api/v1/index/public/searches/{search_id}`, `GET /api/v1/index/capabilities`).
+ * `GET /api/v1/index/public/searches/{search_id}`,
+ * `GET /api/v1/index/public/capabilities` anonymously or
+ * `GET /api/v1/index/capabilities` with an account credential).
  * Every other module in this folder consumes these types; nothing outside the
  * folder parses Index JSON.
  */
