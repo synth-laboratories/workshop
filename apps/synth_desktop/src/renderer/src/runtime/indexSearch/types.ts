@@ -18,22 +18,29 @@ export type IndexSearchRequest = {
 	idempotencyKey?: string;
 };
 
-export type IndexSearchResult = {
+/** One contribution a search cites, in first-appearance order in `response`. */
+export type IndexSearchCitation = {
 	contributionId: string;
 	revisionId: string;
-	title: string;
-	excerpt: string;
-	citation: string;
 };
 
-/** A completed search. Deliberately excludes the search token. */
+/**
+ * A completed search (`PublicSearchDelivery`): text whose claims cite
+ * contribution ids inline (`[<contribution_id>]`) plus the cited
+ * contributions. No ranked hits, titles or excerpts. Deliberately excludes the
+ * search token.
+ */
 export type IndexSearchEnvelope = {
 	searchId: string;
 	mode: IndexSearchMode;
-	results: IndexSearchResult[];
+	status: "completed" | "partial";
+	response: string;
+	citations: IndexSearchCitation[];
 	/** Release id from the `X-Index-Monitor-Release` response header, else the body's `monitor.release_id`. */
 	monitor: { releaseId: string | null };
 	usage: { customerChargeCents: number };
+	/** When the per-search token stops working (ISO 8601). Not a secret. */
+	tokenExpiresAt: string | null;
 };
 
 export type IndexSearchModeLimits = {
@@ -67,6 +74,7 @@ export type IndexSearchErrorCode =
 	| "index_transport_failed"
 	| "index_malformed_response"
 	| "index_search_cancelled"
+	| "index_search_failed"
 	| "index_unexpected_status";
 
 export class IndexSearchError extends Error {

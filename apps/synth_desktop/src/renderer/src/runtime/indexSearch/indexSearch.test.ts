@@ -9,37 +9,77 @@ import {
 	INDEX_PUBLIC_CAPABILITIES_PATH,
 	INDEX_PUBLIC_SEARCH_PATH,
 	IndexSearchClient,
+	citationMarker,
 	errorFromResponse,
-	parseCapabilities
+	parseCapabilities,
+	safePollPath
 } from "./client.ts";
 import { indexSearchCopy } from "./copy.ts";
-import { fetchTransport, isLoopbackBackend } from "./transport.ts";
+import { fetchTransport, isLoopbackBackend, resolveSameOrigin } from "./transport.ts";
 import { IndexSearchError, type IndexSearchTransport, type TransportRequest, type TransportResponse } from "./types.ts";
 import { canSubmit, rateLimitSecondsRemaining, viewStateFromError } from "./viewState.ts";
 
 const TOKEN = "tok-search-secret-ABCDEFGHIJKLMNOP";
 
+/** A real `PublicSearchDelivery` (backend app/api/v1/index/public_search.py). */
 const COMPLETED_BODY = {
 	search_id: "srch_1",
-	search_token: TOKEN,
-	results: [
-		{ contribution_id: "c1", revision_id: "r1", title: "T", excerpt: "E", citation: "[synth-index:c1@r1]" }
+	request_id: "req_1",
+	requested_mode: "fast",
+	effective_mode: "fast",
+	status: "completed",
+	partial_reason: null,
+	corpus_generation: "gen_1",
+	ranker_version: "rank_1",
+	parser_version: "parse_1",
+	taxonomy_version: "tax_1",
+	execution_versions: {},
+	response: "Craftax agents benefit from curricula [c1] and dense rewards [c2].",
+	citations: [
+		{ contribution_id: "c1", revision_id: "r1" },
+		{ contribution_id: "c2", revision_id: "r7" }
 	],
-	monitor: { release_id: "rel_9" },
-	usage: { customer_charge_cents: 0 }
+	mode: "fast",
+	usage: { customer_charge_cents: 0 },
+	search_token: TOKEN,
+	search_token_expires_at: "2026-09-28T12:00:00+00:00",
+	monitor: { release_id: "rel_9", release_header: "X-Index-Monitor-Release" },
+	service_usage: { customer_charge_cents: 0, internal_cost_recorded: true }
 };
+
+function acceptedBody(state: string, extra: Record<string, unknown> = {}) {
+	return {
+		search_id: "srch_d",
+		mode: "deep",
+		state,
+		status: state,
+		poll_url: "/api/v1/index/public/searches/srch_d",
+		cancellation_requested: false,
+		result_available: false,
+		failure: null,
+		search_token: null,
+		search_token_expires_at: null,
+		...extra
+	};
+}
+
+const DEEP_START = acceptedBody("queued", { search_token: TOKEN, search_token_expires_at: "2026-09-28T12:00:00+00:00" });
 
 const CAPABILITIES_BODY = {
 	public_search: {
 		enabled: true,
 		modes: ["fast", "deep"],
 		limits: {
-			fast: { peer_minute: 12, peer_day: 340, global_minute: 5000, global_day: 90000 },
-			deep: { peer_minute: 3, peer_day: 41, global_minute: 200, global_day: 4000 }
+			fast: { peer_per_minute: 12, peer_per_day: 340, global_per_minute: 5000, global_per_day: 90000 },
+			deep: { peer_per_minute: 3, peer_per_day: 41, global_per_minute: 200, global_per_day: 4000 }
 		},
 		price_cents: { fast: 0, deep: 250 },
 		retention: { public_query_days: 30, private_processing_minutes: 60 },
-		privacy_copy: "Queries are retained for abuse review only."
+		privacy_copy: "Queries are retained for abuse review only.",
+		daily_budget_cents: 5000,
+		deep_concurrency_max: 4,
+		token_ttl_seconds: 3600,
+		max_body_bytes: 16384
 	}
 };
 
@@ -69,7 +109,15 @@ test("fast search returns a typed envelope and keeps the token out of the handle
 	assert.deepEqual(calls[0].body, { mode: "fast", query: "craftax", max_results: 5 });
 	assert.equal(calls[0].identity, "anonymous");
 	assert.equal(handle.envelope.searchId, "srch_1");
-	assert.equal(handle.envelope.results[0].citation, "[synth-index:c1@r1]");
+	assert.equal(handle.envelope.mode, "fast");
+	assert.equal(handle.envelope.status, "completed");
+	assert.match(handle.envelope.response, /\[c1\]/);
+	assert.deepEqual(handle.envelope.citations, [
+		{ contributionId: "c1", revisionId: "r1" },
+		{ contributionId: "c2", revisionId: "r7" }
+	]);
+	assert.equal(citationMarker(handle.envelope.citations[0]), "[c1]");
+	assert.equal(handle.envelope.tokenExpiresAt, "2026-09-28T12:00:00+00:00");
 	assert.equal(handle.envelope.monitor.releaseId, "rel_9");
 	assert.equal(handle.envelope.usage.customerChargeCents, 0);
 	const serialized = JSON.stringify(handle);
@@ -94,9 +142,9 @@ test("fast search reads the Monitor release id from the response header before t
 
 test("deep completion poll reads the Monitor release id from the response header", async () => {
 	const { transport } = scripted((_request, index) => {
-		if (index === 0) return json(202, { search_id: "srch_d", search_token: TOKEN });
-		if (index === 1) return json(202, { search_id: "srch_d", state: "running", status: "running" });
-		return json(200, { ...COMPLETED_BODY, search_id: "srch_d", status: "completed", monitor: { release_id: null } }, { "x-index-monitor-release": "rel_hdr_deep" });
+		if (index === 0) return json(202, DEEP_START);
+		if (index === 1) return json(202, acceptedBody("running"));
+		return json(200, { ...COMPLETED_BODY, search_id: "srch_d", mode: "deep", monitor: { release_id: null } }, { "x-index-monitor-release": "rel_hdr_deep" });
 	});
 	const client = new IndexSearchClient({ transport, sleep: noSleep });
 	const handle = await client.search({ query: "q", mode: "deep" });
@@ -119,9 +167,9 @@ test("refetch sends the per-search token as a header only", async () => {
 
 test("deep search polls with the token until 200 and reports progress", async () => {
 	const { transport, calls } = scripted((_request, index) => {
-		if (index === 0) return json(202, { search_id: "srch_d", search_token: TOKEN, poll_url: "/api/v1/index/public/searches/srch_d" });
-		if (index < 3) return json(202, { search_id: "srch_d", state: "running" });
-		return json(200, { ...COMPLETED_BODY, search_id: "srch_d" });
+		if (index === 0) return json(202, DEEP_START);
+		if (index < 3) return json(202, acceptedBody("running"));
+		return json(200, { ...COMPLETED_BODY, search_id: "srch_d", mode: "deep" });
 	});
 	const slept: number[] = [];
 	const client = new IndexSearchClient({ transport, sleep: async (ms) => void slept.push(ms) });
@@ -140,7 +188,7 @@ test("deep search polls with the token until 200 and reports progress", async ()
 });
 
 test("deep polling gives up after the bounded attempt budget", async () => {
-	const { transport, calls } = scripted((_request, index) => (index === 0 ? json(202, { search_id: "s", search_token: TOKEN }) : json(202, {})));
+	const { transport, calls } = scripted((_request, index) => (index === 0 ? json(202, DEEP_START) : json(202, acceptedBody("running"))));
 	const client = new IndexSearchClient({ transport, sleep: noSleep });
 	await assert.rejects(client.search({ query: "q", mode: "deep" }), (error: unknown) => error instanceof IndexSearchError && error.code === "index_transport_failed");
 	assert.equal(calls.length, DEEP_POLL_MAX_ATTEMPTS + 1);
@@ -148,7 +196,7 @@ test("deep polling gives up after the bounded attempt budget", async () => {
 
 test("deep polling with a wrong token surfaces index_search_not_found", async () => {
 	const { transport } = scripted((_request, index) =>
-		index === 0 ? json(202, { search_id: "s", search_token: TOKEN }) : json(404, { code: "index_search_not_found", detail: "unknown search" })
+		index === 0 ? json(202, DEEP_START) : json(404, { detail: { code: "index_search_not_found" } })
 	);
 	const client = new IndexSearchClient({ transport, sleep: noSleep });
 	await assert.rejects(client.search({ query: "q", mode: "deep" }), (error: unknown) => error instanceof IndexSearchError && error.code === "index_search_not_found" && error.status === 404);
@@ -156,9 +204,10 @@ test("deep polling with a wrong token surfaces index_search_not_found", async ()
 
 test("cancellation aborts between polls and before the first request", async () => {
 	const controller = new AbortController();
-	const { transport, calls } = scripted((_request, index) => {
-		if (index === 0) return json(202, { search_id: "s", search_token: TOKEN });
-		return json(202, {});
+	const { transport, calls } = scripted((request, index) => {
+		if (index === 0) return json(202, DEEP_START);
+		if (request.path.endsWith("/cancel")) return json(200, { search_id: "srch_d", state: "cancelled" });
+		return json(202, acceptedBody("running"));
 	});
 	const client = new IndexSearchClient({
 		transport,
@@ -167,15 +216,19 @@ test("cancellation aborts between polls and before the first request", async () 
 		}
 	});
 	await assert.rejects(client.search({ query: "q", mode: "deep" }, { signal: controller.signal }), (error: unknown) => error instanceof IndexSearchError && error.code === "index_search_cancelled");
-	assert.equal(calls.length, 1, "no poll after abort");
+	assert.equal(calls.length, 2, "no poll after abort, one backend cancel");
+	assert.equal(calls[1].method, "POST");
+	assert.equal(calls[1].path, "/api/v1/index/public/searches/srch_d/cancel");
+	assert.equal(calls[1].headers["X-Search-Token"], TOKEN);
+	assert.equal(calls[1].signal, undefined, "cancel is not bound to the aborted signal");
 	const aborted = new AbortController();
 	aborted.abort();
 	await assert.rejects(client.search({ query: "q", mode: "fast" }, { signal: aborted.signal }), (error: unknown) => error instanceof IndexSearchError && error.code === "index_search_cancelled");
-	assert.equal(calls.length, 1, "no request after a pre-aborted signal");
+	assert.equal(calls.length, 2, "no request after a pre-aborted signal");
 });
 
 const ERROR_CASES: Array<{ status: number; code: string; extra?: Record<string, unknown>; headers?: Record<string, string> }> = [
-	{ status: 429, code: "index_public_rate_limited", extra: { scope: "peer_minute" }, headers: { "retry-after": "17" } },
+	{ status: 429, code: "index_public_rate_limited", extra: { scope: "peer" }, headers: { "retry-after": "17" } },
 	{ status: 503, code: "index_public_budget_exhausted" },
 	{ status: 503, code: "index_rate_store_unavailable" },
 	{ status: 503, code: "monitor_unavailable" },
@@ -186,16 +239,16 @@ const ERROR_CASES: Array<{ status: number; code: string; extra?: Record<string, 
 
 for (const kase of ERROR_CASES) {
 	test(`error ${kase.status} ${kase.code} maps to a typed error`, async () => {
-		const { transport } = scripted(() => json(kase.status, { code: kase.code, detail: `d:${kase.code}`, ...kase.extra }, kase.headers));
+		const { transport } = scripted(() => json(kase.status, { detail: { code: kase.code, ...kase.extra } }, kase.headers));
 		const client = new IndexSearchClient({ transport, sleep: noSleep });
 		await assert.rejects(client.search({ query: "q", mode: "fast" }), (error: unknown) => {
 			assert.ok(error instanceof IndexSearchError);
 			assert.equal(error.code, kase.code);
 			assert.equal(error.status, kase.status);
-			assert.equal(error.detail, `d:${kase.code}`);
+			assert.ok(error.detail.includes(kase.code));
 			if (kase.code === "index_public_rate_limited") {
 				assert.equal(error.retryAfterS, 17);
-				assert.equal(error.scope, "peer_minute");
+				assert.equal(error.scope, "peer");
 			} else {
 				assert.equal(error.retryAfterS, null);
 			}
@@ -206,14 +259,27 @@ for (const kase of ERROR_CASES) {
 
 test("unknown codes and non-JSON bodies become index_unexpected_status", () => {
 	assert.equal(errorFromResponse(json(500, null)).code, "index_unexpected_status");
-	assert.equal(errorFromResponse(json(500, { code: "something_else", detail: "x" })).code, "index_unexpected_status");
+	assert.equal(errorFromResponse(json(500, { detail: { code: "something_else" } })).code, "index_unexpected_status");
+	assert.equal(errorFromResponse(json(504, { detail: { code: "index_deadline_exceeded" } })).detail, "Index search failed with HTTP 504 (index_deadline_exceeded).");
+	assert.equal(errorFromResponse(json(422, { detail: [{ loc: ["body", "query"], msg: "too short" }] })).code, "index_unexpected_status");
+	// The legacy top-level code shape is not the contract and must not be trusted.
+	assert.equal(errorFromResponse(json(429, { code: "index_public_rate_limited" })).code, "index_unexpected_status");
 	assert.equal(errorFromResponse(json(500, null)).detail, "Index search failed with HTTP 500.");
 });
 
 test("malformed success bodies fail closed", async () => {
-	const { transport } = scripted(() => json(200, { search_id: "s", results: [{ title: "no ids" }], usage: { customer_charge_cents: 0 } }));
-	const client = new IndexSearchClient({ transport, sleep: noSleep });
-	await assert.rejects(client.search({ query: "q", mode: "fast" }), (error: unknown) => error instanceof IndexSearchError && error.code === "index_malformed_response");
+	for (const body of [
+		{ ...COMPLETED_BODY, citations: [{ contribution_id: "c1" }] },
+		{ ...COMPLETED_BODY, response: undefined },
+		{ ...COMPLETED_BODY, citations: undefined },
+		{ ...COMPLETED_BODY, usage: {} },
+		{ ...COMPLETED_BODY, status: "running" },
+		{ search_id: "s", results: [{ title: "legacy shape" }], usage: { customer_charge_cents: 0 } }
+	]) {
+		const { transport } = scripted(() => json(200, body));
+		const client = new IndexSearchClient({ transport, sleep: noSleep });
+		await assert.rejects(client.search({ query: "q", mode: "fast" }), (error: unknown) => error instanceof IndexSearchError && error.code === "index_malformed_response");
+	}
 });
 
 test("view state maps each error code to its UI state and counts the 429 down", () => {
@@ -312,7 +378,7 @@ test("fetch transport lowercases headers, parses JSON and joins the base URL", a
 		return {
 			status: 429,
 			headers: { forEach(cb: (v: string, k: string) => void) { cb("9", "Retry-After"); } },
-			text: async () => JSON.stringify({ code: "index_public_rate_limited", detail: "x" })
+			text: async () => JSON.stringify({ detail: { code: "index_public_rate_limited", scope: "global" } })
 		};
 	});
 	const response = await transport({ method: "POST", path: INDEX_PUBLIC_SEARCH_PATH, headers: {}, body: { mode: "fast", query: "q" }, identity: "anonymous" });
@@ -321,7 +387,68 @@ test("fetch transport lowercases headers, parses JSON and joins the base URL", a
 	assert.equal(seen.init?.body, JSON.stringify({ mode: "fast", query: "q" }));
 	assert.equal(response.headers["retry-after"], "9");
 	assert.equal(errorFromResponse(response).retryAfterS, 9);
+	assert.equal(errorFromResponse(response).scope, "global");
 	assert.equal(isLoopbackBackend("http://127.0.0.1:8000"), true);
+	assert.equal(isLoopbackBackend("http://[::1]:8000"), true);
+	assert.equal(isLoopbackBackend("http://localhost:8000"), true);
 	assert.equal(isLoopbackBackend("https://api.usesynth.ai"), false);
 	assert.equal(isLoopbackBackend("not a url"), false);
+});
+
+test("deep poll that ends failed (HTTP 200 lifecycle body) surfaces index_search_failed, not malformed", async () => {
+	const { transport, calls } = scripted((_request, index) => {
+		if (index === 0) return json(202, DEEP_START);
+		return json(200, acceptedBody("failed", { failure: { code: "deep_worker_crashed", retryable: true } }));
+	});
+	const client = new IndexSearchClient({ transport, sleep: noSleep });
+	await assert.rejects(client.search({ query: "q", mode: "deep" }), (error: unknown) => {
+		assert.ok(error instanceof IndexSearchError);
+		assert.equal(error.code, "index_search_failed");
+		assert.match(error.detail, /deep_worker_crashed/);
+		return true;
+	});
+	assert.equal(calls.length, 2, "a backend failure sends no cancel");
+	assert.equal(viewStateFromError(new IndexSearchError({ code: "index_search_failed", detail: "x" }), 0).phase, "failed");
+});
+
+test("deep poll that ends cancelled (HTTP 200 lifecycle body) surfaces cancellation without a second cancel", async () => {
+	const { transport, calls } = scripted((_request, index) => (index === 0 ? json(202, DEEP_START) : json(200, acceptedBody("cancelled", { cancellation_requested: true }))));
+	const client = new IndexSearchClient({ transport, sleep: noSleep });
+	await assert.rejects(client.search({ query: "q", mode: "deep" }), (error: unknown) => error instanceof IndexSearchError && error.code === "index_search_cancelled");
+	assert.equal(calls.length, 2);
+});
+
+test("a 200 poll still reporting running keeps polling", async () => {
+	const { transport, calls } = scripted((_request, index) => {
+		if (index === 0) return json(202, DEEP_START);
+		if (index === 1) return json(200, acceptedBody("running"));
+		return json(200, { ...COMPLETED_BODY, search_id: "srch_d", mode: "deep" });
+	});
+	const handle = await new IndexSearchClient({ transport, sleep: noSleep }).search({ query: "q", mode: "deep" });
+	assert.equal(handle.envelope.mode, "deep");
+	assert.equal(calls.length, 3);
+});
+
+test("an off-origin poll_url is never followed with the token", async () => {
+	assert.equal(safePollPath("https://evil.example/steal", "srch_d"), "/api/v1/index/public/searches/srch_d");
+	assert.equal(safePollPath("//evil.example/steal", "srch_d"), "/api/v1/index/public/searches/srch_d");
+	assert.equal(safePollPath("/api/v1/index/public/searches/srch_d", "x"), "/api/v1/index/public/searches/srch_d");
+	const { transport, calls } = scripted((_request, index) => {
+		if (index === 0) return json(202, { ...DEEP_START, poll_url: "https://evil.example/steal" });
+		return json(200, { ...COMPLETED_BODY, search_id: "srch_d", mode: "deep" });
+	});
+	await new IndexSearchClient({ transport, sleep: noSleep }).search({ query: "q", mode: "deep" });
+	assert.equal(calls[1].path, "/api/v1/index/public/searches/srch_d");
+	const base = "http://127.0.0.1:8000";
+	assert.equal(resolveSameOrigin(base, "/api/x"), "http://127.0.0.1:8000/api/x");
+	assert.equal(resolveSameOrigin(base, "http://127.0.0.1:8000/api/x"), "http://127.0.0.1:8000/api/x");
+	assert.throws(() => resolveSameOrigin(base, "https://evil.example/x"), (error: unknown) => error instanceof IndexSearchError && error.code === "index_transport_failed");
+	assert.throws(() => resolveSameOrigin(base, "//evil.example/x"), (error: unknown) => error instanceof IndexSearchError);
+	let fetched = 0;
+	const http = fetchTransport(base, async () => {
+		fetched += 1;
+		return { status: 200, headers: { forEach() {} }, text: async () => "{}" };
+	});
+	await assert.rejects(http({ method: "GET", path: "https://evil.example/x", headers: { "X-Search-Token": TOKEN }, identity: "anonymous" }));
+	assert.equal(fetched, 0, "the token never left for another host");
 });

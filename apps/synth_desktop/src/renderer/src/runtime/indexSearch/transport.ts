@@ -21,7 +21,7 @@ export function fetchTransport(baseUrl: string, fetchImpl: FetchLike): IndexSear
 				detail: "The renderer transport cannot attach an account credential."
 			});
 		}
-		const url = request.path.startsWith("http://") || request.path.startsWith("https://") ? request.path : `${base}${request.path}`;
+		const url = resolveSameOrigin(base, request.path);
 		let response: Awaited<ReturnType<FetchLike>>;
 		try {
 			response = await fetchImpl(url, {
@@ -53,11 +53,34 @@ export function fetchTransport(baseUrl: string, fetchImpl: FetchLike): IndexSear
 	};
 }
 
+/**
+ * Resolve a request path against the backend. Relative paths join the base;
+ * an absolute URL is only followed when it has the backend's exact origin, so
+ * a `poll_url` can never carry the search token to another host.
+ */
+export function resolveSameOrigin(base: string, path: string): string {
+	if (path.startsWith("/") && !path.startsWith("//")) return `${base}${path}`;
+	let target: URL;
+	let origin: string;
+	try {
+		target = new URL(path);
+		origin = new URL(base).origin;
+	} catch {
+		throw new IndexSearchError({ code: "index_transport_failed", detail: "Refusing a request path that is neither relative nor a URL." });
+	}
+	if (target.origin !== origin) {
+		throw new IndexSearchError({ code: "index_transport_failed", detail: "Refusing to send an Index request to a different origin." });
+	}
+	return target.toString();
+}
+
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
 /** True when a backend URL is reachable from the renderer under the packaged CSP. */
 export function isLoopbackBackend(backendUrl: string): boolean {
 	try {
 		const url = new URL(backendUrl);
-		return url.hostname === "127.0.0.1" || url.hostname === "localhost";
+		return LOOPBACK_HOSTS.has(url.hostname);
 	} catch {
 		return false;
 	}

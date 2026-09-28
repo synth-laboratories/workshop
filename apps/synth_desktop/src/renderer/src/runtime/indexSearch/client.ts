@@ -12,7 +12,7 @@ import {
 	type IndexSearchMode,
 	type IndexSearchModeLimits,
 	type IndexSearchRequest,
-	type IndexSearchResult,
+	type IndexSearchCitation,
 	type IndexSearchTransport,
 	type TransportResponse
 } from "./types.ts";
@@ -122,32 +122,40 @@ const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set<IndexSearchErrorCode>([
 	"index_search_not_found"
 ]);
 
-/** Map a non-success transport response onto a typed error. */
+/**
+ * Map a non-success transport response onto a typed error. The backend
+ * answers FastAPI-style: `{"detail": {"code", "scope"?}}`, with `Retry-After`
+ * as a header on 429. A 422 carries `{"detail": [...]}` (validation errors).
+ */
 export function errorFromResponse(response: TransportResponse): IndexSearchError {
-	const body = response.body && typeof response.body === "object" ? (response.body as Record<string, unknown>) : {};
-	const rawCode = optionalString(body.code);
-	const detail = optionalString(body.detail) ?? `Index search failed with HTTP ${response.status}.`;
-	const retryHeader = response.headers["retry-after"];
-	const retryAfterS = finiteNumber(body.retry_after_s) ?? (retryHeader ? finiteNumber(Number(retryHeader)) : null);
+	const body = response.body && typeof response.body === "object" && !Array.isArray(response.body) ? (response.body as Record<string, unknown>) : {};
+	const detailRow = body.detail && typeof body.detail === "object" && !Array.isArray(body.detail) ? (body.detail as Record<string, unknown>) : {};
+	const rawCode = optionalString(detailRow.code);
+	const detailText = optionalString(body.detail);
 	const code: IndexSearchErrorCode = rawCode && KNOWN_ERROR_CODES.has(rawCode) ? (rawCode as IndexSearchErrorCode) : "index_unexpected_status";
+	const detail = detailText ?? (rawCode ? `Index search failed with HTTP ${response.status} (${rawCode}).` : `Index search failed with HTTP ${response.status}.`);
+	const retryHeader = response.headers["retry-after"];
+	const retryAfterS = retryHeader !== undefined && retryHeader.trim() !== "" ? finiteNumber(Number(retryHeader)) : null;
 	return new IndexSearchError({
 		code,
 		detail,
 		status: response.status,
 		retryAfterS: code === "index_public_rate_limited" ? retryAfterS : null,
-		scope: optionalString(body.scope)
+		scope: optionalString(detailRow.scope)
 	});
 }
 
-export function parseResult(value: unknown): IndexSearchResult {
-	const row = record(value, "result");
+export function parseCitation(value: unknown): IndexSearchCitation {
+	const row = record(value, "citation");
 	return {
-		contributionId: str(row, "contribution_id", "result"),
-		revisionId: str(row, "revision_id", "result"),
-		title: str(row, "title", "result"),
-		excerpt: str(row, "excerpt", "result"),
-		citation: str(row, "citation", "result")
+		contributionId: str(row, "contribution_id", "citation"),
+		revisionId: str(row, "revision_id", "citation")
 	};
+}
+
+/** The inline marker the response text uses for a cited contribution. */
+export function citationMarker(citation: IndexSearchCitation): string {
+	return `[${citation.contributionId}]`;
 }
 
 function releaseIdFrom(headers: Record<string, string>, monitor: Record<string, unknown>): string | null {
@@ -155,10 +163,15 @@ function releaseIdFrom(headers: Record<string, string>, monitor: Record<string, 
 	return fromHeader ? fromHeader : optionalString(monitor.release_id);
 }
 
+function parseMode(value: unknown, fallback: IndexSearchMode): IndexSearchMode {
+	return value === "fast" || value === "deep" ? value : fallback;
+}
+
 /**
- * Parse a Fast 200 / completed Deep body. Returns the envelope and the token
- * separately. `headers` are the response headers (lower-cased): the Monitor
- * release id is read from `X-Index-Monitor-Release` first, then the body.
+ * Parse a Fast 200 / completed Deep body (`PublicSearchDelivery`). Returns the
+ * envelope and the token separately. `headers` are the response headers
+ * (lower-cased): the Monitor release id is read from `X-Index-Monitor-Release`
+ * first, then the body.
  */
 export function parseCompleted(
 	value: unknown,
@@ -166,9 +179,14 @@ export function parseCompleted(
 	headers: Record<string, string> = {}
 ): { envelope: IndexSearchEnvelope; token: string | null } {
 	const row = record(value, "search response");
-	const results = row.results;
-	if (!Array.isArray(results)) {
-		throw new IndexSearchError({ code: "index_malformed_response", detail: "search response omitted results." });
+	const status = row.status;
+	if (status !== "completed" && status !== "partial") {
+		throw new IndexSearchError({ code: "index_malformed_response", detail: "search response status is not completed or partial." });
+	}
+	const response = str(row, "response", "search response");
+	const citations = row.citations;
+	if (!Array.isArray(citations)) {
+		throw new IndexSearchError({ code: "index_malformed_response", detail: "search response omitted citations." });
 	}
 	const monitor = row.monitor && typeof row.monitor === "object" ? (row.monitor as Record<string, unknown>) : {};
 	const usage = row.usage && typeof row.usage === "object" ? (row.usage as Record<string, unknown>) : {};
@@ -179,22 +197,55 @@ export function parseCompleted(
 	return {
 		envelope: {
 			searchId: str(row, "search_id", "search response"),
-			mode,
-			results: results.map(parseResult),
+			mode: parseMode(row.mode, mode),
+			status,
+			response,
+			citations: citations.map(parseCitation),
 			monitor: { releaseId: releaseIdFrom(headers, monitor) },
-			usage: { customerChargeCents: charge }
+			usage: { customerChargeCents: charge },
+			tokenExpiresAt: optionalString(row.search_token_expires_at)
 		},
 		token: optionalString(row.search_token)
 	};
 }
 
+type LifecycleState = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+/**
+ * A `PublicSearchAccepted` body: the 202 of a Deep start / unfinished poll,
+ * and the HTTP 200 of a Deep poll that ended `failed` or `cancelled`.
+ */
+function lifecycleState(row: Record<string, unknown>): LifecycleState | null {
+	const value = row.state ?? row.status;
+	return value === "queued" || value === "running" || value === "completed" || value === "failed" || value === "cancelled" ? value : null;
+}
+
+function terminalLifecycleError(row: Record<string, unknown>, state: "failed" | "cancelled"): IndexSearchError {
+	if (state === "cancelled") return new IndexSearchError({ code: "index_search_cancelled", detail: "Search was cancelled.", status: 200 });
+	const failure = row.failure && typeof row.failure === "object" ? (row.failure as Record<string, unknown>) : {};
+	const failureCode = optionalString(failure.code);
+	return new IndexSearchError({
+		code: "index_search_failed",
+		detail: failureCode ? `Deep search failed (${failureCode}).` : "Deep search failed.",
+		status: 200
+	});
+}
+
+/** Only a same-backend relative path may carry the search token. */
+export function safePollPath(pollUrl: string | null, searchId: string): string {
+	const fallback = `${INDEX_PUBLIC_SEARCHES_PATH}/${encodeURIComponent(searchId)}`;
+	if (!pollUrl) return fallback;
+	if (!pollUrl.startsWith("/") || pollUrl.startsWith("//") || pollUrl.includes("\\")) return fallback;
+	return pollUrl;
+}
+
 function parseLimits(value: unknown): IndexSearchModeLimits | undefined {
 	if (!value || typeof value !== "object") return undefined;
 	const row = value as Record<string, unknown>;
-	const peerMinute = finiteNumber(row.peer_minute);
-	const peerDay = finiteNumber(row.peer_day);
-	const globalMinute = finiteNumber(row.global_minute);
-	const globalDay = finiteNumber(row.global_day);
+	const peerMinute = finiteNumber(row.peer_per_minute);
+	const peerDay = finiteNumber(row.peer_per_day);
+	const globalMinute = finiteNumber(row.global_per_minute);
+	const globalDay = finiteNumber(row.global_per_day);
 	if (peerMinute === null || peerDay === null || globalMinute === null || globalDay === null) return undefined;
 	return { peerMinute, peerDay, globalMinute, globalDay };
 }
@@ -266,19 +317,48 @@ export class IndexSearchClient {
 		const accepted = record(response.body, "accepted search");
 		const searchId = str(accepted, "search_id", "accepted search");
 		const token = str(accepted, "search_token", "accepted search");
-		const pollUrl = optionalString(accepted.poll_url) ?? `${INDEX_PUBLIC_SEARCHES_PATH}/${encodeURIComponent(searchId)}`;
+		const pollPath = safePollPath(optionalString(accepted.poll_url), searchId);
 		onProgress?.({ kind: "accepted", searchId });
-		for (let attempt = 1; attempt <= DEEP_POLL_MAX_ATTEMPTS; attempt += 1) {
-			await this.sleep(DEEP_POLL_DELAYS_MS[Math.min(attempt, DEEP_POLL_DELAYS_MS.length) - 1], signal);
-			throwIfAborted(signal);
-			onProgress?.({ kind: "polling", searchId, attempt });
-			const poll = await this.transport({ method: "GET", path: pollUrl, headers: { [SEARCH_TOKEN_HEADER]: token }, identity: this.identity, signal });
-			if (poll.status === 202) continue;
-			if (poll.status !== 200) throw errorFromResponse(poll);
-			const completed = parseCompleted(poll.body, request.mode, poll.headers);
-			return this.handle(completed.envelope, completed.token ?? token);
+		try {
+			for (let attempt = 1; attempt <= DEEP_POLL_MAX_ATTEMPTS; attempt += 1) {
+				await this.sleep(DEEP_POLL_DELAYS_MS[Math.min(attempt, DEEP_POLL_DELAYS_MS.length) - 1], signal);
+				throwIfAborted(signal);
+				onProgress?.({ kind: "polling", searchId, attempt });
+				const poll = await this.transport({ method: "GET", path: pollPath, headers: { [SEARCH_TOKEN_HEADER]: token }, identity: this.identity, signal });
+				if (poll.status === 202) continue;
+				if (poll.status !== 200) throw errorFromResponse(poll);
+				const row = record(poll.body, "search poll");
+				const state = lifecycleState(row);
+				if (state === "failed" || state === "cancelled") throw terminalLifecycleError(row, state);
+				if (state === "queued" || state === "running") continue;
+				const completed = parseCompleted(row, request.mode, poll.headers);
+				return this.handle(completed.envelope, completed.token ?? token);
+			}
+		} catch (error) {
+			if (signal?.aborted || (error instanceof IndexSearchError && error.code === "index_search_cancelled" && error.status === null)) {
+				await this.cancelOnBackend(searchId, token);
+			}
+			throw error;
 		}
 		throw new IndexSearchError({ code: "index_transport_failed", detail: "Deep search did not finish within the polling budget.", status: 202 });
+	}
+
+	/**
+	 * Best-effort `POST /searches/{id}/cancel` after the operator cancels a Deep
+	 * search. Runs without the aborted signal; a failure here never masks the
+	 * cancellation the operator asked for.
+	 */
+	private async cancelOnBackend(searchId: string, token: string): Promise<void> {
+		try {
+			await this.transport({
+				method: "POST",
+				path: `${INDEX_PUBLIC_SEARCHES_PATH}/${encodeURIComponent(searchId)}/cancel`,
+				headers: { [SEARCH_TOKEN_HEADER]: token },
+				identity: this.identity
+			});
+		} catch {
+			// The search expires on its own; the local cancellation already stands.
+		}
 	}
 
 	private handle(envelope: IndexSearchEnvelope, token: string | null): IndexSearchHandle {

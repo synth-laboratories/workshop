@@ -7,7 +7,9 @@ the contract; one panel uses it. Nothing else in the renderer parses Index JSON.
 
 Settings → Account → **Synth Index search** (`IndexSearchPanel`,
 `data-testid="account-index-search"`). An operator types a query, picks Fast or
-Deep, and gets results with an **Insert citation** action (`onInsertCitation`
+Deep, and gets the Index answer: `response` text citing contributions inline as
+`[<contribution_id>]`, plus `citations: [{contribution_id, revision_id}]`, each
+with an **Insert citation** action (`onInsertCitation`
 is a prop so the composer can wire it without touching the panel). Agents reach
 the same backend through the `synth-ai` research MCP server's `index_search`
 tool, registered like Workshop's other `mcp_servers` entries; that is a config
@@ -65,7 +67,9 @@ state the panel holds) is built from the envelope. Polling sends it only as
 | 404 `index_public_search_disabled` | same | `disabled`, submit off |
 | 404 `index_search_not_found` (wrong token) | same | `failed` |
 | 202 then poll | `accepted` / `polling` progress | `searching` with attempt count, Cancel button |
-| abort | `index_search_cancelled` | `cancelled` |
+| abort | `index_search_cancelled` (client also sends `POST /searches/{id}/cancel` with `X-Search-Token`) | `cancelled` |
+| Deep poll 200 with `state: failed` | `index_search_failed` | `failed` |
+| Deep poll 200 with `state: cancelled` | `index_search_cancelled` | `cancelled` |
 | anything else / bad JSON | `index_unexpected_status` / `index_malformed_response` | `failed` |
 
 ## Copy
@@ -89,3 +93,9 @@ npx tsc --noEmit -p tsconfig.json
 node --test src/renderer/src/runtime/indexSearch/indexSearch.test.ts   # Node ≥ 22.6 type stripping
 node scripts/lint-app-css.mjs
 ```
+
+## Wire shapes (Index v0.2 public contract)
+
+- Errors are FastAPI-style `{"detail": {"code", "scope"?}}`; 429 carries `Retry-After` as a header.
+- Capabilities limits are `limits.{fast,deep}.{peer_per_minute, peer_per_day, global_per_minute, global_per_day}`.
+- `poll_url` is only followed when it is a relative path; the fetch transport refuses any absolute URL whose origin differs from the backend, so the search token never leaves the backend host.

@@ -4,6 +4,7 @@ import {
 	IndexSearchClient,
 	IndexSearchError,
 	canSubmit,
+	citationMarker,
 	fetchTransport,
 	indexSearchCopy,
 	isLoopbackBackend,
@@ -159,19 +160,20 @@ export function IndexSearchPanel({ client, onInsertCitation, now = wallClock }: 
 				)}
 			</div>
 			{state.phase === "complete" ? (
-				<ol className="backend-settings-wide" data-testid="index-search-results">
-					{state.envelope.results.length === 0 ? <li className="finetune-meta">No results.</li> : null}
-					{state.envelope.results.map((result) => (
-						<li key={`${result.contributionId}@${result.revisionId}`}>
-							<strong>{result.title}</strong>
-							<p className="finetune-meta">{result.excerpt}</p>
-							<code>{result.citation}</code>
-							{onInsertCitation ? (
-								<button type="button" className="settings-secondary-btn" onClick={() => onInsertCitation(result.citation)}>Insert citation</button>
-							) : null}
-						</li>
-					))}
-				</ol>
+				<div className="backend-settings-wide" data-testid="index-search-results">
+					<p data-testid="index-search-response" style={{ whiteSpace: "pre-wrap" }}>{state.envelope.response}</p>
+					<ol>
+						{state.envelope.citations.map((citation) => (
+							<li key={`${citation.contributionId}@${citation.revisionId}`}>
+								<code>{citationMarker(citation)}</code>
+								<span className="finetune-meta"> revision {citation.revisionId}</span>
+								{onInsertCitation ? (
+									<button type="button" className="settings-secondary-btn" onClick={() => onInsertCitation(citationMarker(citation))}>Insert citation</button>
+								) : null}
+							</li>
+						))}
+					</ol>
+				</div>
 			) : null}
 		</div>
 	);
@@ -184,7 +186,7 @@ function statusLine(state: IndexSearchViewState, nowMs: number): string {
 		case "searching":
 			return state.pollAttempt > 0 ? `Deep search running (poll ${state.pollAttempt})…` : state.searchId ? "Deep search accepted…" : "Searching…";
 		case "complete":
-			return `${state.envelope.results.length} result${state.envelope.results.length === 1 ? "" : "s"} · monitor ${state.envelope.monitor.releaseId ?? "n/a"}`;
+			return `${state.envelope.status === "partial" ? "Partial answer" : "Answer"} · ${state.envelope.citations.length} citation${state.envelope.citations.length === 1 ? "" : "s"} · monitor ${state.envelope.monitor.releaseId ?? "n/a"}`;
 		case "rate_limited": {
 			const remaining = rateLimitSecondsRemaining(state, nowMs);
 			const scope = state.scope ? ` (${state.scope})` : "";
