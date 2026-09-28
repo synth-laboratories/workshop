@@ -34,6 +34,7 @@ fn validate_request(request: &Request) -> Result<(), AppError> {
             .strip_suffix("/cancel")
             .map_or((suffix, false), |id| (id, true));
         !id.is_empty()
+            && !id.bytes().all(|byte| byte == b'.')
             && id.len() <= 160
             && id
                 .bytes()
@@ -71,21 +72,9 @@ fn validate_request(request: &Request) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Bounded native public transport. JSON strings keep tokens out of typed diagnostics.
-#[tauri::command]
-#[specta::specta]
-pub async fn index_public_search_request(request_json: String) -> Result<String, AppError> {
-    if request_json.len() > MAX_REQUEST_BYTES {
-        return Err(AppError::invalid_argument(
-            "Index request exceeds the byte bound",
-        ));
-    }
-    let request: Request = serde_json::from_str(&request_json)
-        .map_err(|_| AppError::invalid_argument("Invalid Index relay request"))?;
-    validate_request(&request)?;
-    let base = synth_config::public_backend_url()
-        .map_err(|_| AppError::untyped("Index backend configuration is unavailable"))?;
-    let base_url = reqwest::Url::parse(&base)
+/// Only HTTPS hosts, or plain HTTP on loopback, without credentials/query/fragment.
+fn validate_base_url(base: &str) -> Result<reqwest::Url, AppError> {
+    let base_url = reqwest::Url::parse(base)
         .map_err(|_| AppError::invalid_argument("Invalid Index backend URL"))?;
     let loopback = matches!(
         base_url.host_str(),
@@ -105,8 +94,35 @@ pub async fn index_public_search_request(request_json: String) -> Result<String,
             "Hosted Index transport requires HTTPS",
         ));
     }
+    Ok(base_url)
+}
+
+fn parse_request(request_json: &str) -> Result<Request, AppError> {
+    if request_json.len() > MAX_REQUEST_BYTES {
+        return Err(AppError::invalid_argument(
+            "Index request exceeds the byte bound",
+        ));
+    }
+    let request: Request = serde_json::from_str(request_json)
+        .map_err(|_| AppError::invalid_argument("Invalid Index relay request"))?;
+    validate_request(&request)?;
+    Ok(request)
+}
+
+/// Bounded native public transport. JSON strings keep tokens out of typed diagnostics.
+#[tauri::command]
+#[specta::specta]
+pub async fn index_public_search_request(request_json: String) -> Result<String, AppError> {
+    let request = parse_request(&request_json)?;
+    let base = synth_config::public_backend_url()
+        .map_err(|_| AppError::untyped("Index backend configuration is unavailable"))?;
+    relay(&base, request, Duration::from_secs(120)).await
+}
+
+async fn relay(base: &str, request: Request, timeout: Duration) -> Result<String, AppError> {
+    validate_base_url(base)?;
     let client = http::http_client_builder()
-        .timeout(Duration::from_secs(120))
+        .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| AppError::untyped("Index transport could not initialize"))?;
@@ -213,5 +229,201 @@ mod tests {
         let mut account = request("POST", "/api/v1/index/public/search");
         account.identity = "account".into();
         assert!(validate_request(&account).is_err());
+    }
+
+    #[test]
+    fn relay_rejects_dot_segment_lifecycle_ids() {
+        for path in [
+            "/api/v1/index/public/searches/.",
+            "/api/v1/index/public/searches/..",
+            "/api/v1/index/public/searches/../cancel",
+            "/api/v1/index/public/searches/%2e%2e",
+        ] {
+            let mut poll = request(
+                if path.ends_with("/cancel") {
+                    "POST"
+                } else {
+                    "GET"
+                },
+                path,
+            );
+            poll.headers
+                .insert("x-search-token".into(), "token_12345678".into());
+            assert!(validate_request(&poll).is_err(), "{path} must be refused");
+        }
+    }
+
+    #[test]
+    fn relay_refuses_bodies_off_create_and_oversize_envelopes() {
+        let mut capabilities = request("GET", "/api/v1/index/public/capabilities");
+        capabilities.body = Some(serde_json::json!({"query": "q"}));
+        assert!(validate_request(&capabilities).is_err());
+        let mut create = request("POST", "/api/v1/index/public/search");
+        create
+            .headers
+            .insert("x-search-token".into(), "token_12345678".into());
+        assert!(validate_request(&create).is_err(), "no token on create");
+        let oversize = format!(
+            r#"{{"method":"POST","path":"/api/v1/index/public/search","headers":{{}},"identity":"anonymous","body":{{"query":"{}"}}}}"#,
+            "q".repeat(MAX_REQUEST_BYTES)
+        );
+        assert!(parse_request(&oversize).is_err());
+        assert!(parse_request(
+            r#"{"method":"GET","path":"/api/v1/index/public/capabilities","headers":{},"identity":"anonymous","body":null,"api_key":"x"}"#
+        )
+        .is_err(), "unknown envelope fields are refused");
+    }
+
+    #[test]
+    fn relay_base_url_requires_https_off_loopback() {
+        assert!(validate_base_url("https://api.example.test").is_ok());
+        assert!(validate_base_url("http://127.0.0.1:8000").is_ok());
+        assert!(validate_base_url("http://localhost:8000").is_ok());
+        assert!(validate_base_url("http://[::1]:8000").is_ok());
+        for base in [
+            "http://api.example.test",
+            "http://localhost.example.test",
+            "ftp://api.example.test",
+            "https://user:pass@api.example.test",
+            "https://api.example.test/?key=secret",
+            "https://api.example.test/#frag",
+            "not a url",
+        ] {
+            assert!(validate_base_url(base).is_err(), "{base} must be refused");
+        }
+    }
+
+    /// One-shot loopback HTTP server: returns the raw request it saw.
+    async fn serve_once(response: Vec<u8>) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut seen = Vec::new();
+            let mut buffer = [0u8; 4096];
+            loop {
+                let read = socket.read(&mut buffer).await.unwrap();
+                seen.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&seen);
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text[..end]
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|value| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if seen.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                if read == 0 {
+                    break;
+                }
+            }
+            socket.write_all(&response).await.ok();
+            socket.shutdown().await.ok();
+            String::from_utf8_lossy(&seen).into_owned()
+        });
+        (base, handle)
+    }
+
+    fn parse(json: &str) -> Request {
+        parse_request(json).unwrap()
+    }
+
+    #[tokio::test]
+    async fn relay_sends_no_credentials_and_filters_response_headers() {
+        let body = r#"{"state":"running"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nset-cookie: s=1\r\nx-search-token: tok_next_12345\r\nx-internal-debug: leak\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (base, server) = serve_once(response.into_bytes()).await;
+        let out = relay(
+            &base,
+            parse(r#"{"method":"GET","path":"/api/v1/index/public/searches/srch_1","headers":{"x-search-token":"token_12345678"},"identity":"anonymous","body":null}"#),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let seen = server.await.unwrap().to_ascii_lowercase();
+        assert!(seen.starts_with("get /api/v1/index/public/searches/srch_1 http/1.1"));
+        assert!(seen.contains("x-search-token: token_12345678"));
+        for forbidden in ["authorization", "cookie", "x-api-key"] {
+            assert!(!seen.contains(forbidden), "relay sent {forbidden}");
+        }
+        let out: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(out["status"], 200);
+        assert_eq!(out["body"]["state"], "running");
+        let headers = out["headers"].as_object().unwrap();
+        assert_eq!(
+            headers.len(),
+            1,
+            "only whitelisted headers return: {headers:?}"
+        );
+        assert_eq!(headers["x-search-token"], "tok_next_12345");
+    }
+
+    #[tokio::test]
+    async fn relay_does_not_follow_redirects() {
+        let response = b"HTTP/1.1 302 Found\r\nlocation: http://127.0.0.1:9/steal\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec();
+        let (base, server) = serve_once(response).await;
+        let out = relay(
+            &base,
+            parse(r#"{"method":"GET","path":"/api/v1/index/public/capabilities","headers":{},"identity":"anonymous","body":null}"#),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+        let out: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(out["status"], 302);
+        assert!(out["headers"].as_object().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn relay_bounds_response_size_with_and_without_content_length() {
+        let big = "x".repeat(MAX_RESPONSE_BYTES + 1);
+        for declared in [true, false] {
+            let head = if declared {
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    big.len()
+                )
+            } else {
+                "HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n".to_owned()
+            };
+            let (base, server) = serve_once(format!("{head}{big}").into_bytes()).await;
+            let result = relay(
+                &base,
+                parse(r#"{"method":"GET","path":"/api/v1/index/public/capabilities","headers":{},"identity":"anonymous","body":null}"#),
+                Duration::from_secs(5),
+            )
+            .await;
+            assert!(result.is_err(), "declared={declared} must exceed the bound");
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_times_out_a_silent_backend() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let hold = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        });
+        let result = relay(
+            &base,
+            parse(r#"{"method":"GET","path":"/api/v1/index/public/capabilities","headers":{},"identity":"anonymous","body":null}"#),
+            Duration::from_millis(300),
+        )
+        .await;
+        assert!(result.is_err());
+        hold.abort();
     }
 }
