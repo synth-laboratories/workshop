@@ -36,6 +36,7 @@ import { ProjectSourcesSettings } from "./ProjectSourcesSettings";
 import { WorkspaceAccessSettings } from "./WorkspaceAccessSettings";
 import { CapabilityManifest } from "./CapabilityManifest";
 import { PluginVisibilitySettings } from "./PluginVisibilitySettings";
+import { IndexSearchPanel, createIndexSearchClientForConnection } from "./IndexSearchPanel";
 
 type Props = {
 	onBack: () => void;
@@ -594,6 +595,16 @@ export function SettingsPage({
 							onRefresh={account.onRefresh}
 							onOpenDeviceUsage={account.onOpenDeviceUsage}
 						/>
+					) : null}
+					{section === "account" ? (
+						<SettingsCard
+							title="Synth Index search"
+							description="Search the public Index from this desktop. Price, limits and retention come from the backend's capabilities."
+							testId="account-index-search"
+							className="settings-card-embed"
+						>
+							<IndexSearchPanel client={createIndexSearchClientForConnection(account.connection)} />
+						</SettingsCard>
 					) : null}
 					{section === "secrets" ? <SecretsSettings /> : null}
 					{section === "about" ? (
