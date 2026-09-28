@@ -19,7 +19,7 @@
 //! 2. Add `#[specta::specta]` next to `#[tauri::command]` (keep commands in a
 //!    submodule — not `lib.rs` root if `pub`).
 //! 3. Append the fn to `collect_commands!` in [`builder`].
-//! 4. Re-run `cargo test -p synth-desktop export_specta_protocol_bindings -- --nocapture`
+//! 4. Re-run `cargo run --locked --bin export_protocol`
 //!    (or debug-assert export in [`export_typescript_bindings`]).
 //! 5. Prefer generated types from `generated/protocol.ts` at the bridge edge.
 

@@ -480,6 +480,8 @@ export const commands = {
 	modelCatalogRefresh: () => typedError<ModelCatalog, AppError_Serialize>(__TAURI_INVOKE("model_catalog_refresh")),
 	synthConfigUpdate: (request: BackendSettingsUpdate) => typedError<BackendSettings, AppError_Serialize>(__TAURI_INVOKE("synth_config_update", { request })),
 	modelPerformanceGet: (windowMinutes: number | null) => typedError<ModelPerformanceSnapshot, AppError_Serialize>(__TAURI_INVOKE("model_performance_get", { windowMinutes })),
+	/**  Bounded native public transport. JSON strings keep tokens out of typed diagnostics. */
+	indexPublicSearchRequest: (requestJson: string) => typedError<string, AppError_Serialize>(__TAURI_INVOKE("index_public_search_request", { requestJson })),
 	/**
 	 *  Begin (or resume) browser sign-in via Workshop device pairing and open the
 	 *  system browser. Returns display-safe state only.

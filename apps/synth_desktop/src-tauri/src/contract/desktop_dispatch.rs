@@ -220,6 +220,7 @@ pub const NAMES: &[&str] = &[
     "model_catalog_refresh",
     "synth_config_update",
     "model_performance_get",
+    "index_public_search_request",
     "account_begin_sign_in",
     "account_get_summary",
     "account_refresh",
@@ -593,157 +594,158 @@ pub fn invoke<'a>(app: &'a tauri::AppHandle, name: &str, args: Value) -> Reply<'
         "model_catalog_refresh" => operation_214(app, args),
         "synth_config_update" => operation_215(app, args),
         "model_performance_get" => operation_216(app, args),
-        "account_begin_sign_in" => operation_217(app, args),
-        "account_get_summary" => operation_218(app, args),
-        "account_refresh" => operation_219(app, args),
-        "account_open_billing" => operation_220(app, args),
-        "account_poll_sign_in" => operation_221(app, args),
-        "account_cancel_sign_in" => operation_222(app, args),
-        "account_sign_out" => operation_223(app, args),
-        "codex_oauth_begin" => operation_224(app, args),
-        "codex_oauth_complete_manual" => operation_225(app, args),
-        "codex_oauth_ensure_ready" => operation_226(app, args),
-        "codex_oauth_status" => operation_227(app, args),
-        "codex_oauth_disconnect" => operation_228(app, args),
-        "codex_oauth_cancel" => operation_229(app, args),
-        "model_multi_agent_list" => operation_230(app, args),
-        "model_multi_agent_update" => operation_231(app, args),
-        "workspace_access_get" => operation_232(app, args),
-        "workspace_access_update" => operation_233(app, args),
-        "desktop_permissions_get" => operation_234(app, args),
-        "desktop_permissions_update" => operation_235(app, args),
-        "workspace_scope_get" => operation_236(app, args),
-        "workspace_scope_choose_and_attach" => operation_237(app, args),
-        "workspace_scope_recent_folders" => operation_238(app, args),
-        "workspace_scope_attach_recent" => operation_239(app, args),
-        "workspace_scope_remove_attachment" => operation_240(app, args),
-        "workspace_scope_request_agent_grant" => operation_241(app, args),
-        "workspace_scope_grants_list" => operation_242(app, args),
-        "workspace_scope_approve_request" => operation_243(app, args),
-        "workspace_scope_deny_request" => operation_244(app, args),
-        "migration_scan" => operation_245(app, args),
-        "migration_prepare" => operation_246(app, args),
-        "migration_apply" => operation_247(app, args),
-        "migration_cancel" => operation_248(app, args),
-        "laguna_get_status" => operation_249(app, args),
-        "laguna_reload" => operation_250(app, args),
-        "laguna_register_policy" => operation_251(app, args),
-        "laguna_policies" => operation_252(app, args),
-        "laguna_adapter_status" => operation_253(app, args),
-        "laguna_adapter_download" => operation_254(app, args),
-        "laguna_models_list" => operation_255(app, args),
-        "laguna_models_set_directory" => operation_256(app, args),
-        "laguna_models_clear_directory" => operation_257(app, args),
-        "laguna_inference_snapshot" => operation_258(app, args),
-        "laguna_inference_stream_start" => operation_259(app, args),
-        "laguna_inference_stream_stop" => operation_260(app, args),
-        "laguna_model_unload" => operation_261(app, args),
-        "laguna_model_download" => operation_262(app, args),
-        "laguna_model_delete" => operation_263(app, args),
-        "laguna_settings_snapshot" => operation_264(app, args),
-        "laguna_settings_update" => operation_265(app, args),
-        "training_models_list" => operation_266(app, args),
-        "training_models_download" => operation_267(app, args),
-        "training_models_delete" => operation_268(app, args),
-        "training_mlx_runtime_status" => operation_269(app, args),
-        "training_mlx_runtime_install" => operation_270(app, args),
-        "training_artifacts_list" => operation_271(app, args),
-        "training_artifacts_get" => operation_272(app, args),
-        "training_artifacts_export" => operation_273(app, args),
-        "training_artifacts_delete" => operation_274(app, args),
-        "training_artifacts_launch_inference" => operation_275(app, args),
-        "whisper_models_list" => operation_276(app, args),
-        "whisper_model_download" => operation_277(app, args),
-        "whisper_models_set_selected" => operation_278(app, args),
-        "whisper_models_clear" => operation_279(app, args),
-        "whisper_runtime_status" => operation_280(app, args),
-        "whisper_runtime_warm" => operation_281(app, args),
-        "whisper_transcribe" => operation_282(app, args),
-        "whisper_transcribe_base64" => operation_283(app, args),
-        "skills_list" => operation_284(app, args),
-        "context_snapshot" => operation_285(app, args),
-        "context_workspace_agents_update" => operation_286(app, args),
-        "context_skill_update" => operation_287(app, args),
-        "context_mcp_group_update" => operation_288(app, args),
-        "context_cookbooks_install" => operation_289(app, args),
-        "context_cookbooks_cancel" => operation_290(app, args),
-        "context_cookbooks_set_enabled" => operation_291(app, args),
-        "context_cookbooks_uninstall" => operation_292(app, args),
-        "workspace_choose_directory" => operation_293(app, args),
-        "codex_session_start" => operation_294(app, args),
-        "codex_turn_start" => operation_295(app, args),
-        "codex_turn_send" => operation_296(app, args),
-        "synth_cloud_inference_status" => operation_297(app, args),
-        "codex_turn_interrupt" => operation_298(app, args),
-        "codex_thread_compact" => operation_299(app, args),
-        "codex_thread_read" => operation_300(app, args),
-        "codex_thread_items_list" => operation_301(app, args),
-        "codex_turn_steer" => operation_302(app, args),
-        "codex_approval_resolve" => operation_303(app, args),
-        "codex_session_close" => operation_304(app, args),
-        "codex_sessions_list" => operation_305(app, args),
-        "codex_default_workspace" => operation_306(app, args),
-        "terminal_create" => operation_307(app, args),
-        "terminal_list" => operation_308(app, args),
-        "terminal_snapshot" => operation_309(app, args),
-        "terminal_write" => operation_310(app, args),
-        "terminal_resize" => operation_311(app, args),
-        "terminal_ghostty_mount" => operation_312(app, args),
-        "terminal_ghostty_set_frame" => operation_313(app, args),
-        "terminal_ghostty_set_visible" => operation_314(app, args),
-        "terminal_ghostty_focus" => operation_315(app, args),
-        "terminal_ghostty_unmount" => operation_316(app, args),
-        "terminal_close" => operation_317(app, args),
-        "secrets_workspace_roots_list" => operation_318(app, args),
-        "secrets_bindings_list" => operation_319(app, args),
-        "secrets_locators_list" => operation_320(app, args),
-        "secrets_locator_remember_external" => operation_321(app, args),
-        "secrets_locator_register" => operation_322(app, args),
-        "secrets_locator_forget" => operation_323(app, args),
-        "secrets_list" => operation_324(app, args),
-        "secrets_create" => operation_325(app, args),
-        "secrets_replace" => operation_326(app, args),
-        "secrets_delete" => operation_327(app, args),
-        "secrets_test" => operation_328(app, args),
-        "secrets_request_use" => operation_329(app, args),
-        "secrets_grant_use" => operation_330(app, args),
-        "secrets_deny_use" => operation_331(app, args),
-        "secrets_capabilities_list" => operation_332(app, args),
-        "secrets_revoke_capability" => operation_333(app, args),
-        "secrets_request_env_import" => operation_334(app, args),
-        "secrets_commit_env_import" => operation_335(app, args),
-        "secrets_audit_list" => operation_336(app, args),
-        "secrets_proxy_status" => operation_337(app, args),
-        "secrets_pending" => operation_338(app, args),
-        "secrets_deny_env_import" => operation_339(app, args),
-        "product_telemetry_get_policy" => operation_340(app, args),
-        "product_telemetry_set_opt_out" => operation_341(app, args),
-        "failures_query" => operation_342(app, args),
-        "failures_get" => operation_343(app, args),
-        "failures_timeline" => operation_344(app, args),
-        "logs_query" => operation_345(app, args),
-        "failure_export_bundle" => operation_346(app, args),
-        "observability_status" => operation_347(app, args),
-        "product_telemetry_set_consent" => operation_348(app, args),
-        "product_telemetry_recent" => operation_349(app, args),
-        "product_telemetry_flush_now" => operation_350(app, args),
-        "workspace_read_file" => operation_351(app, args),
-        "workspace_list_dir" => operation_352(app, args),
-        "document_show" => operation_353(app, args),
-        "visuals_template_shell_source" => operation_354(app, args),
-        "visuals_template_save" => operation_355(app, args),
-        "visuals_template_create" => operation_356(app, args),
-        "visuals_template_validate" => operation_357(app, args),
-        "approvals_pending" => operation_358(app, args),
-        "approvals_approve_digest" => operation_359(app, args),
-        "project_sources_get" => operation_360(app, args),
-        "project_sources_refresh" => operation_361(app, args),
-        "project_source_add" => operation_362(app, args),
-        "project_source_remove" => operation_363(app, args),
-        "project_source_request" => operation_364(app, args),
-        "project_source_requests_list" => operation_365(app, args),
-        "project_source_deny" => operation_366(app, args),
-        "project_source_approve" => operation_367(app, args),
+        "index_public_search_request" => operation_217(app, args),
+        "account_begin_sign_in" => operation_218(app, args),
+        "account_get_summary" => operation_219(app, args),
+        "account_refresh" => operation_220(app, args),
+        "account_open_billing" => operation_221(app, args),
+        "account_poll_sign_in" => operation_222(app, args),
+        "account_cancel_sign_in" => operation_223(app, args),
+        "account_sign_out" => operation_224(app, args),
+        "codex_oauth_begin" => operation_225(app, args),
+        "codex_oauth_complete_manual" => operation_226(app, args),
+        "codex_oauth_ensure_ready" => operation_227(app, args),
+        "codex_oauth_status" => operation_228(app, args),
+        "codex_oauth_disconnect" => operation_229(app, args),
+        "codex_oauth_cancel" => operation_230(app, args),
+        "model_multi_agent_list" => operation_231(app, args),
+        "model_multi_agent_update" => operation_232(app, args),
+        "workspace_access_get" => operation_233(app, args),
+        "workspace_access_update" => operation_234(app, args),
+        "desktop_permissions_get" => operation_235(app, args),
+        "desktop_permissions_update" => operation_236(app, args),
+        "workspace_scope_get" => operation_237(app, args),
+        "workspace_scope_choose_and_attach" => operation_238(app, args),
+        "workspace_scope_recent_folders" => operation_239(app, args),
+        "workspace_scope_attach_recent" => operation_240(app, args),
+        "workspace_scope_remove_attachment" => operation_241(app, args),
+        "workspace_scope_request_agent_grant" => operation_242(app, args),
+        "workspace_scope_grants_list" => operation_243(app, args),
+        "workspace_scope_approve_request" => operation_244(app, args),
+        "workspace_scope_deny_request" => operation_245(app, args),
+        "migration_scan" => operation_246(app, args),
+        "migration_prepare" => operation_247(app, args),
+        "migration_apply" => operation_248(app, args),
+        "migration_cancel" => operation_249(app, args),
+        "laguna_get_status" => operation_250(app, args),
+        "laguna_reload" => operation_251(app, args),
+        "laguna_register_policy" => operation_252(app, args),
+        "laguna_policies" => operation_253(app, args),
+        "laguna_adapter_status" => operation_254(app, args),
+        "laguna_adapter_download" => operation_255(app, args),
+        "laguna_models_list" => operation_256(app, args),
+        "laguna_models_set_directory" => operation_257(app, args),
+        "laguna_models_clear_directory" => operation_258(app, args),
+        "laguna_inference_snapshot" => operation_259(app, args),
+        "laguna_inference_stream_start" => operation_260(app, args),
+        "laguna_inference_stream_stop" => operation_261(app, args),
+        "laguna_model_unload" => operation_262(app, args),
+        "laguna_model_download" => operation_263(app, args),
+        "laguna_model_delete" => operation_264(app, args),
+        "laguna_settings_snapshot" => operation_265(app, args),
+        "laguna_settings_update" => operation_266(app, args),
+        "training_models_list" => operation_267(app, args),
+        "training_models_download" => operation_268(app, args),
+        "training_models_delete" => operation_269(app, args),
+        "training_mlx_runtime_status" => operation_270(app, args),
+        "training_mlx_runtime_install" => operation_271(app, args),
+        "training_artifacts_list" => operation_272(app, args),
+        "training_artifacts_get" => operation_273(app, args),
+        "training_artifacts_export" => operation_274(app, args),
+        "training_artifacts_delete" => operation_275(app, args),
+        "training_artifacts_launch_inference" => operation_276(app, args),
+        "whisper_models_list" => operation_277(app, args),
+        "whisper_model_download" => operation_278(app, args),
+        "whisper_models_set_selected" => operation_279(app, args),
+        "whisper_models_clear" => operation_280(app, args),
+        "whisper_runtime_status" => operation_281(app, args),
+        "whisper_runtime_warm" => operation_282(app, args),
+        "whisper_transcribe" => operation_283(app, args),
+        "whisper_transcribe_base64" => operation_284(app, args),
+        "skills_list" => operation_285(app, args),
+        "context_snapshot" => operation_286(app, args),
+        "context_workspace_agents_update" => operation_287(app, args),
+        "context_skill_update" => operation_288(app, args),
+        "context_mcp_group_update" => operation_289(app, args),
+        "context_cookbooks_install" => operation_290(app, args),
+        "context_cookbooks_cancel" => operation_291(app, args),
+        "context_cookbooks_set_enabled" => operation_292(app, args),
+        "context_cookbooks_uninstall" => operation_293(app, args),
+        "workspace_choose_directory" => operation_294(app, args),
+        "codex_session_start" => operation_295(app, args),
+        "codex_turn_start" => operation_296(app, args),
+        "codex_turn_send" => operation_297(app, args),
+        "synth_cloud_inference_status" => operation_298(app, args),
+        "codex_turn_interrupt" => operation_299(app, args),
+        "codex_thread_compact" => operation_300(app, args),
+        "codex_thread_read" => operation_301(app, args),
+        "codex_thread_items_list" => operation_302(app, args),
+        "codex_turn_steer" => operation_303(app, args),
+        "codex_approval_resolve" => operation_304(app, args),
+        "codex_session_close" => operation_305(app, args),
+        "codex_sessions_list" => operation_306(app, args),
+        "codex_default_workspace" => operation_307(app, args),
+        "terminal_create" => operation_308(app, args),
+        "terminal_list" => operation_309(app, args),
+        "terminal_snapshot" => operation_310(app, args),
+        "terminal_write" => operation_311(app, args),
+        "terminal_resize" => operation_312(app, args),
+        "terminal_ghostty_mount" => operation_313(app, args),
+        "terminal_ghostty_set_frame" => operation_314(app, args),
+        "terminal_ghostty_set_visible" => operation_315(app, args),
+        "terminal_ghostty_focus" => operation_316(app, args),
+        "terminal_ghostty_unmount" => operation_317(app, args),
+        "terminal_close" => operation_318(app, args),
+        "secrets_workspace_roots_list" => operation_319(app, args),
+        "secrets_bindings_list" => operation_320(app, args),
+        "secrets_locators_list" => operation_321(app, args),
+        "secrets_locator_remember_external" => operation_322(app, args),
+        "secrets_locator_register" => operation_323(app, args),
+        "secrets_locator_forget" => operation_324(app, args),
+        "secrets_list" => operation_325(app, args),
+        "secrets_create" => operation_326(app, args),
+        "secrets_replace" => operation_327(app, args),
+        "secrets_delete" => operation_328(app, args),
+        "secrets_test" => operation_329(app, args),
+        "secrets_request_use" => operation_330(app, args),
+        "secrets_grant_use" => operation_331(app, args),
+        "secrets_deny_use" => operation_332(app, args),
+        "secrets_capabilities_list" => operation_333(app, args),
+        "secrets_revoke_capability" => operation_334(app, args),
+        "secrets_request_env_import" => operation_335(app, args),
+        "secrets_commit_env_import" => operation_336(app, args),
+        "secrets_audit_list" => operation_337(app, args),
+        "secrets_proxy_status" => operation_338(app, args),
+        "secrets_pending" => operation_339(app, args),
+        "secrets_deny_env_import" => operation_340(app, args),
+        "product_telemetry_get_policy" => operation_341(app, args),
+        "product_telemetry_set_opt_out" => operation_342(app, args),
+        "failures_query" => operation_343(app, args),
+        "failures_get" => operation_344(app, args),
+        "failures_timeline" => operation_345(app, args),
+        "logs_query" => operation_346(app, args),
+        "failure_export_bundle" => operation_347(app, args),
+        "observability_status" => operation_348(app, args),
+        "product_telemetry_set_consent" => operation_349(app, args),
+        "product_telemetry_recent" => operation_350(app, args),
+        "product_telemetry_flush_now" => operation_351(app, args),
+        "workspace_read_file" => operation_352(app, args),
+        "workspace_list_dir" => operation_353(app, args),
+        "document_show" => operation_354(app, args),
+        "visuals_template_shell_source" => operation_355(app, args),
+        "visuals_template_save" => operation_356(app, args),
+        "visuals_template_create" => operation_357(app, args),
+        "visuals_template_validate" => operation_358(app, args),
+        "approvals_pending" => operation_359(app, args),
+        "approvals_approve_digest" => operation_360(app, args),
+        "project_sources_get" => operation_361(app, args),
+        "project_sources_refresh" => operation_362(app, args),
+        "project_source_add" => operation_363(app, args),
+        "project_source_remove" => operation_364(app, args),
+        "project_source_request" => operation_365(app, args),
+        "project_source_requests_list" => operation_366(app, args),
+        "project_source_deny" => operation_367(app, args),
+        "project_source_approve" => operation_368(app, args),
         _ => Box::pin(async { anyhow::bail!("unknown desktop operation") }),
     }
 }
@@ -3138,10 +3140,10 @@ fn operation_216(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
 fn operation_217(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
-            // Handler: apps/synth_desktop/src-tauri/src/lib.rs
-            let allowed: &[&str] = &[];
+            // Handler: apps/synth_desktop/src-tauri/src/index_search.rs
+            let allowed: &[&str] = &["requestJson"];
             anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
-            let result = crate::account_begin_sign_in(app.clone(), app.try_state().context("runtime service is unavailable")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            let result = crate::index_search::index_public_search_request(serde_json::from_value(args.get("requestJson").cloned().unwrap_or(Value::Null)).context("invalid requestJson")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
             Ok(json!({"result": result}))
     })
 }
@@ -3152,7 +3154,7 @@ fn operation_218(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
             let allowed: &[&str] = &[];
             anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
-            let result = crate::account_get_summary(app.try_state().context("runtime service is unavailable")?, app.try_state().context("runtime service is unavailable")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            let result = crate::account_begin_sign_in(app.clone(), app.try_state().context("runtime service is unavailable")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
             Ok(json!({"result": result}))
     })
 }
@@ -3163,12 +3165,23 @@ fn operation_219(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
             let allowed: &[&str] = &[];
             anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
-            let result = crate::account_refresh(app.try_state().context("runtime service is unavailable")?, app.try_state().context("runtime service is unavailable")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            let result = crate::account_get_summary(app.try_state().context("runtime service is unavailable")?, app.try_state().context("runtime service is unavailable")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
             Ok(json!({"result": result}))
     })
 }
 
 fn operation_220(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+    Box::pin(async move {
+            anyhow::ensure!(args.is_object(), "operation arguments must be an object");
+            // Handler: apps/synth_desktop/src-tauri/src/lib.rs
+            let allowed: &[&str] = &[];
+            anyhow::ensure!(args.as_object().unwrap().keys().all(|key| allowed.contains(&key.as_str())), "unknown operation argument");
+            let result = crate::account_refresh(app.try_state().context("runtime service is unavailable")?, app.try_state().context("runtime service is unavailable")?).await.map_err(|error| anyhow::anyhow!(format!("{error:?}")))?;
+            Ok(json!({"result": result}))
+    })
+}
+
+fn operation_221(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3179,7 +3192,7 @@ fn operation_220(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_221(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_222(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3190,7 +3203,7 @@ fn operation_221(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_222(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_223(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3201,7 +3214,7 @@ fn operation_222(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_223(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_224(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3212,7 +3225,7 @@ fn operation_223(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_224(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_225(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3223,7 +3236,7 @@ fn operation_224(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_225(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_226(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3234,7 +3247,7 @@ fn operation_225(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_226(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_227(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3245,7 +3258,7 @@ fn operation_226(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_227(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_228(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3256,7 +3269,7 @@ fn operation_227(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_228(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_229(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3267,7 +3280,7 @@ fn operation_228(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_229(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_230(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3278,7 +3291,7 @@ fn operation_229(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_230(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_231(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3289,7 +3302,7 @@ fn operation_230(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_231(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_232(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3300,7 +3313,7 @@ fn operation_231(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_232(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_233(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3311,7 +3324,7 @@ fn operation_232(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_233(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_234(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3322,7 +3335,7 @@ fn operation_233(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_234(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_235(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3333,7 +3346,7 @@ fn operation_234(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_235(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_236(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3344,7 +3357,7 @@ fn operation_235(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_236(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_237(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3355,7 +3368,7 @@ fn operation_236(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_237(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_238(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3366,7 +3379,7 @@ fn operation_237(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_238(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_239(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3377,7 +3390,7 @@ fn operation_238(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_239(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_240(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3388,7 +3401,7 @@ fn operation_239(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_240(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_241(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3399,7 +3412,7 @@ fn operation_240(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_241(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_242(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3410,7 +3423,7 @@ fn operation_241(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_242(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_243(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3421,7 +3434,7 @@ fn operation_242(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_243(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_244(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3432,7 +3445,7 @@ fn operation_243(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_244(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_245(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3443,7 +3456,7 @@ fn operation_244(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_245(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_246(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/migration/commands.rs
@@ -3454,7 +3467,7 @@ fn operation_245(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_246(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_247(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/migration/commands.rs
@@ -3465,7 +3478,7 @@ fn operation_246(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_247(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_248(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/migration/commands.rs
@@ -3476,7 +3489,7 @@ fn operation_247(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_248(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_249(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/migration/commands.rs
@@ -3487,7 +3500,7 @@ fn operation_248(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_249(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_250(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3498,7 +3511,7 @@ fn operation_249(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_250(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_251(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3509,7 +3522,7 @@ fn operation_250(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_251(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_252(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3520,7 +3533,7 @@ fn operation_251(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_252(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_253(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3531,7 +3544,7 @@ fn operation_252(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_253(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_254(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3542,7 +3555,7 @@ fn operation_253(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_254(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_255(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3553,7 +3566,7 @@ fn operation_254(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_255(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_256(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3564,7 +3577,7 @@ fn operation_255(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_256(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_257(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3575,7 +3588,7 @@ fn operation_256(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_257(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_258(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3586,7 +3599,7 @@ fn operation_257(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_258(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_259(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/laguna.rs
@@ -3597,7 +3610,7 @@ fn operation_258(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_259(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_260(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/laguna.rs
@@ -3608,7 +3621,7 @@ fn operation_259(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_260(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_261(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/laguna.rs
@@ -3619,7 +3632,7 @@ fn operation_260(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_261(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_262(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/laguna.rs
@@ -3630,7 +3643,7 @@ fn operation_261(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_262(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_263(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/laguna.rs
@@ -3641,7 +3654,7 @@ fn operation_262(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_263(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_264(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/laguna.rs
@@ -3652,7 +3665,7 @@ fn operation_263(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_264(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_265(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/laguna.rs
@@ -3663,7 +3676,7 @@ fn operation_264(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_265(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_266(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/laguna.rs
@@ -3674,7 +3687,7 @@ fn operation_265(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_266(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_267(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/training_models.rs
@@ -3685,7 +3698,7 @@ fn operation_266(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_267(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_268(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/training_models.rs
@@ -3696,7 +3709,7 @@ fn operation_267(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_268(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_269(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/training_models.rs
@@ -3707,7 +3720,7 @@ fn operation_268(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_269(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_270(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/optimizers/mlx_runtime.rs
@@ -3718,7 +3731,7 @@ fn operation_269(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_270(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_271(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/optimizers/mlx_runtime.rs
@@ -3729,7 +3742,7 @@ fn operation_270(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_271(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_272(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/training_artifacts.rs
@@ -3740,7 +3753,7 @@ fn operation_271(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_272(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_273(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/training_artifacts.rs
@@ -3751,7 +3764,7 @@ fn operation_272(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_273(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_274(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/training_artifacts.rs
@@ -3762,7 +3775,7 @@ fn operation_273(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_274(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_275(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/training_artifacts.rs
@@ -3773,7 +3786,7 @@ fn operation_274(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_275(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_276(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3784,7 +3797,7 @@ fn operation_275(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_276(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_277(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/whisper.rs
@@ -3795,7 +3808,7 @@ fn operation_276(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_277(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_278(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/whisper.rs
@@ -3806,7 +3819,7 @@ fn operation_277(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_278(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_279(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/whisper.rs
@@ -3817,7 +3830,7 @@ fn operation_278(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_279(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_280(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/whisper.rs
@@ -3828,7 +3841,7 @@ fn operation_279(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_280(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_281(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/whisper.rs
@@ -3839,7 +3852,7 @@ fn operation_280(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_281(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_282(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/whisper.rs
@@ -3850,7 +3863,7 @@ fn operation_281(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_282(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_283(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/whisper.rs
@@ -3861,7 +3874,7 @@ fn operation_282(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_283(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_284(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/whisper.rs
@@ -3872,7 +3885,7 @@ fn operation_283(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_284(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_285(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/skills.rs
@@ -3883,7 +3896,7 @@ fn operation_284(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_285(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_286(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/context.rs
@@ -3894,7 +3907,7 @@ fn operation_285(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_286(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_287(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/context.rs
@@ -3905,7 +3918,7 @@ fn operation_286(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_287(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_288(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/context.rs
@@ -3916,7 +3929,7 @@ fn operation_287(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_288(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_289(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/context.rs
@@ -3927,7 +3940,7 @@ fn operation_288(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_289(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_290(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/context.rs
@@ -3938,7 +3951,7 @@ fn operation_289(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_290(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_291(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/context.rs
@@ -3949,7 +3962,7 @@ fn operation_290(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_291(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_292(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/context.rs
@@ -3960,7 +3973,7 @@ fn operation_291(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_292(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_293(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/context.rs
@@ -3971,7 +3984,7 @@ fn operation_292(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_293(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_294(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3982,7 +3995,7 @@ fn operation_293(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_294(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_295(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -3993,7 +4006,7 @@ fn operation_294(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_295(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_296(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4004,7 +4017,7 @@ fn operation_295(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_296(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_297(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4015,7 +4028,7 @@ fn operation_296(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_297(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_298(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4026,7 +4039,7 @@ fn operation_297(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_298(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_299(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4037,7 +4050,7 @@ fn operation_298(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_299(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_300(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4048,7 +4061,7 @@ fn operation_299(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_300(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_301(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4059,7 +4072,7 @@ fn operation_300(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_301(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_302(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4070,7 +4083,7 @@ fn operation_301(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_302(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_303(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4081,7 +4094,7 @@ fn operation_302(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_303(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_304(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4092,7 +4105,7 @@ fn operation_303(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_304(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_305(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4103,7 +4116,7 @@ fn operation_304(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_305(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_306(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4114,7 +4127,7 @@ fn operation_305(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_306(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_307(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4125,7 +4138,7 @@ fn operation_306(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_307(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_308(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4136,7 +4149,7 @@ fn operation_307(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_308(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_309(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4147,7 +4160,7 @@ fn operation_308(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_309(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_310(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4158,7 +4171,7 @@ fn operation_309(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_310(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_311(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4169,7 +4182,7 @@ fn operation_310(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_311(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_312(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4180,7 +4193,7 @@ fn operation_311(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_312(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_313(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4191,7 +4204,7 @@ fn operation_312(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_313(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_314(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4202,7 +4215,7 @@ fn operation_313(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_314(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_315(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4213,7 +4226,7 @@ fn operation_314(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_315(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_316(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4224,7 +4237,7 @@ fn operation_315(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_316(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_317(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4235,7 +4248,7 @@ fn operation_316(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_317(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_318(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/lib.rs
@@ -4246,7 +4259,7 @@ fn operation_317(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_318(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_319(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4257,7 +4270,7 @@ fn operation_318(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_319(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_320(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4268,7 +4281,7 @@ fn operation_319(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_320(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_321(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4279,7 +4292,7 @@ fn operation_320(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_321(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_322(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4290,7 +4303,7 @@ fn operation_321(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_322(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_323(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4301,7 +4314,7 @@ fn operation_322(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_323(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_324(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4312,7 +4325,7 @@ fn operation_323(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_324(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_325(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4323,7 +4336,7 @@ fn operation_324(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_325(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_326(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4334,7 +4347,7 @@ fn operation_325(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_326(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_327(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4345,7 +4358,7 @@ fn operation_326(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_327(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_328(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4356,7 +4369,7 @@ fn operation_327(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_328(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_329(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4367,7 +4380,7 @@ fn operation_328(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_329(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_330(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4378,7 +4391,7 @@ fn operation_329(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_330(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_331(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4389,7 +4402,7 @@ fn operation_330(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_331(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_332(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4400,7 +4413,7 @@ fn operation_331(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_332(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_333(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4411,7 +4424,7 @@ fn operation_332(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_333(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_334(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4422,7 +4435,7 @@ fn operation_333(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_334(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_335(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4433,7 +4446,7 @@ fn operation_334(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_335(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_336(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4444,7 +4457,7 @@ fn operation_335(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_336(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_337(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4455,7 +4468,7 @@ fn operation_336(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_337(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_338(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4466,7 +4479,7 @@ fn operation_337(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_338(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_339(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4477,7 +4490,7 @@ fn operation_338(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_339(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_340(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/secrets/mod.rs
@@ -4488,7 +4501,7 @@ fn operation_339(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_340(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_341(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/telemetry/mod.rs
@@ -4499,7 +4512,7 @@ fn operation_340(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_341(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_342(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/telemetry/mod.rs
@@ -4510,7 +4523,7 @@ fn operation_341(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_342(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_343(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/adapters/tauri.rs
@@ -4521,7 +4534,7 @@ fn operation_342(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_343(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_344(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/adapters/tauri.rs
@@ -4532,7 +4545,7 @@ fn operation_343(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_344(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_345(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/adapters/tauri.rs
@@ -4543,7 +4556,7 @@ fn operation_344(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_345(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_346(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/adapters/tauri.rs
@@ -4554,7 +4567,7 @@ fn operation_345(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_346(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_347(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/adapters/tauri.rs
@@ -4565,7 +4578,7 @@ fn operation_346(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_347(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_348(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/adapters/tauri.rs
@@ -4576,7 +4589,7 @@ fn operation_347(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_348(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_349(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/telemetry/mod.rs
@@ -4587,7 +4600,7 @@ fn operation_348(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_349(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_350(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/telemetry/mod.rs
@@ -4598,7 +4611,7 @@ fn operation_349(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_350(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_351(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/telemetry/mod.rs
@@ -4609,7 +4622,7 @@ fn operation_350(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_351(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_352(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/documents/commands.rs
@@ -4620,7 +4633,7 @@ fn operation_351(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_352(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_353(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/documents/commands.rs
@@ -4631,7 +4644,7 @@ fn operation_352(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_353(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_354(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/documents/commands.rs
@@ -4642,7 +4655,7 @@ fn operation_353(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_354(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_355(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/visuals/user_templates.rs
@@ -4653,7 +4666,7 @@ fn operation_354(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_355(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_356(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/visuals/user_templates.rs
@@ -4664,7 +4677,7 @@ fn operation_355(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_356(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_357(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/visuals/user_templates.rs
@@ -4675,7 +4688,7 @@ fn operation_356(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_357(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_358(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/visuals/user_templates.rs
@@ -4686,7 +4699,7 @@ fn operation_357(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_358(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_359(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/session/approval_inspection.rs
@@ -4697,7 +4710,7 @@ fn operation_358(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_359(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_360(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/session/approval_inspection.rs
@@ -4708,7 +4721,7 @@ fn operation_359(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_360(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_361(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs
@@ -4719,7 +4732,7 @@ fn operation_360(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_361(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_362(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs
@@ -4730,7 +4743,7 @@ fn operation_361(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_362(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_363(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs
@@ -4741,7 +4754,7 @@ fn operation_362(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_363(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_364(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs
@@ -4752,7 +4765,7 @@ fn operation_363(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_364(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_365(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs
@@ -4763,7 +4776,7 @@ fn operation_364(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_365(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_366(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs
@@ -4774,7 +4787,7 @@ fn operation_365(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_366(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_367(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs
@@ -4785,7 +4798,7 @@ fn operation_366(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     })
 }
 
-fn operation_367(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
+fn operation_368(app: &tauri::AppHandle, args: Value) -> Reply<'_> {
     Box::pin(async move {
             anyhow::ensure!(args.is_object(), "operation arguments must be an object");
             // Handler: apps/synth_desktop/src-tauri/src/project_sources/commands.rs

@@ -319,6 +319,20 @@ export class IndexSearchClient {
 		this.sleep = options.sleep ?? defaultSleep;
 	}
 
+	/** Whether an accepted Deep handle is available for an explicit resume. */
+	hasPendingSearch(key: string): boolean {
+		return this.pending.has(key);
+	}
+
+	/** Request cancellation after a transient polling failure, without starting a search. */
+	async cancelPendingSearch(key: string): Promise<boolean> {
+		const pending = this.pending.get(key);
+		if (!pending) return false;
+		const terminal = await this.cancelOnBackend(pending.searchId, pending.token);
+		if (terminal) this.pending.delete(key);
+		return terminal;
+	}
+
 	async capabilities(signal?: AbortSignal): Promise<IndexSearchCapabilities> {
 		throwIfAborted(signal);
 		const response = await this.transport({ method: "GET", path: capabilitiesPathFor(this.identity), headers: {}, identity: this.identity, signal });
@@ -371,10 +385,9 @@ export class IndexSearchClient {
 			}
 		} catch (error) {
 			if (signal?.aborted || (error instanceof IndexSearchError && error.code === "index_search_cancelled" && error.status === null)) {
-				await this.cancelOnBackend(searchId, token);
-				this.pending.delete(key);
+				if (await this.cancelOnBackend(searchId, token)) this.pending.delete(key);
 			}
-			if (error instanceof IndexSearchError && ["index_search_not_found", "index_search_failed", "index_search_cancelled"].includes(error.code)) this.pending.delete(key);
+			if (error instanceof IndexSearchError && error.status !== null && ["index_search_not_found", "index_search_failed", "index_search_cancelled"].includes(error.code)) this.pending.delete(key);
 			throw error;
 		}
 		throw new IndexSearchError({ code: "index_transport_failed", detail: "Deep search did not finish within the polling budget.", status: 202 });
@@ -385,16 +398,20 @@ export class IndexSearchClient {
 	 * search. Runs without the aborted signal; a failure here never masks the
 	 * cancellation the operator asked for.
 	 */
-	private async cancelOnBackend(searchId: string, token: string): Promise<void> {
+	private async cancelOnBackend(searchId: string, token: string): Promise<boolean> {
 		try {
-			await this.transport({
+			const response = await this.transport({
 				method: "POST",
 				path: `${INDEX_PUBLIC_SEARCHES_PATH}/${encodeURIComponent(searchId)}/cancel`,
 				headers: { [SEARCH_TOKEN_HEADER]: token },
 				identity: this.identity
 			});
+			if (response.status !== 200) return false;
+			const state = lifecycleState(record(response.body, "cancellation response"));
+			return state === "cancelled" || state === "completed" || state === "failed";
 		} catch {
-			// The search expires on its own; the local cancellation already stands.
+			// Retain the handle for explicit resume/cancel; never claim server confirmation.
+			return false;
 		}
 	}
 

@@ -520,3 +520,21 @@ test("public delivery refuses a nonzero customer charge", async () => {
  const { transport } = scripted(() => json(200, { ...COMPLETED_BODY, usage: { customer_charge_cents: 1 } }));
  await assert.rejects(new IndexSearchClient({ transport }).search({ query: "q", mode: "fast" }), (error: unknown) => error instanceof IndexSearchError && error.code === "index_malformed_response");
 });
+
+
+test("unconfirmed cancellation retains an interrupted Deep handle", async () => {
+ const { transport, calls } = scripted((request, index) => {
+  if (index === 0) return json(202, DEEP_START);
+  if (request.path.endsWith("/cancel")) return json(200, acceptedBody("running", { cancellation_requested: true }));
+  if (index === 1) throw new IndexSearchError({ code: "index_transport_failed", detail: "interrupted" });
+  return json(200, { ...COMPLETED_BODY, mode: "deep" });
+ });
+ const client = new IndexSearchClient({ transport, sleep: noSleep });
+ const request = { query: "q", mode: "deep" as const, idempotencyKey: "pending-cancel" };
+ await assert.rejects(client.search(request));
+ assert.equal(await client.cancelPendingSearch(request.idempotencyKey), false);
+ assert.equal(client.hasPendingSearch(request.idempotencyKey), true);
+ await client.search(request);
+ assert.equal(client.hasPendingSearch(request.idempotencyKey), false);
+ assert.equal(calls.filter(call => call.path === INDEX_PUBLIC_SEARCH_PATH).length, 1);
+});

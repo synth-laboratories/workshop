@@ -19,12 +19,12 @@ import {
 /**
  * Smallest real Index search surface: query, mode, capabilities-driven copy,
  * results with "Insert citation". The client is injectable so the panel works
- * against the loopback transport today and the native relay later without
+ * against either loopback HTTP or the native hosted relay without
  * changing this file.
  */
 export function createIndexSearchClientForConnection(connection: SynthBackendSettings | null): IndexSearchClient | null {
 	if (!connection) return null;
-	if (window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window) {
+	if (typeof window !== "undefined" && (window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window)) {
 		return new IndexSearchClient({ transport: nativeIndexTransport, identity: "anonymous" });
 	}
 	if (!isLoopbackBackend(connection.backendUrl)) return null;
@@ -46,6 +46,7 @@ export function IndexSearchPanel({ client, onInsertCitation, now = wallClock }: 
 	const [mode, setMode] = useState<IndexSearchMode>("fast");
 	const [state, setState] = useState<IndexSearchViewState>({ phase: "idle" });
 	const [tick, setTick] = useState(0);
+	const [cancelling, setCancelling] = useState(false);
 	const inflight = useRef<AbortController | null>(null);
 	const attempt = useRef<{ fingerprint: string; key: string } | null>(null);
 
@@ -53,9 +54,12 @@ export function IndexSearchPanel({ client, onInsertCitation, now = wallClock }: 
 		if (!client) return;
 		const controller = new AbortController();
 		setCapabilitiesState("loading");
+		setCapabilities(null);
+		setState({ phase: "idle" });
 		client
 			.capabilities(controller.signal)
 			.then((next) => {
+				if (controller.signal.aborted) return;
 				setCapabilities(next);
 				setCapabilitiesState("ready");
 				if (!next.publicSearch.modes.includes(mode) && next.publicSearch.modes[0]) setMode(next.publicSearch.modes[0]);
@@ -86,7 +90,8 @@ export function IndexSearchPanel({ client, onInsertCitation, now = wallClock }: 
 	const nowMs = now();
 	const modes = capabilities?.publicSearch.modes ?? [];
 	const enabled = capabilities?.publicSearch.enabled === true;
-	const submittable = Boolean(client) && enabled && query.trim().length > 0 && canSubmit(state, nowMs);
+	const pending = Boolean(attempt.current && client?.hasPendingSearch(attempt.current.key));
+	const submittable = Boolean(client) && !cancelling && enabled && query.trim().length > 0 && canSubmit(state, nowMs);
 
 	const submit = async () => {
 		if (!client || !submittable) return;
@@ -111,24 +116,37 @@ export function IndexSearchPanel({ client, onInsertCitation, now = wallClock }: 
 			}
 		} catch (error) {
 			if (inflight.current !== controller || controller.signal.aborted) return;
-			if (error instanceof IndexSearchError) setState(viewStateFromError(error, now()));
+			if (error instanceof IndexSearchError) {
+				if (error.status !== null && ["index_search_not_found", "index_search_failed", "index_search_cancelled"].includes(error.code)) attempt.current = null;
+				setState(viewStateFromError(error, now()));
+			}
 			else setState({ phase: "failed", code: "index_transport_failed", detail: "Index transport is unavailable. Retry to resume the same search." });
 		} finally {
 			if (inflight.current === controller) inflight.current = null;
 		}
 	};
 
-	const cancel = () => {
+	const cancel = async () => {
+		if (cancelling) return;
 		inflight.current?.abort();
 		inflight.current = null;
-		attempt.current = null;
 		setState({ phase: "cancelled" });
+		const key = attempt.current?.key;
+		setCancelling(true);
+		try {
+			if (key && client && await client.cancelPendingSearch(key) && attempt.current?.key === key) {
+				attempt.current = null;
+				setState({ phase: "cancelled" });
+			}
+		} finally {
+			setCancelling(false);
+		}
 	};
 
 	if (!client) {
 		return (
 			<p className="finetune-meta" data-testid="index-search-unavailable">
-				Index search runs through the Synth backend connection. Hosted profiles need the native Index relay; a loopback backend works from this build.
+				Index search runs through the Synth backend connection. Select a backend connection to use public Index search.
 			</p>
 		);
 	}
@@ -145,13 +163,13 @@ export function IndexSearchPanel({ client, onInsertCitation, now = wallClock }: 
 					}}
 					placeholder="Search the public Synth Index"
 					spellCheck={false}
-					disabled={state.phase === "searching"}
+					disabled={state.phase === "searching" || pending || cancelling}
 					data-testid="index-search-query"
 				/>
 			</label>
 			<label>
 				<span>Mode</span>
-				<select value={mode} onChange={(event) => setMode(event.target.value as IndexSearchMode)} disabled={modes.length === 0 || state.phase === "searching"} data-testid="index-search-mode">
+				<select value={mode} onChange={(event) => setMode(event.target.value as IndexSearchMode)} disabled={modes.length === 0 || state.phase === "searching" || pending || cancelling} data-testid="index-search-mode">
 					{modes.map((candidate) => (
 						<option key={candidate} value={candidate}>
 							{copy.modeLabel(candidate)}
@@ -171,11 +189,12 @@ export function IndexSearchPanel({ client, onInsertCitation, now = wallClock }: 
 			<div className="backend-settings-actions">
 				<span role="status" className="finetune-meta" data-testid="index-search-status">{statusLine(state, nowMs)}</span>
 				{state.phase === "searching" ? (
-					<button type="button" className="settings-secondary-btn" onClick={cancel} data-testid="index-search-cancel">Cancel</button>
+					<button type="button" className="settings-secondary-btn" disabled={cancelling} onClick={() => void cancel()} data-testid="index-search-cancel">Cancel</button>
 				) : (
-					<button type="button" className="settings-secondary-btn" disabled={!submittable} onClick={() => void submit()} data-testid="index-search-submit">Search</button>
+					<button type="button" className="settings-secondary-btn" disabled={!submittable} onClick={() => void submit()} data-testid="index-search-submit">{pending ? "Resume Deep search" : "Search"}</button>
 				)}
 			</div>
+			{pending && state.phase !== "searching" ? <button type="button" className="settings-secondary-btn" disabled={cancelling} onClick={() => void cancel()}>Request cancellation</button> : null}
 			{state.phase === "complete" ? (
 				<div className="backend-settings-wide" data-testid="index-search-results">
 					<p data-testid="index-search-response" style={{ whiteSpace: "pre-wrap" }}>{state.envelope.response}</p>
@@ -219,7 +238,7 @@ function statusLine(state: IndexSearchViewState, nowMs: number): string {
 		case "too_large":
 			return `Query too large. ${state.detail}`;
 		case "cancelled":
-			return "Stopped waiting. Server cancellation was requested; the search may still be finishing.";
+			return "Stopped waiting. Server completion or cancellation may still be finishing.";
 		case "failed":
 			return `Search failed (${state.code}). ${state.detail}`;
 	}

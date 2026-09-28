@@ -49245,6 +49245,44 @@
       }
     },
     {
+      "name": "index_public_search_request",
+      "description": "Workshop index public search request. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "requestJson": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "requestJson"
+        ],
+        "additionalProperties": false,
+        "$defs": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "$defs": {}
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "workshop/operationId": "desktop.index_public_search_request.v1"
+      }
+    },
+    {
       "name": "account_begin_sign_in",
       "description": "Workshop account begin sign in. Uses the same typed native handler as the desktop. Explicitly human-controlled decisions require the desktop workflow.",
       "inputSchema": {

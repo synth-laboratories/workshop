@@ -23,7 +23,7 @@ native boundary. The adapter (`runtime/indexSearch/`) therefore takes an
 `IndexSearchTransport` function and speaks the raw contract itself:
 
 - `fetchTransport(baseUrl)` — direct HTTP for loopback development backends.
-- `nativePublicSearchTransport` — the implemented Tauri command
+- `nativeIndexTransport` — the implemented Tauri command
   `index_public_search_request`, using the configured backend URL without
   resolving an account key. Hosted requests require HTTPS; redirects are
   disabled. Only anonymous public capabilities, create, poll and cancel routes
@@ -31,10 +31,20 @@ native boundary. The adapter (`runtime/indexSearch/`) therefore takes an
   may be forwarded, and only on its matching lifecycle route.
 
 The command is registered in the canonical Specta command list. The renderer
-uses a narrow direct `invoke` edge, so it does not depend on a hand-edited
-`protocol.ts`. Release engineering must regenerate the generated protocol in
-its packaging checkout before the desktop release. This source candidate is
-0.10.2; it has not been built or accepted.
+uses `commands.indexPublicSearchRequest` from the generated protocol. The
+protocol, desktop tool schema and native dispatch are regenerated together:
+
+```
+cd apps/synth_desktop/src-tauri
+cargo run --locked --bin export_protocol
+cd ../../..
+node scripts/generate-workshop-schemas.mjs
+python3 scripts/generate-workshop-dispatch.py
+```
+
+This generator compiles the host and exports types without launching Workshop,
+calling providers or running tests. This source candidate is 0.10.2; desktop
+packaging and installed-client acceptance are separate release checks.
 
 MCP was rejected for the panel because it would put a Python process between a
 button and an HTTP call; the MCP tool is the agent surface, not the operator's.
@@ -80,9 +90,9 @@ literals.
 
 ## Retry and cancellation
 
-A transient poll failure preserves the opaque handle in memory. Explicit retry
+A transient poll failure or unconfirmed cancellation preserves the opaque handle in memory. Explicit retry
 with the same query/mode/idempotency key resumes polling instead of starting a
-second search. Tokens are not persisted across closing/reloading the panel.
+second search. A pending handle exposes Resume and Request cancellation actions; query/mode edits stay locked until it reaches a terminal state. Tokens are not persisted across closing/reloading the panel.
 Budget and rate-limit Retry-After headers gate manual retry; there is no
 automatic retry loop. Stopping locally requests backend cancellation on a
 best-effort basis and does not claim the server confirmed cancellation.
