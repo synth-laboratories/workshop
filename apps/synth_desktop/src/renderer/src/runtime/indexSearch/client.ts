@@ -39,6 +39,16 @@ const SEARCH_TOKEN_HEADER = "X-Search-Token";
  */
 export const MONITOR_RELEASE_HEADER = "x-index-monitor-release";
 export const MONITOR_DELIVERY_HEADER = "x-index-monitor-delivery";
+/**
+ * Backend #1660: the delivered body is exactly the Monitor-reviewed public
+ * contract, so the Search id, token, expiry and customer charge travel in
+ * these (lower-cased) response headers. Body fields remain a fallback for
+ * older backends.
+ */
+export const SEARCH_ID_HEADER = "x-index-search-id";
+export const SEARCH_TOKEN_RESPONSE_HEADER = "x-search-token";
+export const SEARCH_TOKEN_EXPIRES_HEADER = "x-search-token-expires-at";
+export const CUSTOMER_CHARGE_HEADER = "x-index-customer-charge-cents";
 
 /** Poll cadence for Deep searches; bounded so a stuck search cannot spin. */
 export const DEEP_POLL_DELAYS_MS = [500, 1000, 2000, 3000, 5000];
@@ -190,22 +200,28 @@ export function parseCompleted(
 	}
 	const monitor = row.monitor && typeof row.monitor === "object" ? (row.monitor as Record<string, unknown>) : {};
 	const usage = row.usage && typeof row.usage === "object" ? (row.usage as Record<string, unknown>) : {};
-	const charge = finiteNumber(usage.customer_charge_cents);
+	const chargeHeader = headers[CUSTOMER_CHARGE_HEADER]?.trim();
+	const charge = chargeHeader
+		? /^\d+$/.test(chargeHeader)
+			? Number(chargeHeader)
+			: null
+		: (finiteNumber(usage.customer_charge_cents) ?? finiteNumber(row.amount_cents));
 	if (charge === null) {
-		throw new IndexSearchError({ code: "index_malformed_response", detail: "search response omitted usage.customer_charge_cents." });
+		throw new IndexSearchError({ code: "index_malformed_response", detail: "search response omitted the customer charge." });
 	}
+	const searchIdHeader = headers[SEARCH_ID_HEADER]?.trim();
 	return {
 		envelope: {
-			searchId: str(row, "search_id", "search response"),
+			searchId: searchIdHeader ? searchIdHeader : str(row, "search_id", "search response"),
 			mode: parseMode(row.mode, mode),
 			status,
 			response,
 			citations: citations.map(parseCitation),
 			monitor: { releaseId: releaseIdFrom(headers, monitor) },
 			usage: { customerChargeCents: charge },
-			tokenExpiresAt: optionalString(row.search_token_expires_at)
+			tokenExpiresAt: headers[SEARCH_TOKEN_EXPIRES_HEADER]?.trim() || optionalString(row.search_token_expires_at)
 		},
-		token: optionalString(row.search_token)
+		token: headers[SEARCH_TOKEN_RESPONSE_HEADER]?.trim() || optionalString(row.search_token)
 	};
 }
 

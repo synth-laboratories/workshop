@@ -282,6 +282,46 @@ test("malformed success bodies fail closed", async () => {
 	}
 });
 
+/** Backend #1660: exactly the Monitor's public contract key set; the rest rides headers. */
+const MONITOR_CONTRACT_BODY = {
+	request_id: "req_1",
+	mode: "fast",
+	status: "completed",
+	corpus_generation: "gen_1",
+	ranker_version: "rank_1",
+	parser_version: "parse_1",
+	taxonomy_version: "tax_1",
+	response: "Craftax agents benefit from curricula [c1] and dense rewards [c2].",
+	citations: [
+		{ contribution_id: "c1", revision_id: "r1" },
+		{ contribution_id: "c2", revision_id: "r7" }
+	],
+	amount_cents: 0
+};
+const MONITOR_CONTRACT_HEADERS = {
+	"x-index-search-id": "srch_h",
+	"x-search-token": TOKEN,
+	"x-search-token-expires-at": "2026-09-28T13:00:00+00:00",
+	"x-index-customer-charge-cents": "0",
+	"x-index-internal-cost-recorded": "true",
+	"x-index-monitor-release": "rel_h"
+};
+
+test("Monitor-contract body reads search id, token, expiry and charge from headers", async () => {
+	const { transport } = scripted(() => json(200, MONITOR_CONTRACT_BODY, MONITOR_CONTRACT_HEADERS));
+	const client = new IndexSearchClient({ transport, sleep: noSleep });
+	const handle = await client.search({ query: "craftax", mode: "fast" });
+	assert.equal(handle.envelope.searchId, "srch_h");
+	assert.equal(handle.envelope.tokenExpiresAt, "2026-09-28T13:00:00+00:00");
+	assert.equal(handle.envelope.usage.customerChargeCents, 0);
+	assert.equal(handle.envelope.monitor.releaseId, "rel_h");
+	assert.equal(handle.envelope.citations.length, 2);
+	assert.ok(!JSON.stringify(handle).includes(TOKEN), "token must not serialize");
+	// Without the id header the contract body alone is malformed (no silent empty id).
+	const { transport: bare } = scripted(() => json(200, MONITOR_CONTRACT_BODY, { "x-index-customer-charge-cents": "0" }));
+	await assert.rejects(new IndexSearchClient({ transport: bare, sleep: noSleep }).search({ query: "q", mode: "fast" }), (error: unknown) => error instanceof IndexSearchError && error.code === "index_malformed_response");
+});
+
 test("view state maps each error code to its UI state and counts the 429 down", () => {
 	const now = 1_000_000;
 	const limited = viewStateFromError(new IndexSearchError({ code: "index_public_rate_limited", detail: "slow down", retryAfterS: 17, scope: "peer_minute" }), now);
