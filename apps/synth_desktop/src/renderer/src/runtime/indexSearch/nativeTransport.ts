@@ -4,7 +4,7 @@ import { IndexSearchError, type IndexSearchTransport, type TransportResponse } f
 /** Native relay edge; anonymous-only and no credentials in renderer state. */
 export const nativeIndexTransport: IndexSearchTransport = async (request) => {
 	if (request.identity !== "anonymous") {
-		throw new IndexSearchError({ code: "index_identity_unavailable", detail: "Select anonymous public Search for the free Index route." });
+		throw new IndexSearchError({ code: "index_identity_unavailable", detail: "Public Index search is available only for anonymous requests." });
 	}
 	if (request.signal?.aborted) {
 		throw new IndexSearchError({ code: "index_search_cancelled", detail: "Search cancelled." });

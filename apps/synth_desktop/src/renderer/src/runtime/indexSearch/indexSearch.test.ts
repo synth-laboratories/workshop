@@ -106,7 +106,10 @@ test("fast search returns a typed envelope and keeps the token out of the handle
 	const handle = await client.search({ query: "craftax", mode: "fast", maxResults: 5 });
 	assert.equal(calls[0].method, "POST");
 	assert.equal(calls[0].path, INDEX_PUBLIC_SEARCH_PATH);
-	assert.deepEqual(calls[0].body, { mode: "fast", query: "craftax", max_results: 5 });
+	const { idempotency_key: generatedKey, ...sentBody } = calls[0].body as Record<string, unknown>;
+	assert.deepEqual(sentBody, { mode: "fast", query: "craftax", max_results: 5 });
+	assert.equal(typeof generatedKey, "string", "every create carries an idempotency key");
+	assert.ok((generatedKey as string).length > 0);
 	assert.equal(calls[0].identity, "anonymous");
 	assert.equal(handle.envelope.searchId, "srch_1");
 	assert.equal(handle.envelope.mode, "fast");
@@ -245,7 +248,11 @@ for (const kase of ERROR_CASES) {
 			assert.ok(error instanceof IndexSearchError);
 			assert.equal(error.code, kase.code);
 			assert.equal(error.status, kase.status);
-			assert.ok(error.detail.includes(kase.code));
+			if (kase.code === "index_public_budget_exhausted") {
+				assert.equal(error.detail, "Public search capacity is unavailable.", "budget exhaustion uses operator copy, not the raw code");
+			} else {
+				assert.ok(error.detail.includes(kase.code));
+			}
 			if (kase.code === "index_public_rate_limited") {
 				assert.equal(error.retryAfterS, 17);
 				assert.equal(error.scope, "peer");
