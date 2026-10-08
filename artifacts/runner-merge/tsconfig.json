@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "jsx": "react-jsx",
+    "types": [
+      "react",
+      "vite/client"
+    ],
+    "baseUrl": "/Users/joshuapurtell/GitHub/worktrees/merge-runner-workshop-20260911",
+    "paths": {
+      "@synth/visuals-react": [
+        "packages/visuals-react/src/index.tsx"
+      ],
+      "@synth/visuals-protocol": [
+        "packages/visuals-protocol/src/index.ts"
+      ],
+      "@synth/visuals-sdk": [
+        "packages/visuals-sdk/src/index.ts"
+      ]
+    }
+  },
+  "files": [
+    "/Users/joshuapurtell/GitHub/worktrees/merge-runner-workshop-20260911/packages/workshop-visuals/runtime/benchmarkObservation.ts",
+    "/Users/joshuapurtell/GitHub/worktrees/merge-runner-workshop-20260911/packages/workshop-visuals/runtime/liveEvalReducer.ts",
+    "/Users/joshuapurtell/GitHub/worktrees/merge-runner-workshop-20260911/packages/workshop-visuals/chrome/BenchmarkStatus.tsx",
+    "/Users/joshuapurtell/GitHub/worktrees/merge-runner-workshop-20260911/packages/workshop-visuals/families/first_class_example_containers/live.harbor_eval.v1/shell.tsx",
+    "/Users/joshuapurtell/GitHub/worktrees/merge-runner-workshop-20260911/packages/workshop-visuals/families/first_class_example_containers/live.craftax.v1/shell.tsx"
+  ]
+}
